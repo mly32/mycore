@@ -1,0 +1,5 @@
+add_executable(foundation_smoke_test foundation_smoke_test.cpp)
+target_link_libraries(foundation_smoke_test PRIVATE Dots::Simulation)
+mycore_configure_executable(foundation_smoke_test)
+
+add_test(NAME foundation.dots_smoke COMMAND foundation_smoke_test)
