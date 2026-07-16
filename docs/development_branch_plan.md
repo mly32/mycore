@@ -61,8 +61,10 @@ Purpose: create the empty buildable project.
 
 Changes:
 
-- Add multi-game monorepo layout: `engine/`, `games/dots/`, `tests/`, `benchmarks/`,
-  `fuzz/`, `tools/`, `cmake/`, and `docs/`.
+- Add minimal multi-game monorepo layout: `engine/`, `games/dots/`, `tests/`, `tools/`,
+  `cmake/`, and `docs/`.
+- Add benchmark and fuzz directories only with the first real target, beside the module or
+  game that owns it.
 - Add root `CMakeLists.txt`, `CMakePresets.json`, `.gitignore`, `.clang-format`, and `.clang-tidy`.
 - Set C++20 globally through target-based CMake configuration.
 - Add a warnings/options interface target for project code.

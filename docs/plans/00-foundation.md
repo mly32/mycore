@@ -19,8 +19,8 @@ code and executables must not define the ownership boundaries of reusable engine
 
 ### 1. Repository and build configuration
 
-- Add the required monorepo directories: `engine/`, `games/dots/`, `tests/`, `benchmarks/`,
-  `fuzz/`, `tools/`, and `cmake/`.
+- Add only the required monorepo directories: `engine/`, `games/dots/`, `tests/`, `tools/`,
+  and `cmake/`. Do not add empty benchmark or fuzz placeholders.
 - Add the root `CMakeLists.txt` and small, focused CMake modules for project options and
   compiler warnings.
 - Define interface targets that propagate C++20 and warning settings to project-owned
@@ -69,13 +69,11 @@ code and executables must not define the ownership boundaries of reusable engine
 .
 |-- CMakeLists.txt
 |-- CMakePresets.json
-|-- benchmarks/
 |-- cmake/
 |-- docs/
 |   `-- plans/
 |-- engine/
 |   `-- core/
-|-- fuzz/
 |-- games/
 |   `-- dots/
 |       |-- apps/

@@ -1,0 +1,20 @@
+{
+  "cmake.useCMakePresets": "always",
+  "cmake.configureOnOpen": false,
+  "cmake.buildBeforeRun": true,
+  "cmake.copyCompileCommands": "${workspaceFolder}/compile_commands.json",
+  "C_Cpp.intelliSenseEngine": "disabled",
+  "C_Cpp.clang_format_style": "file",
+  "clangd.enable": true,
+  "clangd.arguments": [
+    "--background-index",
+    "--clang-tidy"
+  ],
+  "[cpp]": {
+    "editor.defaultFormatter": "ms-vscode.cpptools",
+    "editor.formatOnSave": true
+  },
+  "[cmake]": {
+    "editor.formatOnSave": false
+  }
+}

@@ -1173,14 +1173,13 @@ Use a multi-game monorepo with ownership visible in the directory tree:
 │   ├── assetc/
 │   ├── replay_inspector/
 │   └── packet_inspector/
-├── tests/                       # Cross-module integration and package tests
-├── fuzz/
-└── benchmarks/
+└── tests/                       # Cross-module integration and package tests
 ```
 
 Keep assets, unit tests, and game-specific fuzz or benchmark inputs near their owning
 module. Top-level test, fuzz, and benchmark directories are for cross-module drivers and
-shared build entry points.
+shared build entry points. Do not create empty top-level fuzz or benchmark directories;
+introduce one only when a concrete cross-module target requires it.
 
 ### Dependency rules
 
