@@ -1,6 +1,7 @@
-# Clean Minimal C++ Game Engine + Authoritative Multiplayer Game
+# MyCore Engine + Dots Authoritative Multiplayer Game
 
-> **Purpose:** Architecture and technology plan for a learning-focused game engine and an Agar.io-like server-authoritative game.
+> **Purpose:** Architecture and technology plan for a learning-focused, multi-game C++
+> engine and its first vertical slice: Dots, an Agar.io-like server-authoritative game.
 >
 > This document is intended to serve as a source-of-truth brief for implementation with Codex. The project should prioritize research value, understandable systems, and controlled technology experiments over feature breadth.
 
@@ -8,9 +9,24 @@
 
 ## 1. Project Direction
 
-Build **a networked game vertical slice with reusable engine libraries**, not a general-purpose engine followed by a game.
+Build **a networked game vertical slice with reusable engine libraries**, not a
+general-purpose engine followed by a game. Dots is the first implementation driver. A
+later offline 3D aim trainer will validate reuse without forcing the initial design to
+predict every 3D requirement.
 
-The Agar.io-like game should drive every subsystem requirement.
+### Product and ownership model
+
+- `engine/` contains game-neutral libraries that can eventually be consumed independently.
+- `games/dots/` owns all Dots simulation, protocol, replication, presentation, rules,
+  executables, tests, and assets.
+- `games/aim_trainer/` is deferred until Dots establishes the reusable platform and render
+  layers.
+- A facility becomes an engine abstraction only when it has a clear game-neutral contract.
+  Code can remain game-owned until a second use demonstrates the reusable boundary.
+- Each game owns its executable composition roots. There is no global game client, server,
+  or bot application.
+
+Dots should drive every subsystem requirement until the aim-trainer validation milestone.
 
 ### Primary research targets
 
@@ -20,6 +36,8 @@ The Agar.io-like game should drive every subsystem requirement.
 4. Scaling one simple world toward 1,000 clients.
 5. Clean client/server/engine boundaries.
 6. Controlled comparisons of rendering, ECS, scripting, and packaging approaches.
+7. Reusing engine libraries in a second game with substantially different rendering and
+   input requirements.
 
 ### Avoid at the beginning
 
@@ -33,6 +51,7 @@ Do not start with:
 - A job system.
 - A custom reliable-UDP transport.
 - A generic scene graph.
+- A universal game framework shared by Dots and a hypothetical future game.
 - Microservices or orchestration infrastructure.
 
 These can become later experiments after a working reference implementation exists.
@@ -132,6 +151,33 @@ Every library should expose its:
 
 through its CMake target rather than global CMake state.
 
+Use stable public target names from the beginning:
+
+```text
+MyCore::Core
+MyCore::Math
+MyCore::Time
+MyCore::PlatformSDL
+MyCore::Render
+MyCore::Assets
+MyCore::Debug
+MyCore::NetTransport
+MyCore::Scripting
+
+Dots::Simulation
+Dots::Protocol
+Dots::Replication
+Dots::Presentation
+```
+
+Engine public headers use the `mycore/` include root. Dots public headers use the `dots/`
+include root. Executable targets are game-qualified, such as `dots_client`, `dots_server`,
+and `dots_bot`.
+
+Place runnable outputs under `build/<preset>/bin` through a target property helper. Keep
+libraries in their normal target-specific build directories because consumers link them by
+target name rather than locate them manually.
+
 Check in:
 
 ```text
@@ -204,8 +250,12 @@ tracy
 sdl3-image
 sdl3-ttf
 sdl3-shadercross
-glm
 ```
+
+MyCore owns a small requirement-driven math library rather than exposing a third-party math
+type system through public interfaces. Start with the 2D operations Dots needs. Add 3D
+vectors, matrices, quaternions, transforms, rays, and bounds only when the aim trainer
+provides concrete requirements.
 
 Use a vcpkg binary cache in CI.
 
@@ -231,7 +281,30 @@ Reference:
 
 - [Conan 2 documentation](https://docs.conan.io/2/tutorial.html)
 
-For this monorepo game, start with vcpkg.
+For this monorepo project, start with vcpkg.
+
+## 4.3 External consumption
+
+Support source-tree consumption first:
+
+```cmake
+add_subdirectory(external/mycore)
+target_link_libraries(my_game PRIVATE MyCore::Core MyCore::Render)
+```
+
+Keep public headers and target names compatible with a future installed package, but do not
+add installation machinery before several engine modules stabilize. After Dots and the aim
+trainer validate the boundaries, export reusable engine targets through
+`MyCoreConfig.cmake` so an external project can use:
+
+```cmake
+find_package(MyCore CONFIG REQUIRED COMPONENTS Core Render)
+target_link_libraries(my_game PRIVATE MyCore::Core MyCore::Render)
+```
+
+Game targets are not part of the MyCore engine package by default. Validate packaging with
+a separate minimal consumer project that installs MyCore, calls `find_package`, and links
+only the requested components.
 
 ---
 
@@ -364,7 +437,8 @@ This gives exposure to modern graphics concepts without spending the first sever
 
 ### Thin rendering API
 
-Keep the engine wrapper small:
+`MyCore::Render` owns game-neutral GPU resource lifetime and command submission. Keep this
+engine wrapper small:
 
 ```text
 RenderDevice
@@ -379,18 +453,30 @@ RenderPassDescription
 
 Do not design a large generic RHI before understanding the game’s real needs.
 
+Game presentation owns render-data extraction, shaders, pipelines, and passes that encode
+game meaning. `Dots::Presentation` converts Dots state into circle instances and owns its
+circle and grid shaders. A later aim-trainer presentation library will own its camera,
+meshes, target materials, and scene submission without depending on Dots.
+
 ### Initial renderer scope
 
-The first renderer should contain:
+The first engine render layer should contain only the facilities needed to support:
+
+- Buffer, texture, sampler, shader, pipeline, command-list, and render-pass ownership.
+- The resource upload and frame submission paths required by Dots.
+- A small shared debug-line path and Dear ImGui integration where their contracts are
+  genuinely game-neutral.
+
+`Dots::Presentation` initially adds:
 
 - One instanced-quad pipeline for circles.
 - Signed-distance circle evaluation in the fragment shader.
 - A background or grid pass.
-- One text or font-atlas path.
-- A small debug-line renderer.
-- Dear ImGui integration.
+- The initial text or font-atlas use needed by the game.
 
-This is enough for thousands of circles while remaining understandable.
+When the aim trainer is implemented, extend `MyCore::Render` only with demonstrated needs
+such as depth attachments, vertex/index meshes, perspective transforms, and material
+resources. Do not introduce a generic scene graph or render graph merely to prepare for it.
 
 ## 7.2 Shader pipeline
 
@@ -411,7 +497,7 @@ Reference:
 Suggested pipeline:
 
 ```text
-assets/shaders/circle.hlsl
+games/dots/assets/shaders/circle.hlsl
         ↓ asset build
 generated/shaders/dxil/circle.bin
 generated/shaders/spirv/circle.bin
@@ -518,7 +604,9 @@ Do not build reliable UDP yourself in the first implementation. It would combine
 
 ## 9. Protocol Design
 
-Assume the 1,000 clients are in one shared world.
+Dots owns its protocol, replication schema, prediction policy, and validation rules. Assume
+its 1,000 clients are in one shared world. `MyCore::NetTransport` carries framed byte
+payloads and connection events without knowing Dots message types.
 
 Start with the following message classes:
 
@@ -877,7 +965,8 @@ Only partition the actual simulation after profiling proves it necessary.
 
 ## 13. World and Entity Representation
 
-Do not begin by designing a universal ECS.
+This section describes the Dots world, not a universal MyCore world model. Do not begin by
+designing a universal ECS.
 
 Use explicit component arrays:
 
@@ -925,7 +1014,7 @@ This creates a real experiment rather than choosing an ECS based only on prefere
 
 ## 13.1 Collision and physics
 
-Do not use a general physics engine initially.
+Dots should not use a general physics engine initially.
 
 Implement:
 
@@ -935,6 +1024,10 @@ Implement:
 4. Simple mass and radius rules.
 
 This keeps the authority logic inspectable and makes scaling behavior easier to understand.
+
+The later aim trainer owns its target storage, hit rules, and ray queries. Shared math or
+spatial utilities should move into an engine library only after both games establish a
+clear common contract; their world representations do not need to match.
 
 ---
 
@@ -948,7 +1041,8 @@ Reference:
 
 - [Lua downloads](https://www.lua.org/download.html)
 
-Start with the Lua C API and build a small RAII layer around:
+`MyCore::Scripting` starts with the Lua C API and builds a small game-neutral RAII layer
+around:
 
 - State lifetime.
 - Stack guards.
@@ -965,7 +1059,8 @@ This teaches the embedding boundary without coupling the public API to a large C
 
 ## 14.2 Capability-oriented API
 
-Expose capabilities rather than raw engine objects.
+Each game owns its script-facing bindings. Dots exposes capabilities rather than raw engine
+objects.
 
 Example:
 
@@ -1039,7 +1134,7 @@ Reference:
 
 ## 15. Repository and Target Layout
 
-Use a monorepo:
+Use a multi-game monorepo with ownership visible in the directory tree:
 
 ```text
 /
@@ -1050,65 +1145,92 @@ Use a monorepo:
 ├── cmake/
 ├── engine/
 │   ├── core/
+│   ├── math/
+│   ├── time/
 │   ├── platform_sdl/
 │   ├── render/
+│   ├── assets/
 │   ├── net_transport/
 │   ├── scripting/
 │   └── debug/
-├── game/
-│   ├── protocol/
-│   ├── simulation/
-│   ├── replication/
-│   ├── rules/
-│   └── presentation/
-├── apps/
-│   ├── client/
-│   ├── server/
-│   └── bot/
+├── games/
+│   ├── dots/
+│   │   ├── simulation/
+│   │   ├── protocol/
+│   │   ├── replication/
+│   │   ├── presentation/
+│   │   ├── rules/
+│   │   ├── apps/
+│   │   │   ├── client/
+│   │   │   ├── server/
+│   │   │   └── bot/
+│   │   ├── tools/
+│   │   │   └── dots_session.py
+│   │   ├── assets/
+│   │   └── tests/
+│   └── aim_trainer/             # Added only at its later milestone
 ├── tools/
 │   ├── assetc/
 │   ├── replay_inspector/
 │   └── packet_inspector/
-├── assets/
-├── tests/
-├── fuzz/
-└── benchmarks/
+└── tests/                       # Cross-module integration and package tests
 ```
+
+Keep assets, unit tests, and game-specific fuzz or benchmark inputs near their owning
+module. Top-level test, fuzz, and benchmark directories are for cross-module drivers and
+shared build entry points. Do not create empty top-level fuzz or benchmark directories;
+introduce one only when a concrete cross-module target requires it.
 
 ### Dependency rules
 
 ```text
-engine/core
-    depends on nothing platform-specific
+MyCore::Core
+    depends on nothing platform-specific or game-specific
 
-game/simulation
-    depends on core only
+MyCore::Math
+    depends on Core only; contains requirement-driven math, not game policy
 
-game/protocol
-    depends on core only
+MyCore::Time
+    depends on Core only; owns monotonic ticks, durations, and policy-free fixed-step
+    accumulation
 
-game/replication
-    depends on simulation + protocol
+MyCore::Assets
+    depends on Core only; owns game-neutral asset lookup and byte loading, not game formats
 
-server
-    depends on simulation + replication + transport + scripting
+MyCore::Debug
+    depends on Core and adopted logging/profiling libraries; owns no game-specific panels
 
-client
-    depends on simulation + protocol + transport + platform + render
+Dots::Simulation
+    depends on Core + Math + Time only
 
-bot
-    depends on protocol + transport
-    optionally depends on simulation for predictive bots
+Dots::Protocol
+    depends on Core and owns Dots wire messages and concrete protocol IDs
+
+Dots::Replication
+    depends on Dots Simulation + Dots Protocol
+
+Dots::Presentation
+    depends on Dots Simulation + MyCore Render + Assets, not on server runtime code
+
+dots_server
+    depends on Dots Simulation + Replication + MyCore NetTransport + scripting bindings
+
+dots_client
+    depends on Dots Simulation + Protocol + Presentation + MyCore PlatformSDL + Render +
+    NetTransport
+
+dots_bot
+    depends on Dots Protocol + MyCore NetTransport
+    optionally depends on Dots Simulation for predictive bots
 ```
 
-The headless server must not link:
+The headless Dots server must not link SDL video, renderer libraries, Dots presentation, or
+ImGui rendering code. Engine libraries must not include Dots headers or depend on Dots
+targets.
 
-- SDL video.
-- Renderer libraries.
-- Client presentation code.
-- ImGui rendering code.
-
-Treat the engine as a set of libraries, not as one global singleton object that owns the entire process.
+Treat the engine as a set of libraries, not as one global singleton object that owns the
+entire process. Treat each game executable as a thin composition root for libraries owned
+by that game and the engine.
 
 ---
 
@@ -1220,7 +1342,7 @@ CI should:
 - Run tests.
 - Run sanitizer builds.
 - Run selected benchmarks.
-- Package the Linux server.
+- Package the Linux `dots_server`.
 - Store logs and crash artifacts.
 - Cache vcpkg binary packages.
 
@@ -1234,9 +1356,9 @@ These systems align directly with the learning goals:
 
 | System | Why build it |
 |---|---|
-| Fixed-step simulation | Core engine architecture |
-| Spatial hash | Essential to AOI and collision |
-| Snapshot format | Central networking research |
+| Fixed-step scheduling | Reusable timing boundary driven by concrete game loops |
+| Dots simulation and spatial hash | Essential to Dots AOI and collision; not universal engine state |
+| Dots snapshot format | Central networking research |
 | Delta and baseline system | Central replication research |
 | Interest management | Required for 1,000 clients |
 | Prediction and reconciliation | Primary gameplay networking goal |
@@ -1245,7 +1367,8 @@ These systems align directly with the learning goals:
 | Replay format | Debugging and regression infrastructure |
 | Thin rendering layer | Useful RHI and lifetime experiment |
 | Bot/load harness | Required to validate scale |
-| Lua-facing game API | Teaches scripting-boundary design |
+| Lua host wrapper and Dots bindings | Separates reusable VM ownership from game capabilities |
+| Small owned math library | Keeps public math conventions stable and requirement-driven |
 
 ## 17.2 Adopt existing libraries
 
@@ -1261,6 +1384,7 @@ These systems align directly with the learning goals:
 | Test registration | Catch2 and CTest |
 | Package resolution | vcpkg |
 | CI runner | GitHub Actions |
+| Developer process orchestration | Python 3 |
 
 ## 17.3 Explicitly defer
 
@@ -1286,7 +1410,7 @@ These systems align directly with the learning goals:
 | Milestone | Exit criterion |
 |---|---|
 | 0. Foundation | All three desktop platforms configure; Windows and Linux build and run; CI and sanitizers work |
-| 1. Offline game | One client renders and controls circles through a fixed-step simulation |
+| 1. Offline Dots | `dots_client` renders and controls circles through a fixed-step simulation |
 | 2. Headless authority | Server runs the same simulation library and accepts two clients |
 | 3. Basic replication | Authoritative positions and game state arrive as full snapshots |
 | 4. Prediction | Local movement remains responsive under simulated 100–200 ms latency |
@@ -1296,7 +1420,9 @@ These systems align directly with the learning goals:
 | 8. Delta snapshots | Baselines, quantization, byte budgets, and recovery work under loss |
 | 9. Load harness | Automated bots reach 1,000 connections with recorded CPU and bandwidth metrics |
 | 10. Lua rules | Match and spawn rules can be reloaded safely at tick boundaries |
-| 11. Research branches | Direct Vulkan, EnTT, Conan, or fixed-point implementations are compared against recorded workloads |
+| 11. Aim-trainer reuse | An offline 3D aim trainer reuses engine libraries without depending on Dots |
+| 12. Engine package | A separate consumer installs MyCore and links selected `MyCore::` components with `find_package` |
+| 13. Research branches | Direct Vulkan, EnTT, Conan, or fixed-point implementations are compared against recorded workloads |
 
 ## 18.1 Metrics at the 1,000-client milestone
 
@@ -1346,6 +1472,11 @@ CMake
 Ninja
 CMakePresets
 
+multi-game monorepo
+game-owned executable composition roots
+MyCore:: public engine targets
+Dots:: public game targets
+
 vcpkg manifest mode
 pinned vcpkg baseline
 
@@ -1356,6 +1487,10 @@ libFuzzer
 
 SDL3
 SDL_GPU
+
+small owned math library
+2D operations first
+requirement-driven 3D expansion
 
 HLSL
 offline SDL_shadercross compilation
@@ -1387,7 +1522,12 @@ Tracy
 spdlog
 fmt
 
-dedicated headless bot executable
+Dots as the first vertical slice
+offline 3D aim trainer as the second-game reuse validation
+
+dedicated dots_bot executable
+source-tree consumption before installed CMake packaging
+Python 3 only for developer-side process orchestration
 ```
 
 ---
@@ -1398,22 +1538,23 @@ Codex should implement the project in the following order.
 
 ### Phase A: Foundation
 
-1. Create the repository layout.
+1. Create the multi-game repository layout with `engine/` and `games/dots/`.
 2. Add root CMake configuration.
 3. Add CMake presets.
 4. Add vcpkg manifest.
-5. Add `engine_core`.
-6. Add `game_simulation`.
-7. Add Catch2 and one passing unit test.
-8. Add CI builds.
-9. Add sanitizer presets.
-10. Add clang-format and clang-tidy configuration.
+5. Add `MyCore::Core`.
+6. Add the requirement-driven `MyCore::Math` and policy-free `MyCore::Time` libraries.
+7. Add `Dots::Simulation`.
+8. Add Catch2 and one passing unit test.
+9. Add CI builds.
+10. Add sanitizer presets.
+11. Add clang-format and clang-tidy configuration.
 
 ### Phase B: Offline vertical slice
 
-1. Create SDL3 client application.
-2. Add SDL_GPU initialization.
-3. Render one instanced circle.
+1. Create the `dots_client` SDL3 application under `games/dots/apps`.
+2. Add `MyCore::PlatformSDL`, `MyCore::Assets`, and game-neutral SDL_GPU initialization.
+3. Add `MyCore::Render` plus `Dots::Presentation` and render one instanced circle.
 4. Add fixed-step simulation.
 5. Add keyboard and mouse input.
 6. Move one player circle.
@@ -1424,16 +1565,18 @@ Codex should implement the project in the following order.
 
 ### Phase C: Authoritative networking
 
-1. Add a headless server executable.
-2. Add GameNetworkingSockets transport wrapper.
+1. Add the headless `dots_server` executable.
+2. Add the game-neutral `MyCore::NetTransport` GameNetworkingSockets wrapper.
 3. Add connection handshake.
-4. Add explicit protocol encoding and decoding.
+4. Add explicit Dots protocol encoding and decoding.
 5. Send sequenced input commands.
 6. Run the world only on the server.
 7. Send full snapshots.
 8. Render replicated state on clients.
 9. Add packet validation.
 10. Add malformed-packet fuzz targets.
+11. Add `dots_session.py` to launch a local server and configurable clients from a selected
+    preset build directory.
 
 ### Phase D: Responsive client
 
@@ -1457,19 +1600,37 @@ Codex should implement the project in the following order.
 6. Add delta snapshots.
 7. Add baseline acknowledgments.
 8. Add snapshot recovery.
-9. Build the bot executable.
-10. Run 10, 100, 500, and 1,000-client tests.
+9. Build the `dots_bot` executable.
+10. Extend `dots_session.py` with bot counts, connection ramps, input patterns, metrics
+    capture, prefixed logs, and reliable child cleanup.
+11. Run 10, 100, 500, and 1,000-client tests.
 
-### Phase F: Scripting and research branches
+### Phase F: Dots scripting
 
-1. Embed Lua.
-2. Expose capability-oriented rules.
+1. Add the game-neutral `MyCore::Scripting` Lua host wrapper.
+2. Add Dots-owned capability-oriented bindings and rules.
 3. Add tick-boundary reload.
 4. Add script state migration.
-5. Compare EnTT against the manual representation.
-6. Compare direct Vulkan against SDL_GPU.
-7. Compare Conan packaging against the vcpkg monorepo.
-8. Compare floating point against fixed-point simulation where useful.
+
+### Phase G: Second-game and package validation
+
+1. Add an offline desktop game under `games/aim_trainer`.
+2. Reuse `MyCore::Core`, Math, Time, PlatformSDL, Render, Assets, and Debug facilities.
+3. Expand Math with the required 3D vectors, matrices, quaternions, transforms, rays, and
+   bounds.
+4. Expand Render with the required depth, mesh, perspective, and material facilities.
+5. Add aim-trainer-owned camera, mouse-look, target, hit, spawn, score, reset, and
+   presentation code.
+6. Verify that the aim trainer has no dependency on Dots targets or headers.
+7. Export stabilized engine targets through an installed CMake package.
+8. Validate `find_package(MyCore CONFIG REQUIRED)` from a separate minimal consumer.
+
+### Phase H: Research branches
+
+1. Compare EnTT against the Dots manual world representation.
+2. Compare direct Vulkan against SDL_GPU.
+3. Compare Conan packaging against the installed CMake/vcpkg workflow.
+4. Compare floating point against fixed-point Dots simulation where useful.
 
 ---
 
@@ -1477,7 +1638,7 @@ Codex should implement the project in the following order.
 
 When generating code for this project, preserve these principles:
 
-1. Keep the simulation independent of rendering and platform APIs.
+1. Keep every game simulation independent of rendering and platform APIs.
 2. Keep wire formats independent of C++ memory layout.
 3. Keep the server authoritative.
 4. Keep prediction limited and explicit.
@@ -1492,12 +1653,18 @@ When generating code for this project, preserve these principles:
 13. Build tooling that exposes network and simulation behavior.
 14. Create research branches only after a measurable baseline exists.
 15. Prefer a working vertical slice over speculative generality.
+16. Keep game-owned types, policies, assets, and presentation out of engine libraries.
+17. Give every game ownership of its client, server, bot, and other executable composition
+    roots.
+18. Extract a reusable facility only when its contract is game-neutral and supported by a
+    concrete use.
 
 ---
 
 ## 22. Intended Outcome
 
-This scope should produce a working game early while reserving the highest-value engine research for custom implementation:
+This scope should produce a working Dots game early while reserving the highest-value
+engine research for custom implementation:
 
 - Authority.
 - Replication.
@@ -1509,5 +1676,9 @@ This scope should produce a working game early while reserving the highest-value
 - API boundaries.
 - Server scaling.
 - Client/server code sharing.
+- Cross-game reuse demonstrated by a distinct offline 3D game.
+- External consumption through stable CMake targets and an installed package.
 
-The project should remain small enough to understand end to end, while still exercising the types of design decisions encountered when maintaining a production game engine.
+The project should remain small enough to understand end to end while establishing clean
+engine/game ownership. The aim trainer and external consumer are validation milestones, not
+permission to build speculative universal systems before Dots works.

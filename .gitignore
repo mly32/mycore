@@ -1,0 +1,50 @@
+# CMake generated files
+/build/
+/out/
+/vcpkg_installed/
+CMakeUserPresets.json
+CMakeCache.txt
+CMakeFiles/
+CTestTestfile.cmake
+Testing/
+build.ninja
+cmake_install.cmake
+compile_commands.json
+install_manifest.txt
+.ninja_deps
+.ninja_log
+
+# Compiler output
+*.a
+*.dll
+*.dylib
+*.exe
+*.lib
+*.o
+*.obj
+*.pdb
+*.dSYM/
+*.dmp
+
+# Coverage, profiling, and analysis caches
+/.cache/
+*.gcda
+*.gcno
+*.profdata
+*.profraw
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+.fleet/
+.history/
+.idea/
+.vs/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/settings.json
+*.suo
+*.swp
+*.user
+*~
