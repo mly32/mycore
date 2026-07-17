@@ -14,7 +14,12 @@ mycore_configure_executable(mycore_core_smoke_tests)
 include(Catch)
 catch_discover_tests(mycore_core_smoke_tests)
 
-add_executable(dots_simulation_tests dots_simulation_tests.cpp)
+add_executable(
+    dots_simulation_tests
+    dots_collision_tests.cpp
+    dots_simulation_tests.cpp
+    dots_spatial_grid_tests.cpp
+)
 target_link_libraries(
     dots_simulation_tests
     PRIVATE
