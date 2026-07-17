@@ -14,6 +14,16 @@ mycore_configure_executable(mycore_core_smoke_tests)
 include(Catch)
 catch_discover_tests(mycore_core_smoke_tests)
 
+add_executable(mycore_platform_sdl_tests mycore_platform_sdl_tests.cpp)
+target_link_libraries(
+    mycore_platform_sdl_tests
+    PRIVATE
+        MyCore::PlatformSDL
+        Catch2::Catch2WithMain
+)
+mycore_configure_executable(mycore_platform_sdl_tests)
+catch_discover_tests(mycore_platform_sdl_tests)
+
 add_executable(
     dots_simulation_tests
     dots_collision_tests.cpp
@@ -28,3 +38,31 @@ target_link_libraries(
 )
 mycore_configure_executable(dots_simulation_tests)
 catch_discover_tests(dots_simulation_tests)
+
+add_executable(
+    dots_client_support_tests
+    dots_client_config_tests.cpp
+    dots_client_controls_tests.cpp
+)
+target_link_libraries(
+    dots_client_support_tests
+    PRIVATE
+        dots_client_support
+        Catch2::Catch2WithMain
+)
+mycore_configure_executable(dots_client_support_tests)
+catch_discover_tests(dots_client_support_tests)
+
+add_test(NAME dots_client_help COMMAND dots_client --help)
+set_tests_properties(
+    dots_client_help
+    PROPERTIES
+        PASS_REGULAR_EXPRESSION "playable offline SDL client"
+)
+
+add_test(NAME dots_client_headless_smoke COMMAND dots_client --headless-smoke)
+set_tests_properties(
+    dots_client_headless_smoke
+    PROPERTIES
+        ENVIRONMENT "SDL_VIDEODRIVER=dummy"
+)
