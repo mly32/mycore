@@ -3,9 +3,9 @@
 ## Goal
 
 Replace the temporary `SDL_Renderer` code in `dots_client` with a small game-neutral
-`MyCore::Render` layer over SDL_GPU and a Dots-owned `Dots::Presentation` layer. Preserve the
-playable Feature 05 client while making GPU lifetime, asset loading, and command submission
-reusable by later graphical games.
+`MyCore::Render` layer over SDL_GPU, an engine-owned `MyCore::Render2D` layer, and a pure
+Dots-owned presentation conversion. Preserve the playable Feature 05 client while making GPU
+lifetime, asset loading, command submission, and common 2D drawing reusable by later games.
 
 The completed dependency path is:
 
@@ -14,8 +14,9 @@ dots_client
   |-- dots_client_support
   |-- Dots::Presentation
   |     |-- Dots::Simulation
-  |     |-- MyCore::Assets
-  |     `-- MyCore::Render
+  |     `-- MyCore::Render2D
+  |           |-- MyCore::Assets
+  |           `-- MyCore::Render
   `-- MyCore::PlatformSDL
 
 dots_server and dots_bot
@@ -40,21 +41,24 @@ dependency of `MyCore::Core`, Dots simulation, the server, or the bot.
   device. Acquired command buffers are submitted or safely cancelled.
 - Keep the first API requirement-driven. Do not add a scene graph, render graph, material
   system, generic camera, backend abstraction, or global renderer singleton.
-- Add `dots_presentation` / `Dots::Presentation`. It owns Dots render-data extraction, shader
-  asset names, vertex layouts, pipelines, colors, circle/grid behavior, and the input-mode HUD.
-  It has no simulation ownership and never mutates `World`.
+- Add `mycore_render_2d` / `MyCore::Render2D`. Its transient draw list contains a camera,
+  optional grid, clear color, and circles. Its renderer owns the generic circle/grid shaders,
+  vertex layouts, pipelines, buffers, batching, and frame recording.
+- Add `dots_presentation` / `Dots::Presentation`. It owns read-only Dots render extraction and
+  the pure mapping from players/food plus client settings into a Render2D draw list. It has no
+  simulation ownership and never mutates `World`.
 
 ### Shaders and assets
 
-- Keep canonical HLSL shader sources under `games/dots/assets/shaders/`.
+- Keep the built-in Render2D HLSL shader sources under `engine/render_2d/assets/shaders/`.
 - Add target-appropriate host shader tools and invoke them from CMake custom commands. Use
   glslang to compile HLSL to SPIR-V on Linux, glslang plus SPIRV-Cross to produce MSL on Apple
   platforms, and DirectX Shader Compiler to produce DXIL on Windows. Shader compilation is
   part of the normal `dots_client` build, so invalid shaders fail CI.
-- Stage generated shaders under `assets/dots/shaders/` beside `dots_client`. Resolve that root
+- Stage generated shaders under `assets/mycore/render_2d/shaders/` beside `dots_client`. Resolve that root
   from the executable base directory at startup, not from the process working directory.
 - Load compiled bytes through `MyCore::Assets`; keep platform-format filename conventions,
-  shader entry points, resource counts, and other shader metadata in `Dots::Presentation`.
+  shader entry points, resource counts, and other shader metadata in `MyCore::Render2D`.
 - Do not link shader compiler libraries into the client or compile shaders at runtime.
 
 SDL_GPU requires backend-specific shader formats. The device will advertise only the format
@@ -64,23 +68,23 @@ backend. MSL uses its translated entry point while DXIL and SPIR-V use the HLSL 
 ### Frame and presentation model
 
 - Create the window hidden, create the GPU device, claim the window, select the configured
-  present mode, create Dots presentation resources, and show the window only after startup
+  present mode, create engine Render2D resources, and show the window only after startup
   succeeds.
 - Map `vsync = true` to the SDL_GPU vsync present mode. For `vsync = false`, prefer immediate,
   then mailbox, and fall back to vsync when the platform does not support either non-vsync
   mode.
 - Acquire one command list and a swapchain texture per rendered frame. Use the acquired
-  swapchain pixel dimensions for projection, high-DPI input conversion, grid placement, and
-  HUD layout. Treat a temporarily unavailable or zero-sized swapchain as a skipped frame.
+  swapchain pixel dimensions for projection and grid placement; keep high-DPI input conversion
+  aligned through window pixel dimensions. Treat an unavailable swapchain as a skipped frame.
 - Upload changing instance data before the render pass. Retain GPU buffers between frames,
   grow their capacity geometrically, and use SDL_GPU cycling so uploads do not overwrite data
   still used by an in-flight frame.
-- Use one render pass with a clear color, an analytic full-screen background/grid draw, an
-  instanced-quad signed-distance circle draw, and a screen-space HUD draw. Dots owns all three
-  pipelines and their shaders; `MyCore::Render` only records generic bindings and draws.
-- Preserve the fixed-step loop, camera interpolation, input behavior, colors, resizing, and
-  current bottom-right input-mode HUD. Implement the small HUD in Dots presentation rather
-  than introducing a general engine text system in this feature.
+- Use one render pass with a clear color, an optional analytic full-screen grid draw, and an
+  instanced-quad signed-distance circle draw. Render2D owns both pipelines and their shaders;
+  `MyCore::Render` only records generic bindings and draws.
+- Preserve the fixed-step loop, camera interpolation, input behavior, colors, and resizing.
+  Remove the temporary bottom-right glyph implementation and append the startup-only input mode
+  to the window title until Dear ImGui provides the debug overlay in Feature 07.
 
 ## Planned Implementation
 
@@ -92,7 +96,7 @@ backend. MSL uses its translated entry point while DXIL and SPIR-V use the HLSL 
   traversal.
 - Add portable host shader-tool dependencies and a CMake helper that compiles a named HLSL
   stage to the active target format with explicit inputs, outputs, and dependencies.
-- Add Dots grid, circle, and HUD shader sources and stage their generated outputs beside the
+- Add engine-owned grid and circle shader sources and stage their generated outputs beside the
   client executable without modifying the source asset directory.
 
 ### 2. Thin SDL_GPU engine layer
@@ -105,23 +109,23 @@ backend. MSL uses its translated entry point while DXIL and SPIR-V use the HLSL 
   mocks of SDL internals; test descriptor defaults, ownership traits, validation, and any pure
   format-selection helpers where those contracts are stable.
 
-### 3. Dots render extraction and presentation
+### 3. Engine Render2D and Dots presentation
 
 - Add read-only player-ID and food-ID views to `World` so presentation can enumerate live
   entities without retaining stale spawn lists or exposing storage mutation.
 - Define pure Dots render data containing world-space circle instances and the camera/view
-  values needed for a frame. Extract live players and food from `World`, validate geometry,
-  and assign game-owned colors and draw order.
+  values needed for a frame. Extract live players and food from `World` and validate geometry.
 - Unit test empty and populated extraction, player and food classification, entity removal,
   position/radius propagation, camera data, and stable separation from simulation mutation.
-- Build Dots-owned grid, circle, and HUD pipelines from compiled shader assets. Render circles
-  as instanced quads and evaluate their edges with a signed-distance fragment shader.
+- Define a generic Render2D draw list and renderer. Build engine-owned grid and circle pipelines
+  from compiled shader assets; render circles as instanced quads with signed-distance edges.
+- Map Dots frame data and settings into the generic draw list in a pure, testable function.
 
 ### 4. Client integration and cleanup
 
 - Replace `SDL_CreateRenderer`, scanline circle drawing, debug text, render scaling, and all
-  other `SDL_Renderer` helpers in `client_app.cpp` with `MyCore::Render` and
-  `Dots::Presentation` composition.
+  other `SDL_Renderer` helpers in `client_app.cpp` with `MyCore::Render`,
+  `MyCore::Render2D`, and `Dots::Presentation` composition.
 - Keep `--headless-smoke` unchanged in intent: initialize SDL video, create a hidden window,
   poll one input snapshot, and exit before GPU-device or presentation creation. The dummy
   video driver is not a GPU integration environment.
@@ -139,9 +143,9 @@ backend. MSL uses its translated entry point while DXIL and SPIR-V use the HLSL 
 - Retain the existing help and headless-smoke CTest cases. Do not add a dummy-driver GPU test
   that cannot exercise a real swapchain.
 - Manually run the client on macOS, Linux, and Windows where hardware runners are available.
-  Verify resizing, high-DPI mouse alignment, vsync selection, all input modes, the HUD, food
-  consumption/growth, clean shutdown, and asset lookup from a working directory outside the
-  repository.
+  Verify resizing, high-DPI mouse alignment, vsync selection, all input modes, the title
+  indicator, food consumption/growth, clean shutdown, and asset lookup from a working directory
+  outside the repository.
 
 ## Test Matrix
 
@@ -149,7 +153,8 @@ backend. MSL uses its translated entry point while DXIL and SPIR-V use the HLSL 
 |---|---|
 | Assets | Binary reads, empty files, missing paths, rooted resolution, and traversal rejection |
 | Render API | Move/copy traits, descriptor validation, shader-format choice, and stable pure helpers |
-| Dots extraction | Live player/food instances, removals, geometry, colors, camera/view data, and no mutation |
+| Render2D data | Defaults, value semantics, ownership traits, and engine-only dependency boundary |
+| Dots extraction | Live instances, removals, geometry, draw-list colors/grid/camera, and no mutation |
 | Shader pipeline | HLSL compilation for the preset platform and staged runtime outputs |
 | Client regression | Existing config/input tests, `--help`, and GPU-free `--headless-smoke` |
 | Dependency boundaries | Server, bot, and simulation targets build without presentation or render linkage |
@@ -160,8 +165,8 @@ video driver is suitable only for the existing platform initialization smoke tes
 ## Exit Criteria
 
 - `dots_client` contains no `SDL_Renderer` creation or temporary 2D draw path.
-- `dots_client` renders the grid, live food, local player, and input-mode HUD through
-  `Dots::Presentation` layered on `MyCore::Render` and SDL_GPU.
+- `dots_client` renders the grid, live food, and local player through engine-owned Render2D
+  layered on `MyCore::Render` and SDL_GPU; its title reports the configured input mode.
 - HLSL shaders compile during the build and load from staged assets independently of the
   current working directory.
 - Rendering remains separate from `World` ownership and Dots concepts do not enter engine
@@ -171,7 +176,7 @@ video driver is suitable only for the existing platform initialization smoke tes
 
 ## Deferred Work
 
-- Dear ImGui, GPU timing, debug overlays, and renderer observability (Feature 07).
+- Dear ImGui, GPU timing, the in-frame input-mode overlay, and renderer observability (Feature 07).
 - Generic text/font systems, texture asset formats, render graphs, scene graphs, materials,
   depth buffers, meshes, 3D cameras, and GPU-driven rendering.
 - Direct Vulkan and OpenGL comparison branches.

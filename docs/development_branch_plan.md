@@ -222,15 +222,18 @@ Changes:
 
 - Add game-neutral `MyCore::Render` thin API around SDL_GPU resource lifetime, upload, and
   command submission.
+- Add game-neutral `MyCore::Render2D` with a transient camera/grid/circle draw list and
+  engine-owned built-in shaders, pipelines, and batching.
 - Add game-neutral `MyCore::Assets` interfaces for locating and reading asset bytes;
-  keep Dots formats and asset manifests game-owned.
-- Add `Dots::Presentation` for render-data extraction, Dots shaders, circle pipelines, and
-  the background/grid pass.
-- Render instanced circles through `Dots::Presentation` and `MyCore::Render`.
+  keep game-specific formats and asset manifests game-owned.
+- Add `Dots::Presentation` for render-data extraction and pure conversion from Dots meaning to
+  a generic Render2D draw list.
+- Render instanced circles through `MyCore::Render2D` and `MyCore::Render`.
 - Keep renderer separate from simulation ownership.
-- Keep circle, food, and Dots grid concepts out of `MyCore::Render`.
-- Add minimal game-neutral shader loading through `MyCore::Assets`; keep Dots assets under
-  `games/dots/assets`.
+- Keep food and player concepts out of engine targets; circles and grids are reusable Render2D
+  primitives and remain out of the low-level `MyCore::Render` target.
+- Add minimal game-neutral shader loading through `MyCore::Assets`; stage engine built-ins
+  under `assets/mycore/render_2d`.
 
 Tests:
 
@@ -239,8 +242,8 @@ Tests:
 
 Exit criterion:
 
-- `dots_client` renders player and food circles through Dots presentation layered on the
-  game-neutral engine render API.
+- `dots_client` converts player and food state into a generic draw list rendered through the
+  engine-owned Render2D layer.
 
 ### `feature/07-debug-observability`
 
@@ -644,7 +647,7 @@ Preserve these subsystem boundaries:
 - `Dots::Protocol`: Dots wire messages and concrete protocol IDs, independent of C++ memory
   layout and transport implementation.
 - `Dots::Replication`: client-specific Dots snapshot construction.
-- `Dots::Presentation`: Dots render extraction, shaders, and pipelines.
+- `Dots::Presentation`: Dots render extraction and conversion to engine draw data.
 - `dots_server`: headless Dots authority; must not link renderer, SDL video, presentation,
   or ImGui rendering.
 - `dots_client`: Dots presentation, input mapping, prediction, reconciliation, and runtime

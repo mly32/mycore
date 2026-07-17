@@ -31,4 +31,5 @@ grid_spacing_world_units = 8.0
 background = "#101820"
 grid = "#203040"
 player = "#4CC9F0"
+player_growth = "#FFD166"
 food = "#F72585"

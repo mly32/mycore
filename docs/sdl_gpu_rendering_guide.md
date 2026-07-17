@@ -52,10 +52,28 @@ Full game engines have the same GPU concepts, but usually hide their standard im
 behind APIs such as `draw_circle`, `Sprite`, `Material`, or a visual editor. Their built-in
 shaders are still present and compiled; ordinary game code simply does not manage them.
 
-MyCore currently exposes the low-level boundary because Feature 06 establishes the SDL_GPU
-foundation. A later `Render2D` layer can own common circle, rectangle, sprite, and grid shaders
-and let games submit only visual data. Custom game shaders would then be an advanced escape
-hatch rather than a requirement for ordinary drawing.
+MyCore separates those two levels. `MyCore::Render` is the low-level SDL_GPU foundation, while
+`MyCore::Render2D` owns the built-in grid and circle implementation used by Dots. Dots submits
+camera, grid, and circle data without managing shaders, pipelines, buffers, or command lists.
+Custom game shaders remain possible as an advanced escape hatch rather than a requirement for
+ordinary drawing.
+
+## Which rendering or UI layer to use
+
+| Layer | Use it for | Do not use it for |
+|---|---|---|
+| `SDL_Renderer` | Small standalone 2D tools or prototypes that only need SDL's built-ins | MyCore's planned 3D rendering or custom GPU batching |
+| SDL_GPU | Portable low-level 2D/3D GPU access | Gameplay rules or direct calls scattered through games |
+| `MyCore::Render` | Engine-owned GPU resources, pipelines, passes, and commands | Circles, players, HUDs, or other game meaning |
+| `MyCore::Render2D` | Normal game submission of cameras, grids, and circles | Authoritative world ownership or UI layout |
+| Dear ImGui | Developer diagnostics, profiling panels, and debug controls | A polished player-facing game UI |
+| SDL_ttf | Font loading, shaping, glyph atlases, and player-facing text | General widget layout and navigation |
+| RmlUi or a similar toolkit | A future layout-heavy menu/HUD system if the games demonstrate the need | Server code or the first simple HUD |
+
+A future 3D client will use the same low-level `MyCore::Render` foundation through a small
+`Render3D` layer. It can draw the depth-tested world first, then draw player UI and Dear ImGui
+in screen coordinates with depth testing disabled. None of those presentation layers belongs
+in the authoritative simulation.
 
 ## What a shader is
 
@@ -70,12 +88,11 @@ The canonical shader source is written in HLSL. It resembles a small C-like func
 inputs, outputs, memory layout, and execution model follow GPU rules rather than normal C++
 rules.
 
-Dots has three small shader groups under `games/dots/assets/shaders/`:
+Render2D has two small shader groups under `engine/render_2d/assets/shaders/`:
 
 - `grid`: draws the background and calculates grid lines across a full-screen triangle.
 - `circle`: expands circle instances into screen-space quads and evaluates smooth circular
   edges in the fragment shader.
-- `solid`: draws the rectangles used for the input-mode HUD.
 
 Shaders only control presentation. They do not contain movement, collision, eating, or other
 gameplay rules.
@@ -179,10 +196,10 @@ The build tools are host-only vcpkg dependencies:
 
 They run while building MyCore and are not runtime dependencies of `dots_client`.
 
-Moving a built-in shader from Dots into a future engine `Render2D` layer would not remove this
-compilation step. It would only change who owns the source and hides the pipeline. Engine-owned
-compiled shaders could remain staged assets or be converted to generated C++ byte arrays and
-embedded in the executable; game-specific shaders could remain ordinary assets.
+Moving a built-in shader into the engine does not remove this compilation step. It only changes
+who owns the source and hides the pipeline. MyCore currently stages the engine-owned compiled
+shaders as assets. They could later be converted to generated C++ byte arrays and embedded in
+the executable; genuinely game-specific shaders could remain ordinary assets.
 
 ## Shader assets at runtime
 
@@ -193,18 +210,17 @@ executable:
 build/<preset>/bin/
 |-- dots_client
 `-- assets/
-    `-- dots/
-        `-- shaders/
-            |-- circle.vert.<platform-format>
-            |-- circle.frag.<platform-format>
-            |-- grid.vert.<platform-format>
-            |-- grid.frag.<platform-format>
-            |-- solid.vert.<platform-format>
-            `-- solid.frag.<platform-format>
+    `-- mycore/
+        `-- render_2d/
+            `-- shaders/
+                |-- circle.vert.<platform-format>
+                |-- circle.frag.<platform-format>
+                |-- grid.vert.<platform-format>
+                `-- grid.frag.<platform-format>
 ```
 
 They are not embedded in `dots_client`. At startup, `MyCore::PlatformSDL` finds the executable
-directory, `MyCore::Assets` reads the appropriate shader bytes, and `Dots::Presentation` asks
+directory, `MyCore::Assets` reads the appropriate shader bytes, and `MyCore::Render2D` asks
 `MyCore::Render` to create SDL_GPU shader and pipeline objects. A packaged game must therefore
 include both the executable and its `assets/` directory.
 
@@ -220,9 +236,9 @@ for MSL, SPIR-V, or DXIL, claims the SDL window, and configures the swapchain an
 
 ### Buffers and uploads
 
-A GPU buffer is GPU-visible memory. Dots uses buffers for the reusable quad and for the current
-circle and HUD instances. CPU data first enters a transfer buffer, then a copy command uploads
-it to the GPU buffer.
+A GPU buffer is GPU-visible memory. Render2D uses buffers for the reusable quad and the current
+circle instances. CPU data first enters a transfer buffer, then a copy command uploads it to
+the GPU buffer.
 
 Dynamic buffers are reused and grown only when necessary. Uploads use **cycling**, which lets
 SDL provide safe backing storage instead of overwriting data that an earlier GPU frame may
@@ -239,7 +255,7 @@ A graphics pipeline combines the state required for a particular kind of draw:
 - The output texture format.
 
 Creating this state together allows the native graphics backend to validate and prepare it
-before drawing. The grid, circles, and HUD use separate Dots-owned pipelines.
+before drawing. The grid and circles use separate engine-owned Render2D pipelines.
 
 ### Command list and render pass
 
@@ -261,7 +277,6 @@ begin pass targeting the acquired window texture
     clear it to the background color
     bind grid pipeline    -> draw grid
     bind circle pipeline  -> draw all circles
-    bind HUD pipeline     -> draw HUD rectangles
 end pass and retain the resulting image
 submit command list and present
 ```
@@ -285,12 +300,11 @@ At a high level, a rendered frame now follows this sequence:
 2. Extract live food and player circles from `World` without changing simulation state.
 3. Interpolate the camera position.
 4. Create a command list and upload current circle instances.
-5. Acquire the window's next swapchain texture and prepare the HUD instances.
+5. Acquire the window's next swapchain texture.
 6. Begin one render pass and clear the target.
 7. Bind and draw the grid pipeline.
 8. Bind the circle pipeline and issue one instanced circle draw.
-9. Bind and draw the HUD pipeline.
-10. End the pass and submit the command list for presentation.
+9. End the pass and submit the command list for presentation.
 
 ## World state versus visual state
 
@@ -305,11 +319,11 @@ Dots::World
              | read-only Dots-owned extraction
              v
 presentation snapshot / draw list
-    camera, circles, rectangles, colors
+    camera, circles, grid, colors
              |
              | engine-owned batching and drawing
              v
-MyCore::Render -> SDL_GPU
+MyCore::Render2D -> MyCore::Render -> SDL_GPU
 ```
 
 The game must still decide that a food entity should look like a pink circle. A reusable engine
@@ -321,24 +335,33 @@ The current Feature 06 ownership is:
 
 ```text
 Dots::Simulation     owns authoritative game state and rules
-Dots::Presentation   owns Dots render extraction, shaders, and pipelines
+Dots::Presentation   owns Dots extraction and conversion to generic 2D draw data
+MyCore::Render2D     owns built-in 2D shaders, pipelines, and batching
 MyCore::Render       owns game-neutral SDL_GPU lifetime and commands
 MyCore::Assets       owns game-neutral file lookup and byte loading
 MyCore::PlatformSDL  owns SDL initialization, windows, and input
 ```
 
-This is a deliberately thin baseline, not necessarily the final high-level API. A future
-`MyCore::Render2D` can move generic primitive shaders and batching below `Dots::Presentation`.
-Dots would then retain only the domain-to-visual conversion. The server and bot would continue
-to link neither presentation nor rendering code.
+The server and bot link neither presentation nor rendering code.
 
 ## Where to read the implementation
 
 - `cmake/CompileShaders.cmake`: platform shader compilation.
 - `engine/assets/`: executable-relative asset loading.
 - `engine/render/`: the small game-neutral SDL_GPU wrapper.
-- `games/dots/presentation/`: Dots extraction, resources, pipelines, and frame recording.
+- `engine/render_2d/`: built-in 2D resources, pipelines, batching, and frame recording.
+- `games/dots/presentation/`: Dots extraction and conversion to a generic 2D draw list.
 - `games/dots/apps/client/src/client_app.cpp`: composition with input and simulation.
+
+## Keeping the graphics work proportional
+
+Rendering is useful for learning and for observing the game, but it is not what makes the
+server authoritative or scalable. MyCore deliberately imports font shaping, debug UI,
+transport reliability/encryption, logging, and profiling rather than rebuilding them. The
+project-specific work remains authoritative ticks, input validation, interest management,
+snapshot selection and encoding, prediction/reconciliation, immutable replication views, and
+the staged bot load harness. Parallel scheduling should be introduced only after those tests
+identify a measured workload that benefits from it.
 
 ## Further reading
 

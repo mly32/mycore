@@ -159,6 +159,7 @@ MyCore::Math
 MyCore::Time
 MyCore::PlatformSDL
 MyCore::Render
+MyCore::Render2D
 MyCore::Assets
 MyCore::Debug
 MyCore::NetTransport
@@ -453,10 +454,12 @@ RenderPassDescription
 
 Do not design a large generic RHI before understanding the game’s real needs.
 
-Game presentation owns render-data extraction, shaders, pipelines, and passes that encode
-game meaning. `Dots::Presentation` converts Dots state into circle instances and owns its
-circle and grid shaders. A later aim-trainer presentation library will own its camera,
-meshes, target materials, and scene submission without depending on Dots.
+Game presentation owns render-data extraction and the mapping from game meaning to generic
+visual data. `MyCore::Render2D` owns reusable circle/grid shaders, pipelines, batching, and
+passes; `Dots::Presentation` converts Dots state into its transient draw list. A later small
+Render3D layer may similarly own demonstrated mesh/depth facilities while aim-trainer
+presentation owns its camera behavior, target appearance, and scene submission without
+depending on Dots.
 
 ### Initial renderer scope
 
@@ -467,12 +470,15 @@ The first engine render layer should contain only the facilities needed to suppo
 - A small shared debug-line path and Dear ImGui integration where their contracts are
   genuinely game-neutral.
 
-`Dots::Presentation` initially adds:
+`MyCore::Render2D` initially adds:
 
 - One instanced-quad pipeline for circles.
 - Signed-distance circle evaluation in the fragment shader.
 - A background or grid pass.
-- The initial text or font-atlas use needed by the game.
+
+Dear ImGui owns developer-facing text in the next observability feature. SDL_ttf or a UI
+toolkit should be adopted when player-facing text and layout become demonstrated needs rather
+than implementing glyph rasterization in a game presentation target.
 
 When the aim trainer is implemented, extend `MyCore::Render` only with demonstrated needs
 such as depth attachments, vertex/index meshes, perspective transforms, and material
@@ -482,26 +488,22 @@ resources. Do not introduce a generic scene graph or render graph merely to prep
 
 Use HLSL as the canonical shader source.
 
-Compile shaders during the asset build.
+Compile shaders during the asset build. The current portable host-tool chain is:
 
-SDL_shadercross can accept HLSL or SPIR-V and produce formats such as:
+- `glslang[tools]` for HLSL to SPIR-V on Linux and macOS.
+- `spirv-cross` for SPIR-V to MSL on macOS.
+- `directx-dxc` for HLSL to DXIL on Windows.
 
-- DXIL
-- SPIR-V
-- MSL
-
-Reference:
-
-- [SDL_shadercross README](https://github.com/libsdl-org/SDL_shadercross/blob/master/README.txt)
+These are build tools, not client runtime libraries. SDL_shadercross remains a possible future
+way to consolidate translation if its packaging makes that simpler.
 
 Suggested pipeline:
 
 ```text
-games/dots/assets/shaders/circle.hlsl
+engine/render_2d/assets/shaders/circle.vert.hlsl + circle.frag.hlsl
         ↓ asset build
-generated/shaders/dxil/circle.bin
-generated/shaders/spirv/circle.bin
-generated/shaders/msl/circle.bin
+assets/mycore/render_2d/shaders/circle.vert.<platform-format>
+assets/mycore/render_2d/shaders/circle.frag.<platform-format>
 ```
 
 Prefer offline shader compilation. Do not make runtime shader compilation a shipping requirement.
@@ -1197,6 +1199,9 @@ MyCore::Time
 MyCore::Assets
     depends on Core only; owns game-neutral asset lookup and byte loading, not game formats
 
+MyCore::Render2D
+    depends on Render + Assets + Math; owns reusable 2D draw data, shaders, and batching
+
 MyCore::Debug
     depends on Core and adopted logging/profiling libraries; owns no game-specific panels
 
@@ -1210,13 +1215,13 @@ Dots::Replication
     depends on Dots Simulation + Dots Protocol
 
 Dots::Presentation
-    depends on Dots Simulation + MyCore Render + Assets, not on server runtime code
+    depends on Dots Simulation + MyCore Render2D, not on server runtime code
 
 dots_server
     depends on Dots Simulation + Replication + MyCore NetTransport + scripting bindings
 
 dots_client
-    depends on Dots Simulation + Protocol + Presentation + MyCore PlatformSDL + Render +
+    depends on Dots Simulation + Protocol + Presentation + MyCore PlatformSDL + Render2D +
     NetTransport
 
 dots_bot
@@ -1554,7 +1559,7 @@ Codex should implement the project in the following order.
 
 1. Create the `dots_client` SDL3 application under `games/dots/apps`.
 2. Add `MyCore::PlatformSDL`, `MyCore::Assets`, and game-neutral SDL_GPU initialization.
-3. Add `MyCore::Render` plus `Dots::Presentation` and render one instanced circle.
+3. Add `MyCore::Render`, `MyCore::Render2D`, and `Dots::Presentation`; render one instanced circle.
 4. Add fixed-step simulation.
 5. Add keyboard and mouse input.
 6. Move one player circle.

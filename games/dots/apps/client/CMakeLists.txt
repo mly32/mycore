@@ -21,13 +21,11 @@ target_link_libraries(
 mycore_configure_target(dots_client_support)
 
 add_executable(dots_client main.cpp src/client_app.cpp)
-add_dependencies(dots_client dots_shader_assets)
 target_link_libraries(
     dots_client
     PRIVATE
         dots_client_support
         Dots::Presentation
-        MyCore::Assets
-        MyCore::Render
+        MyCore::Render2D
 )
 mycore_configure_executable(dots_client)

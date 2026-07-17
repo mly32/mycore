@@ -9,6 +9,7 @@
 #include "mycore/platform_sdl/runtime.hpp"
 #include "mycore/platform_sdl/window.hpp"
 #include "mycore/render/render.hpp"
+#include "mycore/render_2d/render_2d.hpp"
 #include "mycore/time/time.hpp"
 
 #include <algorithm>
@@ -71,9 +72,13 @@ void spawn_food_field(dots::simulation::World& world) {
         .background = to_render_color(config.colors.background),
         .grid = to_render_color(config.colors.grid),
         .player = to_render_color(config.colors.player),
+        .player_growth = to_render_color(config.colors.player_growth),
         .food = to_render_color(config.colors.food),
-        .input_mode = std::string{input_mode_name(config.controls.mode)},
     };
+}
+
+[[nodiscard]] std::string window_title(const ClientConfig& config) {
+    return config.window.title + " — Input: " + std::string{input_mode_name(config.controls.mode)};
 }
 
 [[nodiscard]] constexpr bool gpu_debug_mode() noexcept {
@@ -89,7 +94,7 @@ void spawn_food_field(dots::simulation::World& world) {
 int run_client(const ClientConfig& config, bool headless_smoke) {
     mycore::platform_sdl::Runtime runtime;
     mycore::platform_sdl::Window window{{
-        .title = config.window.title,
+        .title = window_title(config),
         .width = config.window.width,
         .height = config.window.height,
         .flags = window_flags(config.window),
@@ -110,9 +115,9 @@ int run_client(const ClientConfig& config, bool headless_smoke) {
         },
     };
     const mycore::assets::DirectorySource assets{
-        mycore::platform_sdl::application_base_path() / "assets" / "dots",
+        mycore::platform_sdl::application_base_path() / "assets",
     };
-    dots::presentation::Presenter presenter{device, assets};
+    mycore::render_2d::Renderer renderer{device, assets};
     const auto render_settings = presentation_settings(config);
     window.show();
 
@@ -203,7 +208,8 @@ int run_client(const ClientConfig& config, bool headless_smoke) {
                                       1.0F);
         const auto camera = previous_player_position +
                             ((current_player_position - previous_player_position) * alpha);
-        presenter.render(dots::presentation::extract_frame(world, camera), render_settings);
+        const auto frame = dots::presentation::extract_frame(world, camera);
+        renderer.render(dots::presentation::build_draw_list(frame, render_settings));
     }
 }
 

@@ -113,18 +113,20 @@ offline SDL_GPU client; the server and bot remain foundation executables for now
 ./build/macos-clang-debug/bin/dots_bot
 ```
 
-The client uses SDL_GPU through the game-neutral `MyCore::Render` layer, with Dots-owned
-presentation for the grid, instanced circles, and HUD. It selects Metal on macOS, Vulkan on
-Linux, and D3D12 on Windows. The build compiles the canonical HLSL shaders to MSL, SPIR-V, or
-DXIL using vcpkg-managed host tools, then stages them under `bin/assets/dots/` beside the
+The client uses SDL_GPU through the game-neutral `MyCore::Render` layer and the engine-owned
+`MyCore::Render2D` grid/circle renderer. Dots only extracts game state and maps food and players
+to generic draw data. The GPU backend is Metal on macOS, Vulkan on Linux, and D3D12 on Windows.
+The build compiles Render2D's canonical HLSL shaders to MSL, SPIR-V, or DXIL using
+vcpkg-managed host tools, then stages them under `bin/assets/mycore/render_2d/` beside the
 executable. No shader compiler is loaded at runtime.
 
 Hybrid input is the default: WASD or the arrow keys take precedence while held, and otherwise
 the player moves toward the mouse cursor. Mouse input stops while the cursor is inside the
-player circle, and the bottom-right HUD shows the active input mode. Press Escape or close the
-window to exit. The window is resizable and uses swapchain pixel dimensions so high-DPI
-display and mouse coordinates stay aligned. Asset lookup is relative to the executable, so
-the client can be launched from a different working directory.
+player circle, and the window title shows the active input mode. Press Escape or close the
+window to exit. The window is resizable and uses swapchain pixel dimensions so high-DPI display
+and mouse coordinates stay aligned. Asset lookup is relative to the executable, so the client
+can be launched from a different working directory. As the player consumes food, its color
+shifts from `colors.player` toward `colors.player_growth` to make growth easier to see.
 
 Run the checked-in complete configuration explicitly:
 
