@@ -45,6 +45,11 @@ void log_info(std::string_view category, fmt::format_string<Args...> format, Arg
 }
 
 template <typename... Args>
+void log_warning(std::string_view category, fmt::format_string<Args...> format, Args&&... args) {
+    log(LogLevel::Warning, category, format, std::forward<Args>(args)...);
+}
+
+template <typename... Args>
 void log_error(std::string_view category, fmt::format_string<Args...> format, Args&&... args) {
     log(LogLevel::Error, category, format, std::forward<Args>(args)...);
 }

@@ -131,11 +131,16 @@ As the player consumes food, its color shifts from `colors.player` toward
 `colors.player_growth` to make growth easier to see.
 
 A non-interactive Dear ImGui overlay in the bottom-right reports the active input mode, world
-tick, player and food counts, occupied spatial-grid cells, simulation steps, frame time, rolling
-average, and FPS. Logs use owner-qualified categories such as `dots.client`, `dots.server`, and
-`dots.bot`. The client also includes on-demand Tracy zones for its frame, simulation,
-presentation, and render-submission work; without a Tracy profiler connected, those hooks remain
-dormant.
+tick, player and food counts, occupied spatial-grid cells, frame timing, actual and target tick
+rates, simulation cost, backlog, catch-up frames, step-cap hits, deadline misses, and discarded
+time. Logs use owner-qualified categories such as `dots.client`, `dots.server`, and `dots.bot`.
+Fixed-step overload produces rate-limited warnings, escalates to an error log after ten sustained
+seconds, and reports recovery. The offline client records and discards only whole excess backlog
+after its configured catch-up cap so it remains responsive while preserving the fractional time
+used for interpolation. The local player and its following camera use that same interpolated
+position, preventing simulation-tick jitter. The client also includes on-demand Tracy zones for
+its frame, simulation, presentation, and render-submission work; without a Tracy profiler
+connected, those hooks remain dormant.
 
 Run the checked-in complete configuration explicitly:
 
@@ -152,6 +157,23 @@ bindings, fixed-step catch-up, camera scale/grid, and debug colors. Binding name
 case-insensitive and support letters, digits, arrows, Escape, Space, Enter, Tab, Backspace,
 left/right modifiers, navigation keys, and F1 through F12.
 
+The sample's `#:schema` header associates it with the checked-in
+`games/dots/config/dots-client.schema.json`. With the recommended Even Better TOML VS Code
+extension installed, the schema provides setting completion, hover descriptions, defaults, and
+early validation of types, ranges, names, and colors. The C++ loader remains authoritative for
+runtime-only checks such as conflicting key bindings. Keep the schema beside copied sample files,
+or update the header's relative path.
+
+The `[debug].presentation_mode` setting controls how the followed player is displayed:
+
+- `interpolated` is the normal smooth view.
+- `fixed` displays the latest completed simulation tick without interpolation.
+- `comparison` keeps the smooth view and draws a transparent, white outlined ghost at the
+  latest fixed-tick position.
+
+These modes change presentation only; simulation, collision, and authoritative state always use
+the same fixed-tick world data.
+
 For an initialization-only run that creates a hidden window, polls input once, and does not
 create a GPU device or enter the game loop:
 
@@ -161,7 +183,7 @@ SDL_VIDEODRIVER=dummy \
 ```
 
 To produce and verify a relocatable client archive containing the executable, platform shader
-assets, and an example configuration:
+assets, an example configuration, and its editor schema:
 
 ```bash
 cmake --build --preset macos-clang-debug --target dots_client_package

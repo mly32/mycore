@@ -261,6 +261,11 @@ Changes:
 - Add client-only `MyCore::DebugUI` for Dear ImGui lifetime and backend integration.
 - Add a Dots-owned overlay showing input mode, tick, entity counts, simulation steps, frame
   timing, and occupied spatial-grid cells.
+- Measure actual tick rate, simulation cost, retained backlog, deadline misses, cap hits, and
+  discarded time; emit rate-limited overload and recovery logs.
+- Keep the offline client responsive by explicitly recording and dropping excess whole-step
+  backlog after its catch-up cap, while preserving fractional interpolation time.
+- Present the local player and its following camera at the same interpolated position.
 - Let SDL input polling forward drained events to observers and let Render2D append a generic
   same-frame pass without making either layer ImGui-specific.
 - Add logging categories qualified by owner: Dots client/server/simulation/protocol and

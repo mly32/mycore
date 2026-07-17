@@ -1,0 +1,363 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "title": "Dots client configuration",
+  "description": "Configuration for the playable Dots SDL client. Every table and setting is optional; omitted values use the built-in defaults documented here.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "window": {
+      "description": "Window creation and presentation settings.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "description": "Window title.",
+          "type": "string",
+          "default": "Dots"
+        },
+        "width": {
+          "description": "Initial logical window width.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16384,
+          "default": 1280
+        },
+        "height": {
+          "description": "Initial logical window height.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16384,
+          "default": 720
+        },
+        "resizable": {
+          "description": "Allow the user to resize the window.",
+          "type": "boolean",
+          "default": true
+        },
+        "fullscreen": {
+          "description": "Start in desktop fullscreen mode.",
+          "type": "boolean",
+          "default": false
+        },
+        "high_dpi": {
+          "description": "Request a high-pixel-density window when the platform supports it.",
+          "type": "boolean",
+          "default": true
+        },
+        "vsync": {
+          "description": "Synchronize swapchain presentation with the display refresh.",
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "input": {
+      "description": "Input selection and mouse behavior.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "description": "Input source. Mouse follows the cursor; keyboard uses movement bindings; hybrid gives nonzero keyboard input precedence and otherwise uses the mouse. Names are case-insensitive.",
+          "type": "string",
+          "default": "hybrid",
+          "anyOf": [
+            {
+              "enum": [
+                "mouse",
+                "keyboard",
+                "hybrid"
+              ]
+            },
+            {
+              "pattern": "^(?:[mM][oO][uU][sS][eE]|[kK][eE][yY][bB][oO][aA][rR][dD]|[hH][yY][bB][rR][iI][dD])$"
+            }
+          ]
+        },
+        "mouse_dead_zone_pixels": {
+          "description": "Minimum no-movement radius around the viewport center in renderer pixels. The player's rendered radius is used when it is larger.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 3.4028234663852886e+38,
+          "default": 12.0
+        }
+      }
+    },
+    "bindings": {
+      "description": "Portable physical-key bindings. The runtime also rejects a physical key assigned to conflicting actions; that cross-array rule cannot be expressed by JSON Schema.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "up": {
+          "description": "Keys that move up.",
+          "type": "array",
+          "minItems": 1,
+          "default": [
+            "W",
+            "Up"
+          ],
+          "items": {
+            "$ref": "#/definitions/physicalKey"
+          }
+        },
+        "down": {
+          "description": "Keys that move down.",
+          "type": "array",
+          "minItems": 1,
+          "default": [
+            "S",
+            "Down"
+          ],
+          "items": {
+            "$ref": "#/definitions/physicalKey"
+          }
+        },
+        "left": {
+          "description": "Keys that move left.",
+          "type": "array",
+          "minItems": 1,
+          "default": [
+            "A",
+            "Left"
+          ],
+          "items": {
+            "$ref": "#/definitions/physicalKey"
+          }
+        },
+        "right": {
+          "description": "Keys that move right.",
+          "type": "array",
+          "minItems": 1,
+          "default": [
+            "D",
+            "Right"
+          ],
+          "items": {
+            "$ref": "#/definitions/physicalKey"
+          }
+        },
+        "quit": {
+          "description": "Keys that immediately exit the client.",
+          "type": "array",
+          "minItems": 1,
+          "default": [
+            "Escape"
+          ],
+          "items": {
+            "$ref": "#/definitions/physicalKey"
+          }
+        }
+      }
+    },
+    "simulation": {
+      "description": "Fixed-step catch-up and overload limits.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_frame_delta_ms": {
+          "description": "Maximum measured frame duration, in milliseconds, admitted to the fixed-step accumulator.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647,
+          "default": 250
+        },
+        "max_steps_per_frame": {
+          "description": "Maximum simulation ticks executed in one rendered frame before excess whole-tick backlog is discarded.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 5
+        }
+      }
+    },
+    "view": {
+      "description": "Camera scale and background grid settings.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pixels_per_world_unit": {
+          "description": "Renderer pixels used for one world-space unit.",
+          "type": "number",
+          "exclusiveMinimum": true,
+          "minimum": 0,
+          "maximum": 3.4028234663852886e+38,
+          "default": 20.0
+        },
+        "draw_grid": {
+          "description": "Draw the world-space background grid.",
+          "type": "boolean",
+          "default": true
+        },
+        "grid_spacing_world_units": {
+          "description": "Distance between background grid lines in world units.",
+          "type": "number",
+          "exclusiveMinimum": true,
+          "minimum": 0,
+          "maximum": 3.4028234663852886e+38,
+          "default": 8.0
+        }
+      }
+    },
+    "debug": {
+      "description": "Debug presentation controls. These settings do not alter fixed-tick simulation state.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "presentation_mode": {
+          "description": "Player presentation: interpolated is smooth, fixed shows the latest completed tick, and comparison overlays a fixed-tick outline on the smooth player. Names are case-insensitive.",
+          "type": "string",
+          "default": "interpolated",
+          "anyOf": [
+            {
+              "enum": [
+                "interpolated",
+                "fixed",
+                "comparison"
+              ]
+            },
+            {
+              "pattern": "^(?:[iI][nN][tT][eE][rR][pP][oO][lL][aA][tT][eE][dD]|[fF][iI][xX][eE][dD]|[cC][oO][mM][pP][aA][rR][iI][sS][oO][nN])$"
+            }
+          ]
+        }
+      }
+    },
+    "colors": {
+      "description": "Debug-render colors encoded as #RRGGBB strings.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "background": {
+          "description": "Clear color behind the world.",
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$",
+          "default": "#101820"
+        },
+        "grid": {
+          "description": "Background grid-line color.",
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$",
+          "default": "#203040"
+        },
+        "player": {
+          "description": "Player color at its spawn radius.",
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$",
+          "default": "#4CC9F0"
+        },
+        "player_growth": {
+          "description": "Color approached as the player grows by consuming food.",
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$",
+          "default": "#FFD166"
+        },
+        "food": {
+          "description": "Food-pellet color.",
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$",
+          "default": "#F72585"
+        }
+      }
+    }
+  },
+  "definitions": {
+    "physicalKey": {
+      "title": "Portable physical key name",
+      "description": "Case-insensitive physical key name. Canonical spellings are suggested; Return aliases Enter, Ctrl aliases Control, and Super aliases Gui.",
+      "type": "string",
+      "anyOf": [
+        {
+          "enum": [
+            "A",
+            "B",
+            "C",
+            "D",
+            "E",
+            "F",
+            "G",
+            "H",
+            "I",
+            "J",
+            "K",
+            "L",
+            "M",
+            "N",
+            "O",
+            "P",
+            "Q",
+            "R",
+            "S",
+            "T",
+            "U",
+            "V",
+            "W",
+            "X",
+            "Y",
+            "Z",
+            "0",
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "9",
+            "Digit0",
+            "Digit1",
+            "Digit2",
+            "Digit3",
+            "Digit4",
+            "Digit5",
+            "Digit6",
+            "Digit7",
+            "Digit8",
+            "Digit9",
+            "Up",
+            "Down",
+            "Left",
+            "Right",
+            "Escape",
+            "Space",
+            "Enter",
+            "Return",
+            "Tab",
+            "Backspace",
+            "LeftShift",
+            "RightShift",
+            "LeftControl",
+            "RightControl",
+            "LeftCtrl",
+            "RightCtrl",
+            "LeftAlt",
+            "RightAlt",
+            "LeftGui",
+            "RightGui",
+            "LeftSuper",
+            "RightSuper",
+            "Insert",
+            "Delete",
+            "Home",
+            "End",
+            "PageUp",
+            "PageDown",
+            "F1",
+            "F2",
+            "F3",
+            "F4",
+            "F5",
+            "F6",
+            "F7",
+            "F8",
+            "F9",
+            "F10",
+            "F11",
+            "F12"
+          ]
+        },
+        {
+          "pattern": "^(?:[A-Za-z0-9]|[dD][iI][gG][iI][tT][0-9]|[uU][pP]|[dD][oO][wW][nN]|[lL][eE][fF][tT]|[rR][iI][gG][hH][tT]|[eE][sS][cC][aA][pP][eE]|[sS][pP][aA][cC][eE]|[eE][nN][tT][eE][rR]|[rR][eE][tT][uU][rR][nN]|[tT][aA][bB]|[bB][aA][cC][kK][sS][pP][aA][cC][eE]|[lL][eE][fF][tT](?:[sS][hH][iI][fF][tT]|[cC][oO][nN][tT][rR][oO][lL]|[cC][tT][rR][lL]|[aA][lL][tT]|[gG][uU][iI]|[sS][uU][pP][eE][rR])|[rR][iI][gG][hH][tT](?:[sS][hH][iI][fF][tT]|[cC][oO][nN][tT][rR][oO][lL]|[cC][tT][rR][lL]|[aA][lL][tT]|[gG][uU][iI]|[sS][uU][pP][eE][rR])|[iI][nN][sS][eE][rR][tT]|[dD][eE][lL][eE][tT][eE]|[hH][oO][mM][eE]|[eE][nN][dD]|[pP][aA][gG][eE][uU][pP]|[pP][aA][gG][eE][dD][oO][wW][nN]|[fF](?:[1-9]|1[0-2]))$"
+        }
+      ]
+    }
+  }
+}

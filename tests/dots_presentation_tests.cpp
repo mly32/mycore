@@ -58,6 +58,60 @@ TEST_CASE("Dots presentation extracts an empty world", "[dots][presentation]") {
     REQUIRE(frame.circles.empty());
 }
 
+TEST_CASE("Dots presentation keeps an interpolated follow target aligned with its camera",
+          "[dots][presentation]") {
+    dots::simulation::World world;
+    const auto player = world.spawn_player({4.0F, 5.0F});
+    const auto food = world.spawn_food({8.0F, 9.0F});
+    REQUIRE(player.has_value());
+    REQUIRE(food.has_value());
+    const auto frame = dots::presentation::extract_interpolated_follow_frame(
+        world,
+        {
+            .entity_id = *player,
+            .previous_position = {0.0F, 1.0F},
+            .current_position = {4.0F, 5.0F},
+            .alpha = 0.5F,
+            .show_current_position_ghost = true,
+        });
+
+    REQUIRE(frame.circles.size() == 3);
+    REQUIRE(frame.circles[0].entity_id == *food);
+    REQUIRE(frame.circles[0].position == mycore::math::Vector2{8.0F, 9.0F});
+    REQUIRE(frame.circles[1].entity_id == *player);
+    REQUIRE(frame.circles[1].position == frame.camera);
+    REQUIRE(frame.circles[2].entity_id == *player);
+    REQUIRE(frame.circles[2].position == mycore::math::Vector2{4.0F, 5.0F});
+    REQUIRE(frame.circles[2].kind == dots::presentation::CircleKind::PositionGhost);
+
+    const auto draw_list = dots::presentation::build_draw_list(frame, {});
+    REQUIRE(draw_list.circles[2].center == frame.circles[2].position);
+    REQUIRE(draw_list.circles[2].color.alpha == 0.0F);
+    REQUIRE(draw_list.circles[2].outline_color == mycore::render::Color{1.0F, 1.0F, 1.0F, 0.9F});
+    REQUIRE(draw_list.circles[2].outline_width_pixels == 2.0F);
+
+    const auto fixed_frame =
+        dots::presentation::extract_interpolated_follow_frame(world,
+                                                              {
+                                                                  .entity_id = *player,
+                                                                  .previous_position = {0.0F, 1.0F},
+                                                                  .current_position = {4.0F, 5.0F},
+                                                                  .alpha = 1.0F,
+                                                              });
+    REQUIRE(fixed_frame.camera == mycore::math::Vector2{4.0F, 5.0F});
+    REQUIRE(fixed_frame.circles.size() == 2);
+    REQUIRE(fixed_frame.circles[1].position == fixed_frame.camera);
+
+    REQUIRE_THROWS(
+        dots::presentation::extract_interpolated_follow_frame(world,
+                                                              {
+                                                                  .entity_id = *player,
+                                                                  .previous_position = {},
+                                                                  .current_position = {},
+                                                                  .alpha = 1.5F,
+                                                              }));
+}
+
 TEST_CASE("Dots presentation maps game meaning to a Render2D draw list", "[dots][presentation]") {
     const dots::presentation::FrameData frame{
         .camera = {4.0F, -7.0F},

@@ -252,6 +252,22 @@ InputMode parse_input_mode(std::string_view value,
     fail(source, field, "expected mouse, keyboard, or hybrid");
 }
 
+PresentationMode parse_presentation_mode(std::string_view value,
+                                         const std::filesystem::path& source,
+                                         std::string_view field) {
+    const auto normalized = uppercase(value);
+    if (normalized == "INTERPOLATED") {
+        return PresentationMode::Interpolated;
+    }
+    if (normalized == "FIXED") {
+        return PresentationMode::Fixed;
+    }
+    if (normalized == "COMPARISON") {
+        return PresentationMode::Comparison;
+    }
+    fail(source, field, "expected interpolated, fixed, or comparison");
+}
+
 void validate_binding_conflicts(const ClientConfig& config, const std::filesystem::path& source) {
     struct BindingView {
         std::string_view name;
@@ -412,6 +428,18 @@ void parse_view(const toml::table& table,
     }
 }
 
+void parse_debug(const toml::table& table,
+                 ClientConfig& config,
+                 const std::filesystem::path& source) {
+    validate_keys(table, {"presentation_mode"}, source, "debug");
+    if (table.contains("presentation_mode")) {
+        config.debug.presentation_mode = parse_presentation_mode(
+            read_string(table, "presentation_mode", source, "debug.presentation_mode"),
+            source,
+            "debug.presentation_mode");
+    }
+}
+
 void parse_colors(const toml::table& table,
                   ClientConfig& config,
                   const std::filesystem::path& source) {
@@ -474,7 +502,7 @@ ClientConfig parse_client_config(std::string_view toml_text, const std::filesyst
     }
 
     validate_keys(
-        root, {"window", "input", "bindings", "simulation", "view", "colors"}, source, "");
+        root, {"window", "input", "bindings", "simulation", "view", "debug", "colors"}, source, "");
     auto config = default_client_config();
     if (const auto* table = optional_table(root, "window", source)) {
         parse_window(*table, config, source);
@@ -490,6 +518,9 @@ ClientConfig parse_client_config(std::string_view toml_text, const std::filesyst
     }
     if (const auto* table = optional_table(root, "view", source)) {
         parse_view(*table, config, source);
+    }
+    if (const auto* table = optional_table(root, "debug", source)) {
+        parse_debug(*table, config, source);
     }
     if (const auto* table = optional_table(root, "colors", source)) {
         parse_colors(*table, config, source);

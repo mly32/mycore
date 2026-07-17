@@ -1396,6 +1396,13 @@ game owns the contents of its panels and passes them through the client composit
 Headless processes may use `MyCore::Debug` logging, metrics, and Tracy hooks without linking
 Dear ImGui or SDL video.
 
+Fixed-step observability must distinguish per-render-frame step count from actual tick rate.
+Record simulation cost per step, retained backlog, catch-up frames, cap hits, deadline misses,
+and discarded time. Rate-limit overload logs and report recovery instead of logging every slow
+frame. An offline client may explicitly discard measured excess whole-step backlog to preserve
+responsiveness; an authoritative server must not silently discard simulation ticks and instead
+uses overload reporting, bounded catch-up, and load shedding.
+
 Reference:
 
 - [Dear ImGui README](https://github.com/ocornut/imgui/blob/master/docs/README.md)

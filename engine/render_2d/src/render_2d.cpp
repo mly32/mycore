@@ -38,11 +38,15 @@ struct CircleGpuInstance {
     float center_x;
     float center_y;
     float radius;
-    float padding;
+    float outline_width_pixels;
     float red;
     float green;
     float blue;
     float alpha;
+    float outline_red;
+    float outline_green;
+    float outline_blue;
+    float outline_alpha;
 };
 
 struct alignas(16) GridUniforms {
@@ -57,7 +61,7 @@ struct alignas(16) CircleViewUniforms {
     std::array<float, 4> output_height_and_scale;
 };
 
-static_assert(sizeof(CircleGpuInstance) == 32);
+static_assert(sizeof(CircleGpuInstance) == 48);
 static_assert(sizeof(GridUniforms) == 64);
 static_assert(sizeof(CircleViewUniforms) == 32);
 
@@ -85,9 +89,12 @@ void validate(const DrawList& draw_list) {
     }
     for (const auto& circle : draw_list.circles) {
         if (!std::isfinite(circle.center.x) || !std::isfinite(circle.center.y) ||
-            !std::isfinite(circle.radius) || circle.radius <= 0.0F || !finite(circle.color)) {
+            !std::isfinite(circle.radius) || circle.radius <= 0.0F || !finite(circle.color) ||
+            !finite(circle.outline_color) || !std::isfinite(circle.outline_width_pixels) ||
+            circle.outline_width_pixels < 0.0F) {
             throw render::Error{
-                "Render2D circle geometry and color must be finite with a positive radius"};
+                "Render2D circle geometry, fill, and outline must be finite with a positive "
+                "radius and non-negative outline width"};
         }
     }
 }
@@ -165,6 +172,18 @@ create_circle_pipeline(render::Device& device, const Shader& vertex, const Shade
             .format = render::VertexFormat::Float4,
             .offset = offsetof(CircleGpuInstance, red),
         },
+        render::VertexAttribute{
+            .location = 4,
+            .buffer_slot = 1,
+            .format = render::VertexFormat::Float4,
+            .offset = offsetof(CircleGpuInstance, outline_red),
+        },
+        render::VertexAttribute{
+            .location = 5,
+            .buffer_slot = 1,
+            .format = render::VertexFormat::Float,
+            .offset = offsetof(CircleGpuInstance, outline_width_pixels),
+        },
     };
     return device.create_graphics_pipeline({
         .vertex_shader = &vertex,
@@ -217,15 +236,21 @@ public:
         std::vector<CircleGpuInstance> circles;
         circles.reserve(draw_list.circles.size());
         for (const auto& circle : draw_list.circles) {
+            const auto outline =
+                circle.outline_width_pixels > 0.0F ? circle.outline_color : circle.color;
             circles.push_back({
                 .center_x = circle.center.x,
                 .center_y = circle.center.y,
                 .radius = circle.radius,
-                .padding = 0.0F,
+                .outline_width_pixels = circle.outline_width_pixels,
                 .red = circle.color.red,
                 .green = circle.color.green,
                 .blue = circle.color.blue,
                 .alpha = circle.color.alpha,
+                .outline_red = outline.red,
+                .outline_green = outline.green,
+                .outline_blue = outline.blue,
+                .outline_alpha = outline.alpha,
             });
         }
 

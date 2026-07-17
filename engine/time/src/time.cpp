@@ -55,7 +55,19 @@ FixedStepResult FixedStepAccumulator::advance(Duration elapsed, std::size_t maxi
         static_cast<std::size_t>(std::min(available_steps, static_cast<std::uint64_t>(size_max)));
     const auto steps = std::min(bounded_available, maximum_steps);
     accumulated_ -= step_duration_ * static_cast<Duration::rep>(steps);
-    return {.steps = steps, .remainder = accumulated_};
+    return {
+        .steps = steps,
+        .pending_steps = bounded_available - steps,
+        .accumulated_time = accumulated_,
+        .step_limit_reached = bounded_available > maximum_steps,
+    };
+}
+
+Duration FixedStepAccumulator::discard_pending_steps() noexcept {
+    const auto pending_steps = accumulated_ / step_duration_;
+    const auto discarded = step_duration_ * pending_steps;
+    accumulated_ -= discarded;
+    return discarded;
 }
 
 } // namespace mycore::time

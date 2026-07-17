@@ -42,6 +42,12 @@ if(NOT EXISTS "${package_executable}")
     message(FATAL_ERROR "Packaged executable is missing: ${package_executable}")
 endif()
 
+foreach(config_file IN ITEMS dots-client.example.toml dots-client.schema.json)
+    if(NOT EXISTS "${package_resource_root}/${config_file}")
+        message(FATAL_ERROR "Packaged configuration resource is missing: ${config_file}")
+    endif()
+endforeach()
+
 set(package_shader_directory "${package_resource_root}/assets/mycore/render_2d/shaders")
 set(
     expected_shader_names

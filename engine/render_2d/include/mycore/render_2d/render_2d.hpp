@@ -22,6 +22,8 @@ struct Circle {
     math::Vector2 center;
     float radius{};
     render::Color color;
+    render::Color outline_color;
+    float outline_width_pixels{};
 
     auto operator<=>(const Circle&) const = default;
 };

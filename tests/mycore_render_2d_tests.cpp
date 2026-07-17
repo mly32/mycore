@@ -16,6 +16,8 @@ TEST_CASE("Render2D draw lists are ordinary client-owned data", "[render_2d]") {
             .center = {-2.0F, 5.0F},
             .radius = 1.25F,
             .color = {0.8F, 0.1F, 0.4F, 1.0F},
+            .outline_color = {1.0F, 1.0F, 1.0F, 0.8F},
+            .outline_width_pixels = 2.0F,
         }},
     };
 

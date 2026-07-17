@@ -34,6 +34,7 @@ Controls:
 Configuration:
   Without --config, dots-client.toml in the current directory is loaded when present.
   Otherwise the built-in defaults are used.
+  debug.presentation_mode selects interpolated, fixed, or comparison presentation.
 )";
 
 class CliError : public std::runtime_error {

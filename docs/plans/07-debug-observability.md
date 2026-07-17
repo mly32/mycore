@@ -43,14 +43,46 @@ dots_server / dots_bot
 5. Add move-disabled `MyCore::DebugUI` RAII ownership of the Dear ImGui context and official
    SDL3/SDL_GPU backends. It owns no Dots panels.
 6. Add a compact, non-interactive Dots overlay in the bottom-right showing input mode, world
-   tick, player/food counts, occupied spatial-grid cells, simulation steps, frame time, rolling
-   average, and FPS. Replace the temporary input-mode window-title suffix.
+   tick, player/food counts, occupied spatial-grid cells, frame timing, actual/target tick rate,
+   simulation cost, backlog, catch-up/cap/deadline counters, and discarded time. Replace the
+   temporary input-mode window-title suffix.
 7. Add useful CPU zones around the client frame, simulation stepping, presentation extraction,
    and render submission. Use on-demand Tracy so disconnected profiling has minimal overhead.
+8. Report fixed-step cap hits and deadline misses with rate-limited warnings, escalate sustained
+   overload, and record recovery. Let the offline client discard whole excess backlog only after
+   measuring it so a hitch cannot create an unbounded catch-up spiral.
+9. Apply the same interpolated position to the local player and its following camera so the
+   player remains centered instead of oscillating between fixed simulation ticks.
+
+### Local-player jitter fix
+
+The original fixed-step client interpolated its following camera between the player's previous
+and current simulation positions, but presentation still drew the player at the newest discrete
+world position. After each 30 Hz tick, the player therefore jumped ahead of the camera and then
+appeared to slide back toward the center while the camera caught up. Static food and the grid
+remained sharp, which made the mismatch look like player or input jitter.
+
+`extract_interpolated_follow_frame()` now wraps the presentation rule: it calculates one
+interpolated sample and applies it to both the followed entity and camera through a transient
+position override. This keeps the player centered while the world moves smoothly around it.
+Simulation state remains fixed-step and unchanged; only the rendered frame is interpolated.
+Future moving entities should likewise interpolate their presentation transforms rather than
+mixing current simulation state with an interpolated camera.
+
+The client exposes this distinction through `[debug].presentation_mode`: `interpolated` renders
+the normal smooth view, `fixed` renders the latest completed simulation tick, and `comparison`
+adds a transparent outlined ghost at that fixed-tick position over the interpolated view.
+Render2D supplies the reusable independent fill/outline circle style; the choice of which Dots
+position is the comparison truth remains game-owned presentation logic.
+
+Switching `kTickRateHz` from 30 to 5 makes the issue very apparent.
 
 ## Tests
 
-- Rolling metrics defaults, averages, extrema, capacity eviction, reset, and invalid samples.
+- Rolling frame and fixed-step metrics defaults, rates, timing, backlog, overload counters,
+  reset, and invalid samples.
+- Fixed-step capped backlog reporting and explicit whole-step discard behavior.
+- Dots presentation applies interpolated entity-position overrides without moving static food.
 - SDL event observers receive drained events without changing quit/window-close behavior.
 - Existing Render, Render2D, Dots presentation, client input/configuration, and package smoke
   tests continue to pass.

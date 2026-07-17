@@ -1,5 +1,17 @@
 find_package(tomlplusplus CONFIG REQUIRED)
 
+set(
+    dots_client_config_schema
+    "${CMAKE_SOURCE_DIR}/games/dots/config/dots-client.schema.json"
+)
+# Parse the checked-in schema during every configure so a malformed edit fails before packaging.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${dots_client_config_schema}")
+file(READ "${dots_client_config_schema}" dots_client_config_schema_json)
+string(JSON dots_client_config_schema_type TYPE "${dots_client_config_schema_json}")
+if(NOT dots_client_config_schema_type STREQUAL "OBJECT")
+    message(FATAL_ERROR "Dots client configuration schema must contain a JSON object")
+endif()
+
 add_library(
     dots_client_support STATIC
     src/client_config.cpp
@@ -95,5 +107,10 @@ install(
     FILES "${CMAKE_SOURCE_DIR}/games/dots/config/dots-client.toml"
     DESTINATION "${dots_client_install_resource_directory}"
     RENAME dots-client.example.toml
+    COMPONENT DotsClient
+)
+install(
+    FILES "${dots_client_config_schema}"
+    DESTINATION "${dots_client_install_resource_directory}"
     COMPONENT DotsClient
 )
