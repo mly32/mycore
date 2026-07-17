@@ -52,6 +52,8 @@ sudo apt-get install --yes \
     build-essential clang cmake ninja-build pkg-config \
     autoconf autoconf-archive automake libtool libltdl-dev \
     libx11-dev libxft-dev libxext-dev \
+    libxcursor-dev libxfixes-dev libxi-dev libxrandr-dev \
+    libxss-dev libxtst-dev \
     libwayland-dev libxkbcommon-dev libegl1-mesa-dev \
     libibus-1.0-dev
 ```
