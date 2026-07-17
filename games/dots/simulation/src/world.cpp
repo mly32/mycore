@@ -134,6 +134,10 @@ std::size_t World::food_count() const noexcept {
     return food_entity_ids_.size();
 }
 
+std::size_t World::occupied_spatial_cell_count() const noexcept {
+    return spatial_grid_.occupied_cell_count();
+}
+
 std::span<const EntityId> World::player_ids() const noexcept {
     return entity_ids_;
 }

@@ -6,9 +6,17 @@
 #include <cstddef>
 #include <initializer_list>
 
+union SDL_Event;
+
 namespace mycore::platform_sdl {
 
 struct InputSnapshot;
+
+class EventObserver {
+public:
+    virtual ~EventObserver() = default;
+    virtual void process_event(const SDL_Event& event) = 0;
+};
 
 enum class Key {
     A,
@@ -102,7 +110,7 @@ public:
     [[nodiscard]] bool pressed(Key key) const noexcept;
 
 private:
-    friend InputSnapshot poll_input(Window& window);
+    friend InputSnapshot poll_input(Window& window, EventObserver* observer);
     void set_pressed(Key key, bool pressed) noexcept;
 
     std::array<bool, static_cast<std::size_t>(Key::Count)> pressed_{};
@@ -118,7 +126,7 @@ public:
     [[nodiscard]] bool pressed(MouseButton button) const noexcept;
 
 private:
-    friend InputSnapshot poll_input(Window& window);
+    friend InputSnapshot poll_input(Window& window, EventObserver* observer);
     void set_pressed(MouseButton button, bool pressed) noexcept;
 
     float x_{};
@@ -132,6 +140,6 @@ struct InputSnapshot {
     bool quit_requested{};
 };
 
-[[nodiscard]] InputSnapshot poll_input(Window& window);
+[[nodiscard]] InputSnapshot poll_input(Window& window, EventObserver* observer = nullptr);
 
 } // namespace mycore::platform_sdl

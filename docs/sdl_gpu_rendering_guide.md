@@ -138,12 +138,14 @@ The CPU uploads one reusable quad made from two triangles. For every live food o
 entity, it also uploads a compact instance containing approximately:
 
 ```text
-world center + radius + color
+world center + radius + fill color + optional outline style
 ```
 
 An instanced draw tells the GPU to reuse the quad once for every circle instance. The vertex
 shader moves and scales each copy around its world-space center. The fragment shader receives
-coordinates within the quad and makes pixels outside the circle transparent.
+coordinates within the quad, makes pixels outside the circle transparent, and can independently
+shade a pixel-width outline. That same batched primitive supports solid gameplay circles and the
+transparent comparison ghost used by Dots debugging.
 
 ```text
 one six-vertex quad + 273 circle instances
@@ -318,7 +320,7 @@ At a high level, a rendered frame now follows this sequence:
 
 1. Poll input and advance zero or more fixed simulation steps on the CPU.
 2. Extract live food and player circles from `World` without changing simulation state.
-3. Interpolate the camera position.
+3. Select fixed or interpolated presentation and keep the followed player aligned with its camera.
 4. Create a command list and upload current circle instances.
 5. Acquire the window's next swapchain texture.
 6. Begin one render pass and clear the target.

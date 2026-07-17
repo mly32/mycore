@@ -8,12 +8,16 @@ struct VertexInput {
     float2 center : TEXCOORD1;
     float radius : TEXCOORD2;
     float4 color : TEXCOORD3;
+    float4 outline_color : TEXCOORD4;
+    float outline_width_pixels : TEXCOORD5;
 };
 
 struct VertexOutput {
     float4 position : SV_Position;
     float2 circle_coordinate : TEXCOORD0;
     float4 color : TEXCOORD1;
+    float4 outline_color : TEXCOORD2;
+    float inner_radius_squared : TEXCOORD3;
 };
 
 VertexOutput main(VertexInput input) {
@@ -32,5 +36,10 @@ VertexOutput main(VertexInput input) {
         1.0);
     output.circle_coordinate = input.corner;
     output.color = input.color;
+    output.outline_color = input.outline_color;
+    const float radius_pixels = max(input.radius * pixels_per_world_unit, 0.0001);
+    const float normalized_outline = saturate(input.outline_width_pixels / radius_pixels);
+    const float inner_radius = 1.0 - normalized_outline;
+    output.inner_radius_squared = inner_radius * inner_radius;
     return output;
 }

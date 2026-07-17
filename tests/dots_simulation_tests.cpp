@@ -18,6 +18,7 @@ TEST_CASE("World spawns and removes players", "[dots][simulation]") {
 
     REQUIRE(first != second);
     REQUIRE(world.player_count() == 2);
+    REQUIRE(world.occupied_spatial_cell_count() > 0);
     REQUIRE(world.contains(first));
     REQUIRE(world.position(first) == mycore::math::Vector2{1.0F, 2.0F});
 

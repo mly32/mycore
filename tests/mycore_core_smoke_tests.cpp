@@ -72,20 +72,31 @@ TEST_CASE("Ticks support arithmetic and duration conversion", "[time][tick]") {
     REQUIRE(mycore::time::ticks_to_duration(TickDelta{3}, 20ms) == 60ms);
 }
 
-TEST_CASE("Fixed-step accumulation retains remainder and capped backlog", "[time][fixed-step]") {
+TEST_CASE("Fixed-step accumulation reports and can discard capped backlog", "[time][fixed-step]") {
     using namespace std::chrono_literals;
 
     mycore::time::FixedStepAccumulator accumulator{10ms};
 
     const auto partial = accumulator.advance(25ms, 8);
     REQUIRE(partial.steps == 2);
-    REQUIRE(partial.remainder == 5ms);
+    REQUIRE(partial.pending_steps == 0);
+    REQUIRE(partial.accumulated_time == 5ms);
+    REQUIRE_FALSE(partial.step_limit_reached);
 
     const auto capped = accumulator.advance(50ms, 3);
     REQUIRE(capped.steps == 3);
-    REQUIRE(capped.remainder == 25ms);
+    REQUIRE(capped.pending_steps == 2);
+    REQUIRE(capped.accumulated_time == 25ms);
+    REQUIRE(capped.step_limit_reached);
 
     const auto catch_up = accumulator.advance(0ms, 8);
     REQUIRE(catch_up.steps == 2);
-    REQUIRE(catch_up.remainder == 5ms);
+    REQUIRE(catch_up.pending_steps == 0);
+    REQUIRE(catch_up.accumulated_time == 5ms);
+    REQUIRE_FALSE(catch_up.step_limit_reached);
+
+    const auto discarded = accumulator.advance(50ms, 3);
+    REQUIRE(discarded.step_limit_reached);
+    REQUIRE(accumulator.discard_pending_steps() == 20ms);
+    REQUIRE(accumulator.accumulated_time() == 5ms);
 }

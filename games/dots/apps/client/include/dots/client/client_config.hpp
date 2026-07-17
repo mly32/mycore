@@ -12,12 +12,32 @@
 
 namespace dots::client {
 
+enum class PresentationMode {
+    Interpolated,
+    Fixed,
+    Comparison,
+};
+
+[[nodiscard]] constexpr std::string_view presentation_mode_name(PresentationMode mode) noexcept {
+    switch (mode) {
+    case PresentationMode::Interpolated:
+        return "INTERPOLATED";
+    case PresentationMode::Fixed:
+        return "FIXED";
+    case PresentationMode::Comparison:
+        return "COMPARISON";
+    }
+    return "UNKNOWN";
+}
+
 class StartupError : public std::runtime_error {
 public:
     explicit StartupError(std::string message);
     StartupError(const std::filesystem::path& file, std::string_view field, std::string detail);
 };
 
+// Keep games/dots/config/dots-client.schema.json synchronized with these settings and with
+// client_config.cpp whenever accepted fields, types, defaults, or validation rules change.
 struct WindowSettings {
     std::string title{"Dots"};
     int width{1280};
@@ -37,6 +57,10 @@ struct ViewSettings {
     float pixels_per_world_unit{20.0F};
     bool draw_grid{true};
     float grid_spacing_world_units{8.0F};
+};
+
+struct DebugSettings {
+    PresentationMode presentation_mode{PresentationMode::Interpolated};
 };
 
 struct RgbColor {
@@ -60,6 +84,7 @@ struct ClientConfig {
     ClientControls controls;
     SimulationSettings simulation;
     ViewSettings view;
+    DebugSettings debug;
     ColorSettings colors;
 };
 

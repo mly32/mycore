@@ -281,6 +281,10 @@ void RenderPass::end() noexcept {
     }
 }
 
+SDL_GPURenderPass* RenderPass::native_handle() const noexcept {
+    return render_pass_;
+}
+
 CommandList::CommandList(Device& device, SDL_GPUCommandBuffer* commands) noexcept
     : device_(&device),
       commands_(commands) {}
@@ -363,7 +367,9 @@ SwapchainTarget CommandList::acquire_swapchain() {
     return SwapchainTarget{*this, texture, width, height};
 }
 
-RenderPass CommandList::begin_render_pass(const SwapchainTarget& target, Color clear_color) {
+RenderPass CommandList::begin_render_pass(const SwapchainTarget& target,
+                                          Color clear_color,
+                                          RenderPassLoadOperation load_operation) {
     if (commands_ == nullptr || target.commands_ != this || target.texture_ == nullptr) {
         throw Error{"Cannot begin a render pass with an invalid swapchain target"};
     }
@@ -375,7 +381,8 @@ RenderPass CommandList::begin_render_pass(const SwapchainTarget& target, Color c
         .mip_level = 0,
         .layer_or_depth_plane = 0,
         .clear_color = {clear_color.red, clear_color.green, clear_color.blue, clear_color.alpha},
-        .load_op = SDL_GPU_LOADOP_CLEAR,
+        .load_op = load_operation == RenderPassLoadOperation::Clear ? SDL_GPU_LOADOP_CLEAR
+                                                                    : SDL_GPU_LOADOP_LOAD,
         .store_op = SDL_GPU_STOREOP_STORE,
         .resolve_texture = nullptr,
         .resolve_mip_level = 0,
@@ -391,6 +398,10 @@ RenderPass CommandList::begin_render_pass(const SwapchainTarget& target, Color c
     }
     render_pass_active_ = true;
     return RenderPass{*this, render_pass};
+}
+
+SDL_GPUCommandBuffer* CommandList::native_handle() const noexcept {
+    return commands_;
 }
 
 void CommandList::push_vertex_uniform(std::uint32_t slot, std::span<const std::byte> bytes) {
@@ -485,6 +496,10 @@ PresentMode Device::present_mode() const noexcept {
 std::string_view Device::driver_name() const noexcept {
     const auto* name = SDL_GetGPUDeviceDriver(device_);
     return name == nullptr ? std::string_view{} : std::string_view{name};
+}
+
+SDL_GPUDevice* Device::native_handle() const noexcept {
+    return device_;
 }
 
 Buffer Device::create_buffer(const BufferDescription& description) {

@@ -1,5 +1,6 @@
 #include "dots/client/client_app.hpp"
 #include "dots/client/client_config.hpp"
+#include "mycore/debug/log.hpp"
 
 #include <filesystem>
 #include <iostream>
@@ -33,6 +34,7 @@ Controls:
 Configuration:
   Without --config, dots-client.toml in the current directory is loaded when present.
   Otherwise the built-in defaults are used.
+  debug.presentation_mode selects interpolated, fixed, or comparison presentation.
 )";
 
 class CliError : public std::runtime_error {
@@ -88,6 +90,7 @@ CliOptions parse_arguments(int argc, char** argv) {
 } // namespace
 
 int main(int argc, char** argv) {
+    const mycore::debug::Runtime logging;
     try {
         const auto options = parse_arguments(argc, argv);
         if (options.help) {
@@ -103,8 +106,10 @@ int main(int argc, char** argv) {
         }
         return dots::client::run_client(config, mode);
     } catch (const CliError& error) {
+        mycore::debug::log_error("dots.client", "{}", error.what());
         std::cerr << "dots_client: " << error.what() << "\n\n" << kHelp;
     } catch (const std::exception& error) {
+        mycore::debug::log_error("dots.client", "{}", error.what());
         std::cerr << "dots_client: " << error.what() << '\n';
     }
     return 1;

@@ -59,10 +59,13 @@ private:
 [[nodiscard]] TickDelta duration_to_ticks(Duration duration, Duration tick_duration);
 [[nodiscard]] Duration ticks_to_duration(TickDelta ticks, Duration tick_duration);
 
-// The steps produced by an accumulator advance and its unconsumed time.
+// The work selected by one accumulator advance. accumulated_time may contain whole pending
+// steps when the caller's step limit prevents complete catch-up.
 struct FixedStepResult {
     std::size_t steps{};
-    Duration remainder{};
+    std::size_t pending_steps{};
+    Duration accumulated_time{};
+    bool step_limit_reached{};
 };
 
 // Converts elapsed time into fixed steps while retaining unconsumed time.
@@ -71,10 +74,11 @@ public:
     explicit FixedStepAccumulator(Duration step_duration);
 
     [[nodiscard]] FixedStepResult advance(Duration elapsed, std::size_t maximum_steps);
+    [[nodiscard]] Duration discard_pending_steps() noexcept;
     [[nodiscard]] Duration step_duration() const noexcept {
         return step_duration_;
     }
-    [[nodiscard]] Duration remainder() const noexcept {
+    [[nodiscard]] Duration accumulated_time() const noexcept {
         return accumulated_;
     }
 

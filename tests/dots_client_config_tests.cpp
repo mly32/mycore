@@ -68,9 +68,18 @@ TEST_CASE("Client configuration defaults match the playable client", "[dots][cli
     REQUIRE(config.simulation.max_steps_per_frame == 5);
     REQUIRE(config.view.pixels_per_world_unit == 20.0F);
     REQUIRE(config.view.draw_grid);
+    REQUIRE(config.debug.presentation_mode == dots::client::PresentationMode::Interpolated);
     REQUIRE(config.colors.player == dots::client::RgbColor{0x4C, 0xC9, 0xF0});
     REQUIRE(config.colors.player_growth == dots::client::RgbColor{0xFF, 0xD1, 0x66});
     REQUIRE(config.colors.food == dots::client::RgbColor{0xF7, 0x25, 0x85});
+}
+
+TEST_CASE("Presentation modes have display labels", "[dots][client][config]") {
+    REQUIRE(dots::client::presentation_mode_name(dots::client::PresentationMode::Interpolated) ==
+            "INTERPOLATED");
+    REQUIRE(dots::client::presentation_mode_name(dots::client::PresentationMode::Fixed) == "FIXED");
+    REQUIRE(dots::client::presentation_mode_name(dots::client::PresentationMode::Comparison) ==
+            "COMPARISON");
 }
 
 TEST_CASE("Client configuration accepts complete TOML", "[dots][client][config]") {
@@ -104,6 +113,9 @@ pixels_per_world_unit = 32.0
 draw_grid = false
 grid_spacing_world_units = 4.0
 
+[debug]
+presentation_mode = "comparison"
+
 [colors]
 background = "#010203"
 grid = "#a0B1c2"
@@ -128,6 +140,7 @@ food = "#FEDCBA"
     REQUIRE(config.view.pixels_per_world_unit == 32.0F);
     REQUIRE_FALSE(config.view.draw_grid);
     REQUIRE(config.view.grid_spacing_world_units == 4.0F);
+    REQUIRE(config.debug.presentation_mode == dots::client::PresentationMode::Comparison);
     REQUIRE(config.colors.background == dots::client::RgbColor{0x01, 0x02, 0x03});
     REQUIRE(config.colors.grid == dots::client::RgbColor{0xA0, 0xB1, 0xC2});
     REQUIRE(config.colors.player == dots::client::RgbColor{0x11, 0x22, 0x33});
@@ -144,6 +157,9 @@ width = 900
 [input]
 mode = "HyBrId"
 
+[debug]
+presentation_mode = "FiXeD"
+
 [bindings]
 up = ["w"]
 down = ["s"]
@@ -157,6 +173,7 @@ quit = ["eScApE"]
     REQUIRE(config.window.height == 720);
     REQUIRE(config.window.title == "Dots");
     REQUIRE(config.controls.mode == dots::client::InputMode::Hybrid);
+    REQUIRE(config.debug.presentation_mode == dots::client::PresentationMode::Fixed);
     REQUIRE(config.controls.bindings.up == std::vector{mycore::platform_sdl::Key::W});
     REQUIRE(config.controls.bindings.quit == std::vector{mycore::platform_sdl::Key::Escape});
     REQUIRE(config.colors.background == dots::client::RgbColor{0x10, 0x18, 0x20});
@@ -235,6 +252,8 @@ TEST_CASE("Invalid client TOML reports the source and field", "[dots][client][co
         InvalidDocument{"[simulation]\nmax_steps_per_frame = 0", "simulation.max_steps_per_frame"},
         InvalidDocument{"[view]\npixels_per_world_unit = 0", "view.pixels_per_world_unit"},
         InvalidDocument{"[view]\ngrid_spacing_world_units = -2", "view.grid_spacing_world_units"},
+        InvalidDocument{"[debug]\npresentation_mode = \"predicted\"", "debug.presentation_mode"},
+        InvalidDocument{"[debug]\nghost = true", "debug.ghost"},
         InvalidDocument{"[colors]\nplayer = \"#12345Z\"", "colors.player"},
         InvalidDocument{"[colors]\nplayer_growth = \"gold\"", "colors.player_growth"},
     };

@@ -3,6 +3,7 @@
     "ms-vscode.cmake-tools",
     "ms-vscode.cpptools",
     "llvm-vs-code-extensions.vscode-clangd",
-    "vadimcn.vscode-lldb"
+    "vadimcn.vscode-lldb",
+    "tamasfe.even-better-toml"
   ]
 }

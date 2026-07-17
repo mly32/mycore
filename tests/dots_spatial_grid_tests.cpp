@@ -14,6 +14,7 @@ TEST_CASE("Spatial grid tracks insertion, movement, removal, and broad-phase que
     REQUIRE(grid.insert(first, {.center = {2.0F, 2.0F}, .radius = 1.0F}));
     REQUIRE(grid.insert(second, {.center = {12.0F, 2.0F}, .radius = 3.0F}));
     REQUIRE(grid.entity_count() == 2);
+    REQUIRE(grid.occupied_cell_count() == 4);
 
     auto candidates = grid.query({.center = {8.0F, 2.0F}, .radius = 1.0F});
     REQUIRE(std::find(candidates.begin(), candidates.end(), first) != candidates.end());
@@ -28,6 +29,7 @@ TEST_CASE("Spatial grid tracks insertion, movement, removal, and broad-phase que
     REQUIRE(grid.remove(first));
     REQUIRE_FALSE(grid.contains(first));
     REQUIRE(grid.entity_count() == 1);
+    REQUIRE(grid.occupied_cell_count() == 4);
     REQUIRE_FALSE(grid.remove(first));
 }
 

@@ -1,3 +1,5 @@
+#:schema ./dots-client.schema.json
+
 [window]
 title = "Dots"
 width = 1280
@@ -26,6 +28,9 @@ max_steps_per_frame = 5
 pixels_per_world_unit = 20.0
 draw_grid = true
 grid_spacing_world_units = 8.0
+
+[debug]
+presentation_mode = "comparison"
 
 [colors]
 background = "#101820"

@@ -14,6 +14,16 @@ mycore_configure_executable(mycore_core_smoke_tests)
 include(Catch)
 catch_discover_tests(mycore_core_smoke_tests)
 
+add_executable(mycore_debug_tests mycore_debug_tests.cpp)
+target_link_libraries(
+    mycore_debug_tests
+    PRIVATE
+        MyCore::Debug
+        Catch2::Catch2WithMain
+)
+mycore_configure_executable(mycore_debug_tests)
+catch_discover_tests(mycore_debug_tests)
+
 add_executable(mycore_assets_tests mycore_assets_tests.cpp)
 target_link_libraries(
     mycore_assets_tests
@@ -32,7 +42,11 @@ target_link_libraries(
         Catch2::Catch2WithMain
 )
 mycore_configure_executable(mycore_platform_sdl_tests)
-catch_discover_tests(mycore_platform_sdl_tests)
+catch_discover_tests(
+    mycore_platform_sdl_tests
+    PROPERTIES
+        ENVIRONMENT "SDL_VIDEODRIVER=dummy"
+)
 
 add_executable(mycore_render_tests mycore_render_tests.cpp)
 target_link_libraries(

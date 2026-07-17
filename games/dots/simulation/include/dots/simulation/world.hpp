@@ -43,6 +43,7 @@ public:
     [[nodiscard]] bool contains(EntityId entity_id) const noexcept;
     [[nodiscard]] std::size_t player_count() const noexcept;
     [[nodiscard]] std::size_t food_count() const noexcept;
+    [[nodiscard]] std::size_t occupied_spatial_cell_count() const noexcept;
     [[nodiscard]] std::span<const EntityId> player_ids() const noexcept;
     [[nodiscard]] std::span<const EntityId> food_ids() const noexcept;
     [[nodiscard]] std::optional<mycore::math::Vector2> position(EntityId entity_id) const noexcept;

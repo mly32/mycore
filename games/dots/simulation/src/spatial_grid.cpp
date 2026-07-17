@@ -94,6 +94,10 @@ std::size_t SpatialGrid::entity_count() const noexcept {
     return entries_by_id_.size();
 }
 
+std::size_t SpatialGrid::occupied_cell_count() const noexcept {
+    return cells_.size();
+}
+
 std::vector<EntityId> SpatialGrid::query(Circle bounds) const {
     const auto range = cell_range(bounds);
     if (!range) {

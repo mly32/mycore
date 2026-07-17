@@ -17,12 +17,26 @@
       "host": true,
       "platform": "!windows"
     },
+    "fmt",
+    {
+      "name": "imgui",
+      "features": [
+        "sdlgpu3-binding"
+      ]
+    },
     "sdl3",
+    "spdlog",
     {
       "name": "spirv-cross",
       "host": true,
       "platform": "osx"
     },
-    "tomlplusplus"
+    "tomlplusplus",
+    {
+      "name": "tracy",
+      "features": [
+        "on-demand"
+      ]
+    }
   ]
 }

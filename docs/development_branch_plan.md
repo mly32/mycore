@@ -256,10 +256,18 @@ Purpose: make behavior inspectable before networking.
 
 Changes:
 
-- Add `spdlog` and `fmt`.
+- Add `spdlog`, `fmt`, Tracy, and Dear ImGui with its SDL3/SDL_GPU backends.
 - Add `MyCore::Debug` for game-neutral logging setup, frame metrics, and profiler hooks.
-- Add Dear ImGui dependency and a Dots-owned debug overlay.
-- Show tick, entity counts, frame timing, and grid stats.
+- Add client-only `MyCore::DebugUI` for Dear ImGui lifetime and backend integration.
+- Add a Dots-owned overlay showing input mode, tick, entity counts, simulation steps, frame
+  timing, and occupied spatial-grid cells.
+- Measure actual tick rate, simulation cost, retained backlog, deadline misses, cap hits, and
+  discarded time; emit rate-limited overload and recovery logs.
+- Keep the offline client responsive by explicitly recording and dropping excess whole-step
+  backlog after its catch-up cap, while preserving fractional interpolation time.
+- Present the local player and its following camera at the same interpolated position.
+- Let SDL input polling forward drained events to observers and let Render2D append a generic
+  same-frame pass without making either layer ImGui-specific.
 - Add logging categories qualified by owner: Dots client/server/simulation/protocol and
   MyCore platform/render/transport.
 - Keep Dots entity, grid, and networking panels out of `MyCore::Debug`.
@@ -267,6 +275,7 @@ Changes:
 Tests:
 
 - Unit test metrics aggregation without UI.
+- Unit test SDL event observation independently of Dots.
 - Unit test formatting for structured IDs where useful.
 
 Exit criterion:
@@ -728,6 +737,8 @@ Preserve these subsystem boundaries:
 - `MyCore::Assets`: game-neutral asset lookup and byte loading; no Dots or aim-trainer asset
   schema.
 - `MyCore::Debug`: game-neutral logging, metrics primitives, and profiler hooks; no
+  game-specific panels or state.
+- `MyCore::DebugUI`: client-only Dear ImGui lifetime and SDL3/SDL_GPU backend integration; no
   game-specific panels or state.
 - `MyCore::NetTransport`: connections and byte payload transport; no gameplay messages or
   replication policy.

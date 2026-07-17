@@ -1,5 +1,14 @@
 cmake_minimum_required(VERSION 3.25)
 
+# Modern Apple and Windows linkers can safely de-duplicate static libraries. Keep compatibility
+# with the declared CMake minimum while opting into linker-aware behavior when it is available.
+if(POLICY CMP0156)
+    cmake_policy(SET CMP0156 NEW)
+endif()
+if(POLICY CMP0179)
+    cmake_policy(SET CMP0179 NEW)
+endif()
+
 project(
     MyCore
     VERSION 0.1.0

@@ -1,4 +1,6 @@
-find_package(SDL3 CONFIG REQUIRED)
+# ImGui's SDL backends also discover SDL from a sibling directory. Promote the imported targets so
+# the full engine graph shares one SDL target identity and CMake can de-duplicate its link entry.
+find_package(SDL3 CONFIG REQUIRED GLOBAL)
 
 add_library(
     mycore_platform_sdl STATIC

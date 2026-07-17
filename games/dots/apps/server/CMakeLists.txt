@@ -1,3 +1,3 @@
 add_executable(dots_server main.cpp)
-target_link_libraries(dots_server PRIVATE Dots::Simulation)
+target_link_libraries(dots_server PRIVATE Dots::Simulation MyCore::Debug)
 mycore_configure_executable(dots_server)
