@@ -16,8 +16,21 @@ concurrency:
 
 jobs:
   build-and-test:
-    name: Build and test
-    runs-on: ubuntu-latest
+    name: Build and test (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Linux
+            runner: ubuntu-latest
+            preset: linux-clang-debug
+          - platform: macOS
+            runner: macos-latest
+            preset: macos-clang-debug
+          - platform: Windows
+            runner: windows-2022
+            preset: windows-msvc-debug
+    runs-on: ${{ matrix.runner }}
     env:
       VCPKG_ROOT: ${{ github.workspace }}/vcpkg
 
@@ -33,13 +46,37 @@ jobs:
           path: vcpkg
 
       - name: Bootstrap vcpkg
+        if: runner.os != 'Windows'
         run: ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
 
+      - name: Bootstrap vcpkg
+        if: runner.os == 'Windows'
+        run: ./vcpkg/bootstrap-vcpkg.bat -disableMetrics
+
+      - name: Install macOS dependency tools
+        if: runner.os == 'macOS'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+        run: brew install pkg-config
+
+      - name: Set up MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Configure
-        run: cmake --preset linux-clang-debug
+        run: cmake --preset ${{ matrix.preset }}
 
       - name: Build
-        run: cmake --build --preset linux-clang-debug
+        run: cmake --build --preset ${{ matrix.preset }}
 
       - name: Test
-        run: ctest --preset linux-clang-debug
+        run: ctest --preset ${{ matrix.preset }}
+
+  ci-gate:
+    name: CI gate
+    needs: build-and-test
+    if: always()
+    runs-on: ubuntu-slim
+    steps:
+      - name: Verify all platform jobs passed
+        run: test "${{ needs.build-and-test.result }}" = "success"
