@@ -54,9 +54,14 @@ endif()
 
 set(dots_client_install_executable_directory ".")
 set(dots_client_install_resource_directory ".")
+set(dots_client_install_shader_directory "assets/mycore/render_2d/shaders")
 if(APPLE)
     set(dots_client_install_executable_directory "Dots.app/Contents/MacOS")
     set(dots_client_install_resource_directory "Dots.app/Contents/Resources")
+    set(
+        dots_client_install_shader_directory
+        "Dots.app/Contents/Resources/assets/mycore/render_2d/shaders"
+    )
     configure_file(
         DotsInfo.plist.in
         "${CMAKE_CURRENT_BINARY_DIR}/DotsInfo.plist"
@@ -99,8 +104,7 @@ endif()
 
 install(
     FILES ${dots_client_shader_assets}
-    DESTINATION
-        "${dots_client_install_resource_directory}/assets/mycore/render_2d/shaders"
+    DESTINATION "${dots_client_install_shader_directory}"
     COMPONENT DotsClient
 )
 install(
