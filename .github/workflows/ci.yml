@@ -31,6 +31,7 @@ jobs:
             runner: windows-2022
             preset: windows-msvc-debug
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     env:
       VCPKG_ROOT: ${{ github.workspace }}/vcpkg
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.cache/vcpkg/archives
@@ -46,9 +47,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
           restore-keys: |
-            vcpkg-${{ runner.os }}-
+            vcpkg-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Check out pinned vcpkg
         uses: actions/checkout@v6.0.2
@@ -96,11 +97,24 @@ jobs:
       - name: Test
         run: ctest --preset ${{ matrix.preset }}
 
+      - name: Upload diagnostic logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-logs-${{ matrix.platform }}-attempt-${{ github.run_attempt }}
+          path: |
+            build/${{ matrix.preset }}/vcpkg-manifest-install.log
+            build/${{ matrix.preset }}/CMakeFiles/CMakeConfigureLog.yaml
+            build/${{ matrix.preset }}/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore
+          retention-days: 7
+
   ci-gate:
     name: CI gate
     needs: build-and-test
     if: always()
     runs-on: ubuntu-slim
+    timeout-minutes: 5
     steps:
       - name: Verify all platform jobs passed
         run: test "${{ needs.build-and-test.result }}" = "success"
