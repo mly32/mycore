@@ -23,6 +23,8 @@ an installable CMake package after the reusable modules stabilize.
 - CMake 3.25 or newer
 - Ninja
 - A C++20 compiler: AppleClang/Clang, GCC, or MSVC
+- vcpkg with the `VCPKG_ROOT` environment variable set to its installation directory
+- pkg-config when building dependencies on macOS
 
 Confirm the tools are available:
 
@@ -30,15 +32,20 @@ Confirm the tools are available:
 cmake --version
 ninja --version
 clang++ --version
+vcpkg version
 ```
 
 On macOS, CMake and Ninja can be installed with Homebrew, while AppleClang is provided by
 the Xcode Command Line Tools:
 
 ```bash
-brew install cmake ninja
+brew install cmake ninja vcpkg pkg-config
 xcode-select --install
 ```
+
+If vcpkg was installed another way, set `VCPKG_ROOT` to the directory containing its
+`scripts/` folder before configuring. CMake uses vcpkg manifest mode to install the
+dependencies declared in `vcpkg.json` automatically.
 
 ### Configure, Build, and Test
 
