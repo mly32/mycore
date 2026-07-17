@@ -1,4 +1,4 @@
-add_library(dots_simulation STATIC src/simulation.cpp)
+add_library(dots_simulation STATIC src/simulation.cpp src/world.cpp)
 add_library(Dots::Simulation ALIAS dots_simulation)
 
 target_include_directories(
@@ -7,6 +7,11 @@ target_include_directories(
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
 )
 
-target_link_libraries(dots_simulation PUBLIC MyCore::Core)
+target_link_libraries(
+    dots_simulation
+    PUBLIC
+        MyCore::Core
+        MyCore::Math
+        MyCore::Time
+)
 mycore_configure_target(dots_simulation)
-
