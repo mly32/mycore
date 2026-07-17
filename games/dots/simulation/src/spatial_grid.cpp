@@ -62,7 +62,7 @@ bool SpatialGrid::update(EntityId entity_id, Circle bounds) {
         remove_from_cells(entity_id, *range, old_range);
         throw;
     }
-    remove_from_cells(entity_id, old_range, *range);
+    remove_from_cells(entity_id, old_range, range);
     entry->second = *range;
     return true;
 }

@@ -288,7 +288,11 @@ int run_client(const ClientConfig& config, ClientRunMode mode) {
 
     mycore::time::FixedStepAccumulator accumulator{dots::simulation::kTickDuration};
     auto previous_time = std::chrono::steady_clock::now();
-    auto previous_player_position = *world.position(*player);
+    const auto initial_position = world.position(*player);
+    if (!initial_position) {
+        throw dots::client::StartupError{"Could not get player position"};
+    }
+    auto previous_player_position = *initial_position;
     auto current_player_position = previous_player_position;
     std::uint32_t next_command_id{};
     const auto maximum_frame_delta = std::chrono::duration_cast<mycore::time::Duration>(

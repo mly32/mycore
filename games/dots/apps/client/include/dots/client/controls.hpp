@@ -8,7 +8,7 @@
 
 namespace dots::client {
 
-enum class InputMode {
+enum class InputMode : std::uint8_t {
     Mouse,
     Keyboard,
     Hybrid,

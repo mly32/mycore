@@ -12,7 +12,7 @@
 
 namespace dots::client {
 
-enum class PresentationMode {
+enum class PresentationMode : std::uint8_t {
     Interpolated,
     Fixed,
     Comparison,
@@ -32,7 +32,7 @@ enum class PresentationMode {
 
 class StartupError : public std::runtime_error {
 public:
-    explicit StartupError(std::string message);
+    explicit StartupError(const std::string& message);
     StartupError(const std::filesystem::path& file, std::string_view field, std::string detail);
 };
 

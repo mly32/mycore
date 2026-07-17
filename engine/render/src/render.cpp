@@ -70,8 +70,8 @@ void require_same_device(const Device* expected, const Device* actual, std::stri
 
 } // namespace
 
-Error::Error(std::string message)
-    : std::runtime_error(std::move(message)) {}
+Error::Error(const std::string& message)
+    : std::runtime_error(message) {}
 
 Error Error::from_sdl(std::string_view operation) {
     return Error{std::string{operation} + ": " + SDL_GetError()};
