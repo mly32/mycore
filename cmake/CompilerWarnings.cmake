@@ -38,3 +38,17 @@ function(mycore_set_project_warnings target_name)
     endif()
 endfunction()
 
+function(mycore_suppress_test_warnings target_name)
+    # Suppress warnings from third-party test frameworks (e.g., Catch2)
+    # Use an interface library to ensure flags come after project_warnings
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        add_library(${target_name}_test_suppressions INTERFACE)
+        target_compile_options(
+            ${target_name}_test_suppressions
+            INTERFACE
+                -Wno-c2y-extensions                          # Catch2 uses __COUNTER__ macro
+                -Wno-missing-designated-field-initializers   # Tests often use partial initializers
+        )
+        target_link_libraries(${target_name} PRIVATE ${target_name}_test_suppressions)
+    endif()
+endfunction()

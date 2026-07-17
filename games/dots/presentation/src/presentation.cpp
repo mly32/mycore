@@ -33,7 +33,7 @@ lerp(mycore::render::Color from, mycore::render::Color to, float amount) noexcep
 FrameData extract_frame(const simulation::World& world,
                         mycore::math::Vector2 camera,
                         std::span<const EntityPositionOverride> position_overrides) {
-    FrameData frame{.camera = camera};
+    FrameData frame{.camera = camera, .circles = {}};
     frame.circles.reserve(world.food_count() + world.player_count());
 
     const auto append_entities = [&world, &frame, position_overrides](
@@ -121,6 +121,7 @@ mycore::render_2d::DrawList build_draw_list(const FrameData& frame, const Settin
                                          .color = settings.grid,
                                      }}
                                    : std::nullopt,
+        .circles = {},
     };
     draw_list.circles.reserve(frame.circles.size());
     for (const auto& circle : frame.circles) {
@@ -141,6 +142,8 @@ mycore::render_2d::DrawList build_draw_list(const FrameData& frame, const Settin
             .radius = circle.radius,
             .color = circle.kind == CircleKind::Food ? settings.food
                                                      : player_color(circle.mass, settings),
+            .outline_color = {},
+            .outline_width_pixels = 0.0F,
         });
     }
     return draw_list;
