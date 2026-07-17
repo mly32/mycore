@@ -24,7 +24,7 @@ an installable CMake package after the reusable modules stabilize.
 - Ninja
 - A C++20 compiler: AppleClang/Clang, GCC, or MSVC
 - vcpkg with the `VCPKG_ROOT` environment variable set to its installation directory
-- pkg-config when building dependencies on macOS
+- pkg-config when building dependencies on macOS or Linux
 
 Confirm the tools are available:
 
@@ -42,6 +42,22 @@ the Xcode Command Line Tools:
 brew install cmake ninja vcpkg pkg-config
 xcode-select --install
 ```
+
+On Debian and Ubuntu derivatives, install the compiler/build tools, the Autotools programs
+used by some vcpkg ports, and SDL's Linux window/input backend development packages:
+
+```bash
+sudo apt-get update
+sudo apt-get install --yes \
+    build-essential clang cmake ninja-build pkg-config \
+    autoconf autoconf-archive automake libtool libltdl-dev \
+    libx11-dev libxft-dev libxext-dev \
+    libwayland-dev libxkbcommon-dev libegl1-mesa-dev \
+    libibus-1.0-dev
+```
+
+vcpkg manages the project libraries, but Unix ports may still use host build tools and
+system-specific development packages supplied by the operating-system package manager.
 
 If vcpkg was installed another way, set `VCPKG_ROOT` to the directory containing its
 `scripts/` folder before configuring. CMake uses vcpkg manifest mode to install the
