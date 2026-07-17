@@ -53,6 +53,12 @@ jobs:
         if: runner.os == 'Windows'
         run: ./vcpkg/bootstrap-vcpkg.bat -disableMetrics
 
+      - name: Install Linux dependency tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes autoconf autoconf-archive automake libtool
+
       - name: Install macOS dependency tools
         if: runner.os == 'macOS'
         env:
