@@ -62,8 +62,17 @@ if(WIN32)
         TARGETS dots_client
         RUNTIME_DEPENDENCIES
             DIRECTORIES "$<TARGET_FILE_DIR:dots_client>"
-            PRE_EXCLUDE_REGEXES "api-ms-" "ext-ms-"
-            POST_EXCLUDE_REGEXES ".*[\\\\/]System32[\\\\/].*"
+            # CMake's dumpbin parser includes Windows system delay-load entries. Some are
+            # virtual or protected DLLs that are not redistributable and cannot be resolved on
+            # GitHub-hosted runners, so exclude them before dependency lookup.
+            PRE_EXCLUDE_REGEXES
+                "^api-ms-.*"
+                "^ext-ms-.*"
+                "^HvsiFileTrust\\.dll$"
+                "^PdmUtilities\\.dll$"
+                "^wpaxholder\\.dll$"
+            POST_EXCLUDE_REGEXES
+                ".*[\\\\/][Ss][Yy][Ss][Tt][Ee][Mm]32[\\\\/].*"
         RUNTIME DESTINATION "${dots_client_install_executable_directory}"
         COMPONENT DotsClient
     )
