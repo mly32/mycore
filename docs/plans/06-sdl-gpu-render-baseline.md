@@ -147,6 +147,24 @@ backend. MSL uses its translated entry point while DXIL and SPIR-V use the HLSL 
   indicator, food consumption/growth, clean shutdown, and asset lookup from a working directory
   outside the repository.
 
+### 6. Runtime package follow-up
+
+- Add a `DotsClient` CMake install component containing only the client executable, its exact
+  generated Render2D shader outputs, and a complete example configuration. Do not copy the
+  whole build-tree asset directory because removed assets may remain there after an incremental
+  build.
+- Build a standard macOS `Dots.app` layout with code under `Contents/MacOS` and assets under
+  `Contents/Resources`; use a flat executable-plus-assets layout on Windows and Linux. Include
+  discovered runtime DLL dependencies in the Windows install.
+- Add a verified `dots_client_package` target. Use ZIP on Windows and `.tar.gz` on macOS/Linux,
+  preserve executable permissions, and emit a SHA-256 checksum.
+- Add `--package-smoke` to initialize a hidden dummy-driver window and read all packaged shaders
+  without creating a GPU device. Extract every generated archive, require exactly the expected
+  shader set, and run both `--help` and `--package-smoke`.
+- Have each platform CI job upload its verified archive as a short-lived workflow artifact.
+  Code signing, notarization, installers, and permanent tagged release publication remain
+  separate release-engineering work.
+
 ## Test Matrix
 
 | Area | Automated coverage |
@@ -157,6 +175,7 @@ backend. MSL uses its translated entry point while DXIL and SPIR-V use the HLSL 
 | Dots extraction | Live instances, removals, geometry, draw-list colors/grid/camera, and no mutation |
 | Shader pipeline | HLSL compilation for the preset platform and staged runtime outputs |
 | Client regression | Existing config/input tests, `--help`, and GPU-free `--headless-smoke` |
+| Runtime package | Exact archive contents, executable help, shader reads, and dummy-driver package smoke |
 | Dependency boundaries | Server, bot, and simulation targets build without presentation or render linkage |
 
 Real GPU device and swapchain behavior remains a manual/platform integration check; CI's dummy
@@ -173,6 +192,8 @@ video driver is suitable only for the existing platform initialization smoke tes
   asset or render APIs.
 - The existing playable behavior, configuration, fixed-step simulation, resize/high-DPI
   alignment, headless smoke test, and non-client target boundaries continue to work.
+- `dots_client_package` produces a verified relocatable archive on each desktop platform; CI
+  retains the archive for developer testing.
 
 ## Deferred Work
 
@@ -180,7 +201,10 @@ video driver is suitable only for the existing platform initialization smoke tes
 - Generic text/font systems, texture asset formats, render graphs, scene graphs, materials,
   depth buffers, meshes, 3D cameras, and GPU-driven rendering.
 - Direct Vulkan and OpenGL comparison branches.
-- Runtime shader compilation, shader hot reload, packaging, and installed asset discovery.
+- Runtime shader compilation, shader hot reload, custom asset packs, signing/notarization,
+  installers, and permanent release publication.
+- Engine-owned platform user-directory discovery and automatic per-user configuration fallback;
+  the packaged example remains read-only until that later polish feature.
 
 ## References
 

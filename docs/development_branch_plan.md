@@ -234,16 +234,21 @@ Changes:
   primitives and remain out of the low-level `MyCore::Render` target.
 - Add minimal game-neutral shader loading through `MyCore::Assets`; stage engine built-ins
   under `assets/mycore/render_2d`.
+- Add a verified `dots_client_package` CMake target with exact target-owned shader assets, a
+  macOS `.app` or flat Windows/Linux bundle, checksums, and short-lived per-platform CI
+  artifacts. Keep this playable-game bundle separate from the Feature 18 engine SDK package.
 
 Tests:
 
 - Unit test Dots render-data extraction from Dots simulation state.
 - Add render API construction tests only where stable and not overly mocked.
+- Extract the generated client archive, verify its exact shader set, and run the packaged
+  `--help` and GPU-free `--package-smoke` paths.
 
 Exit criterion:
 
 - `dots_client` converts player and food state into a generic draw list rendered through the
-  engine-owned Render2D layer.
+  engine-owned Render2D layer, and each platform produces a verified relocatable client archive.
 
 ### `feature/07-debug-observability`
 
@@ -506,8 +511,13 @@ Changes:
   transforms, rays, and bounds.
 - Expand `MyCore::Render` only with the required depth attachment, vertex/index mesh,
   perspective transform, and material facilities.
+- If the demonstrated material set needs shader variants, add a platform-neutral shader
+  manifest, reflected offline cooker output, runtime `ShaderLibrary`, and `PipelineCache`.
+  Otherwise retain the simpler target-owned loose shader outputs.
 - Add aim-trainer-owned perspective camera, mouse look, target storage, spawning, ray-hit
   rules, scoring, reset behavior, shaders, and render-data extraction.
+- Start with a transient aim-trainer render snapshot. Add a persistent client-only render world
+  only if culling, LOD, interpolation, or render-thread ownership demonstrates the need.
 - Do not add networking, a general physics engine, a generic scene graph, or a universal
   ECS.
 
@@ -552,6 +562,84 @@ Exit criterion:
 
 - A separate CMake project can install and consume selected MyCore components without
   accessing the MyCore source tree.
+
+### `feature/19-profile-guided-task-scheduler`
+
+Purpose: adopt task scheduling only after networking, replication, the bot harness, and Tracy
+produce measured parallel workloads.
+
+Entry criteria:
+
+- A recorded 100-1,000 client or second-game workload misses a CPU budget.
+- Profiling identifies independent bounded work such as snapshot encoding, visibility/culling,
+  animation, asset decoding, or render-command preparation.
+- The work consumes immutable inputs or has explicit ownership and join points.
+
+Changes:
+
+- Benchmark a small proven task library against a minimal fixed worker pool before selecting
+  one; do not implement a general work-stealing runtime by default.
+- Add a narrow `MyCore::Tasks` facade for task groups, dependencies/fences, worker limits,
+  profiler labels, error propagation, and cooperative shutdown.
+- Keep the authoritative fixed tick on one owner thread. It may dispatch deterministic work and
+  join it before state publication, but the scheduler does not define game-tick ordering.
+- Keep network polling, SDL window/event ownership, GPU submission, and the real-time audio
+  callback on their appropriate threads. Schedule only bounded processing around them.
+- Preserve a deterministic single-threaded execution mode for tests and replay comparisons.
+- Introduce one measured workload first, preferably immutable per-client snapshot construction;
+  add render preparation or other consumers only after that boundary is proven.
+
+Tests:
+
+- Task dependencies, completion, error propagation, shutdown, and worker-count limits.
+- No task outlives referenced state; add ThreadSanitizer coverage where supported.
+- Single-threaded and scheduled modes produce identical snapshot bytes or render preparation
+  output for a recorded workload.
+- Benchmarks show a useful improvement without causing server tick-tail regressions.
+
+Exit criterion:
+
+- A measured workload improves while authoritative tick ordering, deterministic tests, and
+  subsystem thread-affinity rules remain explicit.
+
+### `feature/20-platform-user-settings`
+
+Purpose: let packaged games find user-editable configuration and other writable files in the
+locations expected by each desktop OS instead of depending on a Finder- or shell-selected
+working directory.
+
+Changes:
+
+- Add a game-neutral `MyCore::PlatformPaths` facility that accepts an application identity and
+  reports separate configuration, persistent-data, cache, and log directories without
+  initializing SDL video.
+- Follow native conventions: `~/Library/Application Support/<vendor>/<game>` on macOS,
+  `%LOCALAPPDATA%\\<vendor>\\<game>` on Windows, and
+  `$XDG_CONFIG_HOME/<vendor>/<game>` with the `~/.config` fallback on Linux. Keep data and cache
+  paths distinct where the platform provides distinct conventions.
+- Keep path discovery in the engine, but keep filenames, TOML schemas, defaults, parsing, and
+  validation game-owned.
+- For Dots configuration, use this source precedence from highest to lowest: explicit
+  `--config`, current-directory developer/portable override, per-user OS configuration, then
+  built-in defaults. The example inside the application bundle remains read-only documentation
+  and is never silently edited.
+- Make directory creation an explicit write operation. Merely querying paths or starting with
+  built-in defaults must not modify the user's filesystem.
+
+Tests:
+
+- Inject home/environment/known-folder results and verify paths for macOS, Windows, and Linux
+  without reading or writing the developer's real profile.
+- Verify the Dots source precedence, missing optional files, explicit missing-file errors, and
+  paths containing spaces and non-ASCII characters.
+- Package smoke tests continue to work without a user configuration, while a launched package
+  can load a configuration from an injected per-user directory.
+
+Exit criterion:
+
+- Double-clicking or launching an installed client can discover per-user configuration in the
+  native OS location, while command-line overrides and game-owned validation retain their
+  current behavior.
 
 ## Research Branches
 
@@ -633,6 +721,8 @@ Preserve these subsystem boundaries:
   tick rate or simulation policy.
 - `MyCore::PlatformSDL`: SDL lifetime, windows, events, and raw device state; no game input
   commands.
+- `MyCore::PlatformPaths`: platform-native user config/data/cache/log locations; no game
+  filenames, schemas, parsing, or implicit filesystem writes.
 - `MyCore::Render`: SDL_GPU-backed resources and command submission; no Dots circles,
   aim-trainer targets, or simulation ownership.
 - `MyCore::Assets`: game-neutral asset lookup and byte loading; no Dots or aim-trainer asset
@@ -641,6 +731,8 @@ Preserve these subsystem boundaries:
   game-specific panels or state.
 - `MyCore::NetTransport`: connections and byte payload transport; no gameplay messages or
   replication policy.
+- `MyCore::Tasks`: conditional, profile-driven bounded CPU task groups and fences; no game tick,
+  render-submission, network-poll, or audio-callback ownership policy.
 - `MyCore::Scripting`: Lua VM lifetime and safe calls; no game capabilities.
 - `Dots::Simulation`: authoritative Dots state and fixed-step rules; depends only on Core
   and Math.
@@ -677,6 +769,7 @@ CI should eventually:
 - Run tests.
 - Run sanitizer builds.
 - Run selected benchmarks.
+- Build and retain verified Dots client archives for Windows, Linux, and macOS.
 - Package the Linux `dots_server`.
 - After feature 18, stage-install MyCore and build the external consumer fixture.
 - Store logs and crash artifacts.
@@ -693,9 +786,13 @@ CI should eventually:
   platform and rendering boundaries exist.
 - MyCore owns a small requirement-driven math library; it does not expose GLM types in its
   public API.
-- Stable `MyCore::` targets and include roots are established before packaging, but
-  installation is deferred until feature 18.
+- Stable `MyCore::` targets and include roots are established before packaging. Playable game
+  bundles may use runtime install rules earlier; engine SDK exports remain deferred until
+  Feature 18.
 - Lua, EnTT, Vulkan, Conan, OpenGL, and fixed-point work are deferred until the baseline game loop and networking path are measurable.
 - The first server architecture uses one owner thread for world simulation.
 - Snapshot worker parallelism is introduced only after immutable replication views exist.
+- A general task scheduler is conditional on profiles from the load harness or second game and
+  never replaces explicit simulation, render-submission, network-poll, or audio-callback
+  ownership.
 - The 1,000-client target is validated through staged bot milestones: 10, 100, 500, and 1,000.

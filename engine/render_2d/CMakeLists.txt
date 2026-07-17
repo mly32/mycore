@@ -18,6 +18,12 @@ mycore_compile_hlsl_shaders(
 add_library(mycore_render_2d STATIC src/render_2d.cpp)
 add_library(MyCore::Render2D ALIAS mycore_render_2d)
 add_dependencies(mycore_render_2d mycore_render_2d_shader_assets)
+set_target_properties(
+    mycore_render_2d
+    PROPERTIES
+        MYCORE_RUNTIME_SHADER_ASSETS "${mycore_render_2d_shader_assets_OUTPUTS}"
+        MYCORE_RUNTIME_SHADER_EXTENSION "${mycore_render_2d_shader_assets_EXTENSION}"
+)
 
 target_include_directories(
     mycore_render_2d

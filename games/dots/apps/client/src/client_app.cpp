@@ -13,6 +13,7 @@
 #include "mycore/time/time.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <limits>
@@ -89,9 +90,26 @@ void spawn_food_field(dots::simulation::World& world) {
 #endif
 }
 
+void validate_render_assets(const mycore::assets::DirectorySource& assets) {
+    constexpr std::array shader_names{
+        "mycore/render_2d/shaders/circle.vert",
+        "mycore/render_2d/shaders/circle.frag",
+        "mycore/render_2d/shaders/grid.vert",
+        "mycore/render_2d/shaders/grid.frag",
+    };
+    const auto extension =
+        mycore::render::shader_file_extension(mycore::render::platform_shader_format());
+    for (const auto* shader_name : shader_names) {
+        const auto asset_name = std::string{shader_name} + "." + std::string{extension};
+        if (assets.read(asset_name).empty()) {
+            throw dots::client::StartupError{"Packaged shader is empty: " + asset_name};
+        }
+    }
+}
+
 } // namespace
 
-int run_client(const ClientConfig& config, bool headless_smoke) {
+int run_client(const ClientConfig& config, ClientRunMode mode) {
     mycore::platform_sdl::Runtime runtime;
     mycore::platform_sdl::Window window{{
         .title = window_title(config),
@@ -101,7 +119,16 @@ int run_client(const ClientConfig& config, bool headless_smoke) {
         .visible = false,
     }};
 
-    if (headless_smoke) {
+    if (mode == ClientRunMode::HeadlessSmoke) {
+        static_cast<void>(mycore::platform_sdl::poll_input(window));
+        return 0;
+    }
+
+    const mycore::assets::DirectorySource assets{
+        mycore::platform_sdl::application_base_path() / "assets",
+    };
+    if (mode == ClientRunMode::PackageSmoke) {
+        validate_render_assets(assets);
         static_cast<void>(mycore::platform_sdl::poll_input(window));
         return 0;
     }
@@ -113,9 +140,6 @@ int run_client(const ClientConfig& config, bool headless_smoke) {
             .debug_mode = gpu_debug_mode(),
             .vsync = config.window.vsync,
         },
-    };
-    const mycore::assets::DirectorySource assets{
-        mycore::platform_sdl::application_base_path() / "assets",
     };
     mycore::render_2d::Renderer renderer{device, assets};
     const auto render_settings = presentation_settings(config);

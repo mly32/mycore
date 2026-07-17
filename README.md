@@ -151,6 +151,21 @@ SDL_VIDEODRIVER=dummy \
     ./build/macos-clang-debug/bin/dots_client --headless-smoke
 ```
 
+To produce and verify a relocatable client archive containing the executable, platform shader
+assets, and an example configuration:
+
+```bash
+cmake --build --preset macos-clang-debug --target dots_client_package
+```
+
+Packages and SHA-256 checksum files are written under
+`build/<preset>/packages/`. Windows packages are ZIP files, while macOS and Linux packages are
+`.tar.gz` archives. The macOS archive contains `Dots.app`; its shaders live under
+`Contents/Resources/assets/`, where `SDL_GetBasePath()` resolves them. The package target
+extracts its own archive and runs `--package-smoke`, which creates a dummy-driver window and
+reads all four shaders without creating a GPU device. CI uploads one verified archive per
+platform for short-lived testing.
+
 Use `dots_client --help` for the complete CLI surface.
 
 For a concise introduction to shaders, GPU resources, instanced drawing, and how one Dots

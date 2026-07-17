@@ -224,6 +224,26 @@ directory, `MyCore::Assets` reads the appropriate shader bytes, and `MyCore::Ren
 `MyCore::Render` to create SDL_GPU shader and pipeline objects. A packaged game must therefore
 include both the executable and its `assets/` directory.
 
+Feature 06 packages those exact target-owned outputs rather than copying the complete
+incremental asset directory. Development keeps shaders loose for inspection and fast rebuilds.
+When later games demonstrate multiple materials and shader variants, the intended evolution is
+a platform-neutral manifest plus an offline cooker that emits a platform shader library with an
+index, compiled blobs, entry points, hashes, and reflected binding metadata. A runtime
+`ShaderLibrary` would resolve stable IDs and variants, while a separate `PipelineCache` would
+combine those shaders with vertex layout, blend/depth state, and target formats. A custom pack
+is not useful yet for two shader programs with no variants.
+
+The corresponding client-side data flow remains:
+
+```text
+game world -> game presentation snapshot -> optional render world
+           -> Render2D / Render3D -> materials and frame passes
+           -> MyCore::Render -> SDL_GPU
+```
+
+The optional render world is a disposable client representation for culling, LOD, sorting, and
+render-thread ownership. It must not replace the authoritative simulation used by the server.
+
 ## The SDL_GPU objects involved
 
 SDL_GPU uses explicit objects because modern GPUs execute queued work and may keep using a

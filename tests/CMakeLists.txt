@@ -106,3 +106,10 @@ set_tests_properties(
     PROPERTIES
         ENVIRONMENT "SDL_VIDEODRIVER=dummy"
 )
+
+add_test(NAME dots_client_package_smoke COMMAND dots_client --package-smoke)
+set_tests_properties(
+    dots_client_package_smoke
+    PROPERTIES
+        ENVIRONMENT "SDL_VIDEODRIVER=dummy"
+)
