@@ -25,4 +25,12 @@ Runtime::~Runtime() {
     SDL_QuitSubSystem(SDL_INIT_VIDEO);
 }
 
+std::filesystem::path application_base_path() {
+    const auto* path = SDL_GetBasePath();
+    if (path == nullptr || *path == '\0') {
+        throw StartupError::from_sdl("Could not locate the application base path");
+    }
+    return std::filesystem::path{path};
+}
+
 } // namespace mycore::platform_sdl

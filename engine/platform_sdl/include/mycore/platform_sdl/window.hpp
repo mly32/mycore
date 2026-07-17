@@ -51,6 +51,7 @@ public:
     void show();
     void hide();
     [[nodiscard]] WindowSize size() const;
+    [[nodiscard]] WindowSize pixel_size() const;
     [[nodiscard]] SDL_Window* native_handle() const noexcept;
 
 private:

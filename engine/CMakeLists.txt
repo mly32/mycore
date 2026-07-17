@@ -1,4 +1,6 @@
 add_subdirectory(core)
+add_subdirectory(assets)
 add_subdirectory(math)
 add_subdirectory(platform_sdl)
+add_subdirectory(render)
 add_subdirectory(time)

@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace dots::simulation {
@@ -42,6 +43,8 @@ public:
     [[nodiscard]] bool contains(EntityId entity_id) const noexcept;
     [[nodiscard]] std::size_t player_count() const noexcept;
     [[nodiscard]] std::size_t food_count() const noexcept;
+    [[nodiscard]] std::span<const EntityId> player_ids() const noexcept;
+    [[nodiscard]] std::span<const EntityId> food_ids() const noexcept;
     [[nodiscard]] std::optional<mycore::math::Vector2> position(EntityId entity_id) const noexcept;
     [[nodiscard]] std::optional<float> mass(EntityId entity_id) const noexcept;
     [[nodiscard]] std::optional<float> radius(EntityId entity_id) const noexcept;

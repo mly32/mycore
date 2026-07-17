@@ -70,6 +70,14 @@ WindowSize Window::size() const {
     return result;
 }
 
+WindowSize Window::pixel_size() const {
+    WindowSize result;
+    if (!SDL_GetWindowSizeInPixels(window_, &result.width, &result.height)) {
+        throw StartupError::from_sdl("Could not query SDL window pixel size");
+    }
+    return result;
+}
+
 SDL_Window* Window::native_handle() const noexcept {
     return window_;
 }

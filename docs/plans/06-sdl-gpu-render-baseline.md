@@ -1,0 +1,186 @@
+# Feature 06: SDL_GPU Render Baseline
+
+## Goal
+
+Replace the temporary `SDL_Renderer` code in `dots_client` with a small game-neutral
+`MyCore::Render` layer over SDL_GPU and a Dots-owned `Dots::Presentation` layer. Preserve the
+playable Feature 05 client while making GPU lifetime, asset loading, and command submission
+reusable by later graphical games.
+
+The completed dependency path is:
+
+```text
+dots_client
+  |-- dots_client_support
+  |-- Dots::Presentation
+  |     |-- Dots::Simulation
+  |     |-- MyCore::Assets
+  |     `-- MyCore::Render
+  `-- MyCore::PlatformSDL
+
+dots_server and dots_bot
+  `-- Dots::Simulation
+```
+
+SDL remains a target-scoped dependency of graphical engine modules. It does not become a
+dependency of `MyCore::Core`, Dots simulation, the server, or the bot.
+
+## Design Decisions
+
+### Rendering boundary
+
+- Add `mycore_assets` / `MyCore::Assets`, depending only on `MyCore::Core`. A rooted directory
+  asset source resolves relative asset names and returns byte buffers with clear path-aware
+  errors. It rejects absolute paths and traversal outside its root.
+- Add `mycore_render` / `MyCore::Render`, depending on SDL3 and the SDL platform window layer.
+  Public APIs describe devices, buffers, shaders, graphics pipelines, command lists, render
+  passes, uploads, and draws without any Dots vocabulary.
+- Use move-only RAII wrappers for SDL_GPU resources. A render device must outlive its window
+  claim, buffers, shaders, and pipelines; destructors release resources through their owning
+  device. Acquired command buffers are submitted or safely cancelled.
+- Keep the first API requirement-driven. Do not add a scene graph, render graph, material
+  system, generic camera, backend abstraction, or global renderer singleton.
+- Add `dots_presentation` / `Dots::Presentation`. It owns Dots render-data extraction, shader
+  asset names, vertex layouts, pipelines, colors, circle/grid behavior, and the input-mode HUD.
+  It has no simulation ownership and never mutates `World`.
+
+### Shaders and assets
+
+- Keep canonical HLSL shader sources under `games/dots/assets/shaders/`.
+- Add target-appropriate host shader tools and invoke them from CMake custom commands. Use
+  glslang to compile HLSL to SPIR-V on Linux, glslang plus SPIRV-Cross to produce MSL on Apple
+  platforms, and DirectX Shader Compiler to produce DXIL on Windows. Shader compilation is
+  part of the normal `dots_client` build, so invalid shaders fail CI.
+- Stage generated shaders under `assets/dots/shaders/` beside `dots_client`. Resolve that root
+  from the executable base directory at startup, not from the process working directory.
+- Load compiled bytes through `MyCore::Assets`; keep platform-format filename conventions,
+  shader entry points, resource counts, and other shader metadata in `Dots::Presentation`.
+- Do not link shader compiler libraries into the client or compile shaders at runtime.
+
+SDL_GPU requires backend-specific shader formats. The device will advertise only the format
+compiled for the target platform, allowing SDL to select the matching Metal, D3D12, or Vulkan
+backend. MSL uses its translated entry point while DXIL and SPIR-V use the HLSL entry point.
+
+### Frame and presentation model
+
+- Create the window hidden, create the GPU device, claim the window, select the configured
+  present mode, create Dots presentation resources, and show the window only after startup
+  succeeds.
+- Map `vsync = true` to the SDL_GPU vsync present mode. For `vsync = false`, prefer immediate,
+  then mailbox, and fall back to vsync when the platform does not support either non-vsync
+  mode.
+- Acquire one command list and a swapchain texture per rendered frame. Use the acquired
+  swapchain pixel dimensions for projection, high-DPI input conversion, grid placement, and
+  HUD layout. Treat a temporarily unavailable or zero-sized swapchain as a skipped frame.
+- Upload changing instance data before the render pass. Retain GPU buffers between frames,
+  grow their capacity geometrically, and use SDL_GPU cycling so uploads do not overwrite data
+  still used by an in-flight frame.
+- Use one render pass with a clear color, an analytic full-screen background/grid draw, an
+  instanced-quad signed-distance circle draw, and a screen-space HUD draw. Dots owns all three
+  pipelines and their shaders; `MyCore::Render` only records generic bindings and draws.
+- Preserve the fixed-step loop, camera interpolation, input behavior, colors, resizing, and
+  current bottom-right input-mode HUD. Implement the small HUD in Dots presentation rather
+  than introducing a general engine text system in this feature.
+
+## Planned Implementation
+
+### 1. Asset and shader build foundation
+
+- Add the `engine/assets` target with a directory-backed byte reader and focused startup
+  errors.
+- Add asset tests for successful binary reads, missing files, absolute names, and parent-path
+  traversal.
+- Add portable host shader-tool dependencies and a CMake helper that compiles a named HLSL
+  stage to the active target format with explicit inputs, outputs, and dependencies.
+- Add Dots grid, circle, and HUD shader sources and stage their generated outputs beside the
+  client executable without modifying the source asset directory.
+
+### 2. Thin SDL_GPU engine layer
+
+- Add the `engine/render` target and `MyCore::Render` public API.
+- Implement device creation, SDL window claim/release, swapchain present-mode selection,
+  shader/buffer/pipeline creation, buffer upload, command acquisition, render-pass recording,
+  instanced drawing, submission, and path-rich SDL error reporting.
+- Keep raw SDL_GPU handles private except for narrowly scoped implementation access. Avoid
+  mocks of SDL internals; test descriptor defaults, ownership traits, validation, and any pure
+  format-selection helpers where those contracts are stable.
+
+### 3. Dots render extraction and presentation
+
+- Add read-only player-ID and food-ID views to `World` so presentation can enumerate live
+  entities without retaining stale spawn lists or exposing storage mutation.
+- Define pure Dots render data containing world-space circle instances and the camera/view
+  values needed for a frame. Extract live players and food from `World`, validate geometry,
+  and assign game-owned colors and draw order.
+- Unit test empty and populated extraction, player and food classification, entity removal,
+  position/radius propagation, camera data, and stable separation from simulation mutation.
+- Build Dots-owned grid, circle, and HUD pipelines from compiled shader assets. Render circles
+  as instanced quads and evaluate their edges with a signed-distance fragment shader.
+
+### 4. Client integration and cleanup
+
+- Replace `SDL_CreateRenderer`, scanline circle drawing, debug text, render scaling, and all
+  other `SDL_Renderer` helpers in `client_app.cpp` with `MyCore::Render` and
+  `Dots::Presentation` composition.
+- Keep `--headless-smoke` unchanged in intent: initialize SDL video, create a hidden window,
+  poll one input snapshot, and exit before GPU-device or presentation creation. The dummy
+  video driver is not a GPU integration environment.
+- Preserve startup failures for device, window claim, shader/asset, pipeline, command, and
+  submission errors. Include the failed operation or asset path in each message.
+- Ensure only `dots_client` and presentation/render targets gain GPU and asset dependencies;
+  verify `dots_server`, `dots_bot`, and simulation tests remain headless.
+
+### 5. Documentation and verification
+
+- Update the README to describe the SDL_GPU client, generated shader assets, supported GPU
+  backends, build-time shader compilation, and practical manual testing commands.
+- Configure, build, and run all tests through each CI preset. The shader custom commands must
+  execute in normal CI builds.
+- Retain the existing help and headless-smoke CTest cases. Do not add a dummy-driver GPU test
+  that cannot exercise a real swapchain.
+- Manually run the client on macOS, Linux, and Windows where hardware runners are available.
+  Verify resizing, high-DPI mouse alignment, vsync selection, all input modes, the HUD, food
+  consumption/growth, clean shutdown, and asset lookup from a working directory outside the
+  repository.
+
+## Test Matrix
+
+| Area | Automated coverage |
+|---|---|
+| Assets | Binary reads, empty files, missing paths, rooted resolution, and traversal rejection |
+| Render API | Move/copy traits, descriptor validation, shader-format choice, and stable pure helpers |
+| Dots extraction | Live player/food instances, removals, geometry, colors, camera/view data, and no mutation |
+| Shader pipeline | HLSL compilation for the preset platform and staged runtime outputs |
+| Client regression | Existing config/input tests, `--help`, and GPU-free `--headless-smoke` |
+| Dependency boundaries | Server, bot, and simulation targets build without presentation or render linkage |
+
+Real GPU device and swapchain behavior remains a manual/platform integration check; CI's dummy
+video driver is suitable only for the existing platform initialization smoke test.
+
+## Exit Criteria
+
+- `dots_client` contains no `SDL_Renderer` creation or temporary 2D draw path.
+- `dots_client` renders the grid, live food, local player, and input-mode HUD through
+  `Dots::Presentation` layered on `MyCore::Render` and SDL_GPU.
+- HLSL shaders compile during the build and load from staged assets independently of the
+  current working directory.
+- Rendering remains separate from `World` ownership and Dots concepts do not enter engine
+  asset or render APIs.
+- The existing playable behavior, configuration, fixed-step simulation, resize/high-DPI
+  alignment, headless smoke test, and non-client target boundaries continue to work.
+
+## Deferred Work
+
+- Dear ImGui, GPU timing, debug overlays, and renderer observability (Feature 07).
+- Generic text/font systems, texture asset formats, render graphs, scene graphs, materials,
+  depth buffers, meshes, 3D cameras, and GPU-driven rendering.
+- Direct Vulkan and OpenGL comparison branches.
+- Runtime shader compilation, shader hot reload, packaging, and installed asset discovery.
+
+## References
+
+- [SDL_GPU overview](https://wiki.libsdl.org/SDL3/CategoryGPU)
+- [Khronos glslang compiler](https://github.com/KhronosGroup/glslang)
+- [Khronos SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross)
+- [DirectX Shader Compiler](https://github.com/microsoft/DirectXShaderCompiler)
+- [SDL swapchain acquisition](https://wiki.libsdl.org/SDL3/SDL_WaitAndAcquireGPUSwapchainTexture)

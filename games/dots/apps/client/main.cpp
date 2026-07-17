@@ -11,7 +11,7 @@
 namespace {
 
 constexpr std::string_view kHelp = R"(Dots Client
-A playable offline SDL client that runs the local Dots simulation.
+A playable offline SDL_GPU client that runs and presents the local Dots simulation.
 
 Usage:
   dots_client [--config <path>] [--headless-smoke] [--help]
@@ -19,7 +19,7 @@ Usage:
 Options:
   --config <path>   Load this TOML file instead of automatic dots-client.toml.
   --headless-smoke  Initialize SDL and a hidden window, poll input once, then exit.
-                    This does not create a renderer or start the game loop.
+                    This does not create a GPU device or start the game loop.
   --help            Show this help text and exit.
 
 Controls:
