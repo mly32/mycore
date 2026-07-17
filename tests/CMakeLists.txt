@@ -1,5 +1,8 @@
-add_executable(foundation_smoke_test foundation_smoke_test.cpp)
-target_link_libraries(foundation_smoke_test PRIVATE Dots::Simulation)
-mycore_configure_executable(foundation_smoke_test)
+find_package(Catch2 3 CONFIG REQUIRED)
 
-add_test(NAME foundation.dots_smoke COMMAND foundation_smoke_test)
+add_executable(mycore_core_smoke_tests mycore_core_smoke_tests.cpp)
+target_link_libraries(mycore_core_smoke_tests PRIVATE MyCore::Core Catch2::Catch2WithMain)
+mycore_configure_executable(mycore_core_smoke_tests)
+
+include(Catch)
+catch_discover_tests(mycore_core_smoke_tests)

@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+
+    steps:
+      - name: Check out MyCore
+        uses: actions/checkout@v6.0.2
+
+      - name: Check out pinned vcpkg
+        uses: actions/checkout@v6.0.2
+        with:
+          repository: microsoft/vcpkg
+          ref: ec62869cdd9f80413abb5e4c1d8b68688df932f4
+          path: vcpkg
+
+      - name: Bootstrap vcpkg
+        run: ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+
+      - name: Configure
+        run: cmake --preset linux-clang-debug
+
+      - name: Build
+        run: cmake --build --preset linux-clang-debug
+
+      - name: Test
+        run: ctest --preset linux-clang-debug
