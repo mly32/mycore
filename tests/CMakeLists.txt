@@ -68,6 +68,16 @@ target_link_libraries(
 mycore_configure_executable(mycore_render_2d_tests)
 catch_discover_tests(mycore_render_2d_tests)
 
+add_executable(dots_protocol_tests dots_protocol_tests.cpp)
+target_link_libraries(
+    dots_protocol_tests
+    PRIVATE
+        Dots::Protocol
+        Catch2::Catch2WithMain
+)
+mycore_configure_executable(dots_protocol_tests)
+catch_discover_tests(dots_protocol_tests)
+
 add_executable(
     dots_simulation_tests
     dots_collision_tests.cpp

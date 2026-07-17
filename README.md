@@ -225,3 +225,4 @@ preset overrides in the ignored `CMakeUserPresets.json`.
 - [Feature 05 SDL client plan](docs/plans/05-sdl-client-window-input.md)
 - [Feature 06 SDL_GPU render plan](docs/plans/06-sdl-gpu-render-baseline.md)
 - [Feature 07 debug observability plan](docs/plans/07-debug-observability.md)
+- [Feature 08 protocol binary codec plan](docs/plans/08-protocol-binary-codec.md)
