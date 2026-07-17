@@ -39,6 +39,9 @@ jobs:
       - name: Check out MyCore
         uses: actions/checkout@v6.0.2
 
+      - name: Prepare vcpkg binary cache
+        run: cmake -E make_directory "${{ env.VCPKG_DEFAULT_BINARY_CACHE }}"
+
       - name: Restore vcpkg binary cache
         uses: actions/cache@v4
         with:
