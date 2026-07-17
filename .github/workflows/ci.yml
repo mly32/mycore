@@ -33,10 +33,19 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.cache/vcpkg/archives
 
     steps:
       - name: Check out MyCore
         uses: actions/checkout@v6.0.2
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-
 
       - name: Check out pinned vcpkg
         uses: actions/checkout@v6.0.2
