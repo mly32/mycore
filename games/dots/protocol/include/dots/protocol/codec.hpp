@@ -1,0 +1,46 @@
+#pragma once
+
+#include "dots/protocol/messages.hpp"
+
+#include <cstddef>
+#include <cstdint>
+#include <span>
+#include <variant>
+#include <vector>
+
+namespace dots::protocol {
+
+inline constexpr std::uint16_t kProtocolVersion = 1;
+inline constexpr std::size_t kPacketHeaderBytes = 12;
+inline constexpr std::size_t kTargetTransportPayloadBytes = 1'200;
+inline constexpr std::size_t kMaximumEncodedMessageBytes = 64 * 1'024;
+
+enum class CodecError {
+    MessageTooLarge,
+    Truncated,
+    InvalidMagic,
+    UnsupportedVersion,
+    UnknownMessageKind,
+    UnsupportedFlags,
+    PayloadLengthMismatch,
+    TrailingBytes,
+    InvalidId,
+    InvalidEnum,
+    InvalidNumber,
+    OutOfRange,
+    DuplicateEntity,
+    TooManyEntities,
+};
+
+using EncodedMessage = std::vector<std::byte>;
+using EncodeResult = std::variant<EncodedMessage, CodecError>;
+using DecodeResult = std::variant<Message, CodecError>;
+
+[[nodiscard]] EncodeResult encode(const Message& message);
+[[nodiscard]] DecodeResult decode(std::span<const std::byte> bytes);
+
+[[nodiscard]] constexpr bool fits_target_transport_payload(std::size_t encoded_size) noexcept {
+    return encoded_size <= kTargetTransportPayloadBytes;
+}
+
+} // namespace dots::protocol

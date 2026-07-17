@@ -130,6 +130,9 @@ create_grid_pipeline(render::Device& device, const Shader& vertex, const Shader&
     return device.create_graphics_pipeline({
         .vertex_shader = &vertex,
         .fragment_shader = &fragment,
+        .vertex_buffers = {},
+        .vertex_attributes = {},
+        .enable_blending = false,
         .label = "MyCore Render2D grid pipeline",
     });
 }

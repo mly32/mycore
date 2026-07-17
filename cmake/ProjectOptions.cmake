@@ -29,3 +29,8 @@ function(mycore_configure_executable target_name)
             RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     )
 endfunction()
+
+function(mycore_configure_test_executable target_name)
+    mycore_configure_executable("${target_name}")
+    mycore_suppress_test_warnings("${target_name}")
+endfunction()
