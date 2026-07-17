@@ -43,6 +43,21 @@ target_link_libraries(
 )
 mycore_configure_executable(dots_client)
 
+if(WIN32)
+    # vcpkg's Windows triplet provides SDL as a DLL. Stage all transitive runtime DLLs beside the
+    # client so direct runs and CTest work from the build tree; install() handles package staging.
+    add_custom_command(
+        TARGET dots_client
+        POST_BUILD
+        COMMAND
+            "${CMAKE_COMMAND}" -E copy_if_different
+            $<TARGET_RUNTIME_DLLS:dots_client>
+            $<TARGET_FILE_DIR:dots_client>
+        COMMAND_EXPAND_LISTS
+        VERBATIM
+    )
+endif()
+
 get_target_property(
     dots_client_shader_assets
     mycore_render_2d
