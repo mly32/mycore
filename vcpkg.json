@@ -3,6 +3,8 @@
   "name": "mycore",
   "version-string": "0.1.0",
   "dependencies": [
-    "catch2"
+    "catch2",
+    "sdl3",
+    "tomlplusplus"
   ]
 }

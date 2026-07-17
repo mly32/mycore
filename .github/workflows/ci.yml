@@ -31,12 +31,25 @@ jobs:
             runner: windows-2022
             preset: windows-msvc-debug
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     env:
       VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.cache/vcpkg/archives
 
     steps:
       - name: Check out MyCore
         uses: actions/checkout@v6.0.2
+
+      - name: Prepare vcpkg binary cache
+        run: cmake -E make_directory "${{ env.VCPKG_DEFAULT_BINARY_CACHE }}"
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Check out pinned vcpkg
         uses: actions/checkout@v6.0.2
@@ -52,6 +65,18 @@ jobs:
       - name: Bootstrap vcpkg
         if: runner.os == 'Windows'
         run: ./vcpkg/bootstrap-vcpkg.bat -disableMetrics
+
+      - name: Install Linux dependency tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            autoconf autoconf-archive automake libtool libltdl-dev \
+            libx11-dev libxft-dev libxext-dev \
+            libxcursor-dev libxfixes-dev libxi-dev libxrandr-dev \
+            libxss-dev libxtst-dev \
+            libwayland-dev libxkbcommon-dev libegl1-mesa-dev \
+            libibus-1.0-dev
 
       - name: Install macOS dependency tools
         if: runner.os == 'macOS'
@@ -72,11 +97,24 @@ jobs:
       - name: Test
         run: ctest --preset ${{ matrix.preset }}
 
+      - name: Upload diagnostic logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-logs-${{ matrix.platform }}-attempt-${{ github.run_attempt }}
+          path: |
+            build/${{ matrix.preset }}/vcpkg-manifest-install.log
+            build/${{ matrix.preset }}/CMakeFiles/CMakeConfigureLog.yaml
+            build/${{ matrix.preset }}/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore
+          retention-days: 7
+
   ci-gate:
     name: CI gate
     needs: build-and-test
     if: always()
     runs-on: ubuntu-slim
+    timeout-minutes: 5
     steps:
       - name: Verify all platform jobs passed
         run: test "${{ needs.build-and-test.result }}" = "success"

@@ -1,0 +1,60 @@
+#pragma once
+
+#include <cstdint>
+#include <string>
+
+struct SDL_Window;
+
+namespace mycore::platform_sdl {
+
+enum class WindowFlags : std::uint32_t {
+    None = 0,
+    Resizable = 1U << 0U,
+    Fullscreen = 1U << 1U,
+    HighPixelDensity = 1U << 2U,
+};
+
+[[nodiscard]] constexpr WindowFlags operator|(WindowFlags lhs, WindowFlags rhs) noexcept {
+    return static_cast<WindowFlags>(static_cast<std::uint32_t>(lhs) |
+                                    static_cast<std::uint32_t>(rhs));
+}
+
+[[nodiscard]] constexpr bool has_flag(WindowFlags flags, WindowFlags flag) noexcept {
+    return (static_cast<std::uint32_t>(flags) & static_cast<std::uint32_t>(flag)) != 0U;
+}
+
+struct WindowConfig {
+    std::string title{"MyCore"};
+    int width{1280};
+    int height{720};
+    WindowFlags flags{WindowFlags::None};
+    bool visible{true};
+};
+
+struct WindowSize {
+    int width{};
+    int height{};
+
+    auto operator<=>(const WindowSize&) const = default;
+};
+
+class Window {
+public:
+    explicit Window(const WindowConfig& config);
+    ~Window();
+
+    Window(const Window&) = delete;
+    Window& operator=(const Window&) = delete;
+    Window(Window&& other) noexcept;
+    Window& operator=(Window&& other) noexcept;
+
+    void show();
+    void hide();
+    [[nodiscard]] WindowSize size() const;
+    [[nodiscard]] SDL_Window* native_handle() const noexcept;
+
+private:
+    SDL_Window* window_{};
+};
+
+} // namespace mycore::platform_sdl
