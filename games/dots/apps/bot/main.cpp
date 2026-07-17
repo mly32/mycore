@@ -1,8 +1,8 @@
 #include "dots/simulation/simulation.hpp"
-
-#include <iostream>
+#include "mycore/debug/log.hpp"
 
 int main() {
-    std::cout << "dots_bot: foundation ready\n";
+    const mycore::debug::Runtime logging;
+    mycore::debug::log_info("dots.bot", "Foundation ready");
     return dots::simulation::foundation_ready() ? 0 : 1;
 }

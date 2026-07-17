@@ -90,11 +90,14 @@ void MouseSnapshot::set_pressed(MouseButton button, bool pressed_value) noexcept
     }
 }
 
-InputSnapshot poll_input(Window& window) {
+InputSnapshot poll_input(Window& window, EventObserver* observer) {
     InputSnapshot snapshot;
     SDL_Event event;
     const auto window_id = SDL_GetWindowID(window.native_handle());
     while (SDL_PollEvent(&event)) {
+        if (observer != nullptr) {
+            observer->process_event(event);
+        }
         if (event.type == SDL_EVENT_QUIT || (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
                                              event.window.windowID == window_id)) {
             snapshot.quit_requested = true;

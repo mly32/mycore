@@ -163,6 +163,7 @@ MyCore::Render
 MyCore::Render2D
 MyCore::Assets
 MyCore::Debug
+MyCore::DebugUI
 MyCore::NetTransport
 MyCore::Scripting
 
@@ -1348,6 +1349,10 @@ MyCore::Render2D
 MyCore::Debug
     depends on Core and adopted logging/profiling libraries; owns no game-specific panels
 
+MyCore::DebugUI
+    depends on Debug + PlatformSDL + Render + Dear ImGui; owns backend lifetime but no
+    game-specific panels
+
 Dots::Simulation
     depends on Core + Math + Time only
 
@@ -1365,7 +1370,7 @@ dots_server
 
 dots_client
     depends on Dots Simulation + Protocol + Presentation + MyCore PlatformSDL + Render2D +
-    NetTransport
+    DebugUI + NetTransport
 
 dots_bot
     depends on Dots Protocol + MyCore NetTransport
@@ -1385,6 +1390,11 @@ by that game and the engine.
 ## 16. Debugging and Observability
 
 Use Dear ImGui for development tooling instead of building an editor.
+
+`MyCore::DebugUI` owns the Dear ImGui context and its SDL3/SDL_GPU backends. Each graphical
+game owns the contents of its panels and passes them through the client composition root.
+Headless processes may use `MyCore::Debug` logging, metrics, and Tracy hooks without linking
+Dear ImGui or SDL video.
 
 Reference:
 

@@ -4,6 +4,10 @@
 #include "dots/presentation/presentation.hpp"
 #include "dots/simulation/world.hpp"
 #include "mycore/assets/directory_source.hpp"
+#include "mycore/debug/log.hpp"
+#include "mycore/debug/metrics.hpp"
+#include "mycore/debug/profile.hpp"
+#include "mycore/debug_ui/context.hpp"
 #include "mycore/math/vector2.hpp"
 #include "mycore/platform_sdl/input.hpp"
 #include "mycore/platform_sdl/runtime.hpp"
@@ -16,6 +20,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <imgui.h>
 #include <limits>
 #include <string>
 
@@ -78,16 +83,46 @@ void spawn_food_field(dots::simulation::World& world) {
     };
 }
 
-[[nodiscard]] std::string window_title(const ClientConfig& config) {
-    return config.window.title + " — Input: " + std::string{input_mode_name(config.controls.mode)};
-}
-
 [[nodiscard]] constexpr bool gpu_debug_mode() noexcept {
 #if defined(NDEBUG)
     return false;
 #else
     return true;
 #endif
+}
+
+void draw_debug_overlay(const ClientConfig& config,
+                        const dots::simulation::World& world,
+                        std::size_t simulation_steps,
+                        const mycore::debug::FrameMetricsSnapshot& frame_metrics) {
+    constexpr float kMargin = 12.0F;
+    const auto* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos({viewport->WorkPos.x + viewport->WorkSize.x - kMargin,
+                             viewport->WorkPos.y + viewport->WorkSize.y - kMargin},
+                            ImGuiCond_Always,
+                            {1.0F, 1.0F});
+    ImGui::SetNextWindowBgAlpha(0.82F);
+
+    constexpr auto kWindowFlags =
+        ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+        ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs;
+    if (ImGui::Begin("Dots observability", nullptr, kWindowFlags)) {
+        const auto input_mode = input_mode_name(config.controls.mode);
+        ImGui::TextUnformatted("Dots debug");
+        ImGui::Separator();
+        ImGui::Text("Input: %.*s", static_cast<int>(input_mode.size()), input_mode.data());
+        ImGui::Text("Tick: %llu", static_cast<unsigned long long>(world.tick().value()));
+        ImGui::Text("Players: %zu", world.player_count());
+        ImGui::Text("Food: %zu", world.food_count());
+        ImGui::Text("Grid cells: %zu", world.occupied_spatial_cell_count());
+        ImGui::Text("Simulation steps: %zu", simulation_steps);
+        ImGui::Separator();
+        ImGui::Text("Frame: %.2f ms", frame_metrics.latest_milliseconds);
+        ImGui::Text("Average: %.2f ms", frame_metrics.average_milliseconds);
+        ImGui::Text("FPS: %.1f", frame_metrics.frames_per_second);
+    }
+    ImGui::End();
 }
 
 void validate_render_assets(const mycore::assets::DirectorySource& assets) {
@@ -112,7 +147,7 @@ void validate_render_assets(const mycore::assets::DirectorySource& assets) {
 int run_client(const ClientConfig& config, ClientRunMode mode) {
     mycore::platform_sdl::Runtime runtime;
     mycore::platform_sdl::Window window{{
-        .title = window_title(config),
+        .title = config.window.title,
         .width = config.window.width,
         .height = config.window.height,
         .flags = window_flags(config.window),
@@ -142,7 +177,13 @@ int run_client(const ClientConfig& config, ClientRunMode mode) {
         },
     };
     mycore::render_2d::Renderer renderer{device, assets};
+    mycore::debug_ui::Context debug_ui{window, device};
     const auto render_settings = presentation_settings(config);
+    mycore::debug::log_info("dots.client",
+                            "Started SDL_GPU renderer '{}' with {} presentation and {} input",
+                            device.driver_name(),
+                            config.window.vsync ? "vsync" : "unlocked",
+                            input_mode_name(config.controls.mode));
     window.show();
 
     dots::simulation::World world;
@@ -159,9 +200,13 @@ int run_client(const ClientConfig& config, ClientRunMode mode) {
     std::uint32_t next_command_id{};
     const auto maximum_frame_delta =
         std::chrono::milliseconds{config.simulation.max_frame_delta_ms};
+    mycore::debug::FrameMetrics frame_metrics;
+    MYCORE_PROFILE_THREAD("Dots client");
 
     while (true) {
-        const auto input = mycore::platform_sdl::poll_input(window);
+        MYCORE_PROFILE_FRAME();
+        MYCORE_PROFILE_ZONE("Dots client frame");
+        const auto input = mycore::platform_sdl::poll_input(window, &debug_ui);
         if (quit_requested(input, config.controls)) {
             return 0;
         }
@@ -175,8 +220,11 @@ int run_client(const ClientConfig& config, ClientRunMode mode) {
         }
 
         const auto now = std::chrono::steady_clock::now();
+        const auto frame_duration = now - previous_time;
+        frame_metrics.add_sample(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(frame_duration));
         const auto elapsed = std::min(
-            now - previous_time,
+            frame_duration,
             std::chrono::duration_cast<std::chrono::steady_clock::duration>(maximum_frame_delta));
         previous_time = now;
         const auto step_result =
@@ -196,34 +244,37 @@ int run_client(const ClientConfig& config, ClientRunMode mode) {
                 static_cast<float>(output_size.height) / static_cast<float>(logical_size.height),
             .player_radius_pixels = *player_radius * config.view.pixels_per_world_unit,
         };
-        for (std::size_t step = 0; step < step_result.steps; ++step) {
-            if (next_command_id == dots::simulation::InputCommandId::kInvalidValue) {
-                throw dots::client::StartupError{"Local input command IDs are exhausted"};
+        {
+            MYCORE_PROFILE_ZONE("Dots simulation steps");
+            for (std::size_t step = 0; step < step_result.steps; ++step) {
+                if (next_command_id == dots::simulation::InputCommandId::kInvalidValue) {
+                    throw dots::client::StartupError{"Local input command IDs are exhausted"};
+                }
+                const auto command =
+                    make_input_command(input,
+                                       config.controls,
+                                       *player,
+                                       dots::simulation::InputCommandId{next_command_id},
+                                       viewport);
+                ++next_command_id;
+                if (!world.apply_input(command)) {
+                    throw dots::client::StartupError{"The local world rejected an input command"};
+                }
+                previous_player_position = current_player_position;
+                if (!world.step()) {
+                    throw dots::client::StartupError{"The local world rejected a simulation step"};
+                }
+                const auto position = world.position(*player);
+                if (!position) {
+                    throw dots::client::StartupError{"The local player disappeared from the world"};
+                }
+                current_player_position = *position;
+                const auto current_radius = world.radius(*player);
+                if (!current_radius) {
+                    throw dots::client::StartupError{"The local player disappeared from the world"};
+                }
+                viewport.player_radius_pixels = *current_radius * config.view.pixels_per_world_unit;
             }
-            const auto command =
-                make_input_command(input,
-                                   config.controls,
-                                   *player,
-                                   dots::simulation::InputCommandId{next_command_id},
-                                   viewport);
-            ++next_command_id;
-            if (!world.apply_input(command)) {
-                throw dots::client::StartupError{"The local world rejected an input command"};
-            }
-            previous_player_position = current_player_position;
-            if (!world.step()) {
-                throw dots::client::StartupError{"The local world rejected a simulation step"};
-            }
-            const auto position = world.position(*player);
-            if (!position) {
-                throw dots::client::StartupError{"The local player disappeared from the world"};
-            }
-            current_player_position = *position;
-            const auto current_radius = world.radius(*player);
-            if (!current_radius) {
-                throw dots::client::StartupError{"The local player disappeared from the world"};
-            }
-            viewport.player_radius_pixels = *current_radius * config.view.pixels_per_world_unit;
         }
 
         const auto alpha = std::clamp(static_cast<float>(step_result.remainder.count()) /
@@ -232,8 +283,26 @@ int run_client(const ClientConfig& config, ClientRunMode mode) {
                                       1.0F);
         const auto camera = previous_player_position +
                             ((current_player_position - previous_player_position) * alpha);
-        const auto frame = dots::presentation::extract_frame(world, camera);
-        renderer.render(dots::presentation::build_draw_list(frame, render_settings));
+        dots::presentation::FrameData frame;
+        {
+            MYCORE_PROFILE_ZONE("Dots presentation extraction");
+            frame = dots::presentation::extract_frame(world, camera);
+        }
+
+        debug_ui.begin_frame();
+        draw_debug_overlay(config, world, step_result.steps, frame_metrics.snapshot());
+        bool presented{};
+        {
+            MYCORE_PROFILE_ZONE("Dots render submission");
+            presented = renderer.render(dots::presentation::build_draw_list(frame, render_settings),
+                                        [&debug_ui](mycore::render::CommandList& commands,
+                                                    const mycore::render::SwapchainTarget& target) {
+                                            debug_ui.render(commands, target);
+                                        });
+        }
+        if (!presented) {
+            debug_ui.cancel_frame();
+        }
     }
 }
 

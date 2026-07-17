@@ -4,6 +4,7 @@
 #include "mycore/math/vector2.hpp"
 #include "mycore/render/render.hpp"
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -41,6 +42,9 @@ struct DrawList {
 
 class Renderer {
 public:
+    using FrameExtension =
+        std::function<void(render::CommandList&, const render::SwapchainTarget&)>;
+
     Renderer(render::Device& device, const assets::DirectorySource& assets);
     ~Renderer();
 
@@ -49,7 +53,7 @@ public:
     Renderer(Renderer&&) = delete;
     Renderer& operator=(Renderer&&) = delete;
 
-    void render(const DrawList& draw_list);
+    [[nodiscard]] bool render(const DrawList& draw_list, const FrameExtension& extension = {});
 
 private:
     class Impl;

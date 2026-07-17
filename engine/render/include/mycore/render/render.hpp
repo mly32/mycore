@@ -42,6 +42,11 @@ enum class PresentMode {
     Immediate,
 };
 
+enum class RenderPassLoadOperation {
+    Clear,
+    Load,
+};
+
 enum class VertexFormat {
     Float,
     Float2,
@@ -226,6 +231,7 @@ public:
     void bind_vertex_buffers(std::uint32_t first_slot, std::span<const BufferBinding> bindings);
     void draw(std::uint32_t vertex_count, std::uint32_t instance_count = 1);
     void end() noexcept;
+    [[nodiscard]] SDL_GPURenderPass* native_handle() const noexcept;
 
 private:
     friend class CommandList;
@@ -250,10 +256,14 @@ public:
                 std::size_t offset = 0,
                 bool cycle = true);
     [[nodiscard]] SwapchainTarget acquire_swapchain();
-    [[nodiscard]] RenderPass begin_render_pass(const SwapchainTarget& target, Color clear_color);
+    [[nodiscard]] RenderPass
+    begin_render_pass(const SwapchainTarget& target,
+                      Color clear_color = {},
+                      RenderPassLoadOperation load_operation = RenderPassLoadOperation::Clear);
     void push_vertex_uniform(std::uint32_t slot, std::span<const std::byte> bytes);
     void push_fragment_uniform(std::uint32_t slot, std::span<const std::byte> bytes);
     void submit();
+    [[nodiscard]] SDL_GPUCommandBuffer* native_handle() const noexcept;
 
     template <typename Type> void push_vertex_uniform(std::uint32_t slot, const Type& value) {
         push_vertex_uniform(slot, std::as_bytes(std::span{&value, std::size_t{1}}));
@@ -289,6 +299,7 @@ public:
     [[nodiscard]] ShaderFormat shader_format() const noexcept;
     [[nodiscard]] PresentMode present_mode() const noexcept;
     [[nodiscard]] std::string_view driver_name() const noexcept;
+    [[nodiscard]] SDL_GPUDevice* native_handle() const noexcept;
     [[nodiscard]] Buffer create_buffer(const BufferDescription& description);
     [[nodiscard]] Shader create_shader(std::span<const std::byte> code,
                                        const ShaderDescription& description);

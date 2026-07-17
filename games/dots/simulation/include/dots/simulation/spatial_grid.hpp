@@ -26,6 +26,7 @@ public:
     [[nodiscard]] bool contains(EntityId entity_id) const noexcept;
     [[nodiscard]] bool can_index(Circle bounds) const noexcept;
     [[nodiscard]] std::size_t entity_count() const noexcept;
+    [[nodiscard]] std::size_t occupied_cell_count() const noexcept;
     [[nodiscard]] std::vector<EntityId> query(Circle bounds) const;
 
 private:

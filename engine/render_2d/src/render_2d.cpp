@@ -211,7 +211,7 @@ public:
         commands.submit();
     }
 
-    void render(const DrawList& draw_list) {
+    bool render(const DrawList& draw_list, const Renderer::FrameExtension& extension) {
         validate(draw_list);
 
         std::vector<CircleGpuInstance> circles;
@@ -238,7 +238,7 @@ public:
         auto target = commands.acquire_swapchain();
         if (!target) {
             commands.submit();
-            return;
+            return false;
         }
 
         const auto output_width = static_cast<float>(target.width());
@@ -285,7 +285,11 @@ public:
         }
 
         pass.end();
+        if (extension) {
+            extension(commands, target);
+        }
         commands.submit();
+        return true;
     }
 
 private:
@@ -317,8 +321,8 @@ Renderer::Renderer(render::Device& device, const assets::DirectorySource& assets
 
 Renderer::~Renderer() = default;
 
-void Renderer::render(const DrawList& draw_list) {
-    impl_->render(draw_list);
+bool Renderer::render(const DrawList& draw_list, const FrameExtension& extension) {
+    return impl_->render(draw_list, extension);
 }
 
 } // namespace mycore::render_2d

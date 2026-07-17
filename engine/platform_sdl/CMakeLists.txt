@@ -14,5 +14,5 @@ target_include_directories(
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
 )
 
-target_link_libraries(mycore_platform_sdl PUBLIC SDL3::SDL3)
+target_link_libraries(mycore_platform_sdl PUBLIC SDL3::SDL3-static)
 mycore_configure_target(mycore_platform_sdl)

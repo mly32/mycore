@@ -53,6 +53,8 @@ sudo apt-get install --yes \
     build-essential clang cmake ninja-build pkg-config \
     autoconf autoconf-archive automake libtool libltdl-dev \
     libx11-dev libxft-dev libxext-dev \
+    libxcursor-dev libxfixes-dev libxi-dev libxrandr-dev \
+    libxss-dev libxtst-dev \
     libwayland-dev libxkbcommon-dev libegl1-mesa-dev \
     libibus-1.0-dev
 ```
@@ -122,11 +124,18 @@ executable. No shader compiler is loaded at runtime.
 
 Hybrid input is the default: WASD or the arrow keys take precedence while held, and otherwise
 the player moves toward the mouse cursor. Mouse input stops while the cursor is inside the
-player circle, and the window title shows the active input mode. Press Escape or close the
-window to exit. The window is resizable and uses swapchain pixel dimensions so high-DPI display
-and mouse coordinates stay aligned. Asset lookup is relative to the executable, so the client
-can be launched from a different working directory. As the player consumes food, its color
-shifts from `colors.player` toward `colors.player_growth` to make growth easier to see.
+player circle. Press Escape or close the window to exit. The window is resizable and uses
+swapchain pixel dimensions so high-DPI display and mouse coordinates stay aligned. Asset lookup
+is relative to the executable, so the client can be launched from a different working directory.
+As the player consumes food, its color shifts from `colors.player` toward
+`colors.player_growth` to make growth easier to see.
+
+A non-interactive Dear ImGui overlay in the bottom-right reports the active input mode, world
+tick, player and food counts, occupied spatial-grid cells, simulation steps, frame time, rolling
+average, and FPS. Logs use owner-qualified categories such as `dots.client`, `dots.server`, and
+`dots.bot`. The client also includes on-demand Tracy zones for its frame, simulation,
+presentation, and render-submission work; without a Tracy profiler connected, those hooks remain
+dormant.
 
 Run the checked-in complete configuration explicitly:
 
@@ -193,3 +202,4 @@ preset overrides in the ignored `CMakeUserPresets.json`.
 - [Multi-game architecture revamp](docs/plans/multi_game_architecture_revamp.md)
 - [Feature 05 SDL client plan](docs/plans/05-sdl-client-window-input.md)
 - [Feature 06 SDL_GPU render plan](docs/plans/06-sdl-gpu-render-baseline.md)
+- [Feature 07 debug observability plan](docs/plans/07-debug-observability.md)

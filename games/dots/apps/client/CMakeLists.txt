@@ -26,6 +26,7 @@ target_link_libraries(
     PRIVATE
         dots_client_support
         Dots::Presentation
+        MyCore::DebugUI
         MyCore::Render2D
 )
 mycore_configure_executable(dots_client)
