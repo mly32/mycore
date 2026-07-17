@@ -415,7 +415,8 @@ void parse_view(const toml::table& table,
 void parse_colors(const toml::table& table,
                   ClientConfig& config,
                   const std::filesystem::path& source) {
-    validate_keys(table, {"background", "grid", "player", "food"}, source, "colors");
+    validate_keys(
+        table, {"background", "grid", "player", "player_growth", "food"}, source, "colors");
     if (table.contains("background")) {
         config.colors.background =
             parse_color(read_string(table, "background", source, "colors.background"),
@@ -429,6 +430,12 @@ void parse_colors(const toml::table& table,
     if (table.contains("player")) {
         config.colors.player = parse_color(
             read_string(table, "player", source, "colors.player"), source, "colors.player");
+    }
+    if (table.contains("player_growth")) {
+        config.colors.player_growth =
+            parse_color(read_string(table, "player_growth", source, "colors.player_growth"),
+                        source,
+                        "colors.player_growth");
     }
     if (table.contains("food")) {
         config.colors.food =

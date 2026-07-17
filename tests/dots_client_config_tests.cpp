@@ -68,6 +68,8 @@ TEST_CASE("Client configuration defaults match the playable client", "[dots][cli
     REQUIRE(config.simulation.max_steps_per_frame == 5);
     REQUIRE(config.view.pixels_per_world_unit == 20.0F);
     REQUIRE(config.view.draw_grid);
+    REQUIRE(config.colors.player == dots::client::RgbColor{0x4C, 0xC9, 0xF0});
+    REQUIRE(config.colors.player_growth == dots::client::RgbColor{0xFF, 0xD1, 0x66});
     REQUIRE(config.colors.food == dots::client::RgbColor{0xF7, 0x25, 0x85});
 }
 
@@ -106,6 +108,7 @@ grid_spacing_world_units = 4.0
 background = "#010203"
 grid = "#a0B1c2"
 player = "#112233"
+player_growth = "#445566"
 food = "#FEDCBA"
 )";
     const auto config = dots::client::parse_client_config(document, "complete.toml");
@@ -127,6 +130,8 @@ food = "#FEDCBA"
     REQUIRE(config.view.grid_spacing_world_units == 4.0F);
     REQUIRE(config.colors.background == dots::client::RgbColor{0x01, 0x02, 0x03});
     REQUIRE(config.colors.grid == dots::client::RgbColor{0xA0, 0xB1, 0xC2});
+    REQUIRE(config.colors.player == dots::client::RgbColor{0x11, 0x22, 0x33});
+    REQUIRE(config.colors.player_growth == dots::client::RgbColor{0x44, 0x55, 0x66});
     REQUIRE(config.colors.food == dots::client::RgbColor{0xFE, 0xDC, 0xBA});
 }
 
@@ -231,6 +236,7 @@ TEST_CASE("Invalid client TOML reports the source and field", "[dots][client][co
         InvalidDocument{"[view]\npixels_per_world_unit = 0", "view.pixels_per_world_unit"},
         InvalidDocument{"[view]\ngrid_spacing_world_units = -2", "view.grid_spacing_world_units"},
         InvalidDocument{"[colors]\nplayer = \"#12345Z\"", "colors.player"},
+        InvalidDocument{"[colors]\nplayer_growth = \"gold\"", "colors.player_growth"},
     };
 
     for (const auto& invalid : invalid_documents) {

@@ -11,15 +11,17 @@
 namespace {
 
 constexpr std::string_view kHelp = R"(Dots Client
-A playable offline SDL client that runs the local Dots simulation.
+A playable offline SDL_GPU client that runs and presents the local Dots simulation.
 
 Usage:
-  dots_client [--config <path>] [--headless-smoke] [--help]
+  dots_client [--config <path>] [--headless-smoke | --package-smoke] [--help]
 
 Options:
   --config <path>   Load this TOML file instead of automatic dots-client.toml.
   --headless-smoke  Initialize SDL and a hidden window, poll input once, then exit.
-                    This does not create a renderer or start the game loop.
+                    This does not create a GPU device or start the game loop.
+  --package-smoke   Perform the headless smoke check and read every packaged shader.
+                    This validates the runtime bundle without requiring a GPU.
   --help            Show this help text and exit.
 
 Controls:
@@ -41,6 +43,7 @@ public:
 struct CliOptions {
     std::optional<std::filesystem::path> config_path;
     bool headless_smoke{};
+    bool package_smoke{};
     bool help{};
 };
 
@@ -54,6 +57,10 @@ CliOptions parse_arguments(int argc, char** argv) {
         }
         if (argument == "--headless-smoke") {
             options.headless_smoke = true;
+            continue;
+        }
+        if (argument == "--package-smoke") {
+            options.package_smoke = true;
             continue;
         }
         if (argument == "--config") {
@@ -72,6 +79,9 @@ CliOptions parse_arguments(int argc, char** argv) {
         }
         throw CliError{"unknown argument: " + std::string{argument}};
     }
+    if (options.headless_smoke && options.package_smoke) {
+        throw CliError{"--headless-smoke and --package-smoke are mutually exclusive"};
+    }
     return options;
 }
 
@@ -85,7 +95,13 @@ int main(int argc, char** argv) {
             return 0;
         }
         const auto config = dots::client::load_client_config(options.config_path);
-        return dots::client::run_client(config, options.headless_smoke);
+        auto mode = dots::client::ClientRunMode::Game;
+        if (options.headless_smoke) {
+            mode = dots::client::ClientRunMode::HeadlessSmoke;
+        } else if (options.package_smoke) {
+            mode = dots::client::ClientRunMode::PackageSmoke;
+        }
+        return dots::client::run_client(config, mode);
     } catch (const CliError& error) {
         std::cerr << "dots_client: " << error.what() << "\n\n" << kHelp;
     } catch (const std::exception& error) {

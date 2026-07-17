@@ -70,7 +70,7 @@ These can become later experiments after a working reference implementation exis
 | Fuzzing | **libFuzzer** for packet and asset decoders |
 | Platform layer | **SDL3** |
 | Renderer | **SDL_GPU** behind a thin engine API |
-| Shader language | **HLSL**, compiled offline through SDL_shadercross |
+| Shader language | **HLSL**, compiled offline through glslang/DXC/SPIRV-Cross initially |
 | Networking transport | **GameNetworkingSockets** |
 | Scripting | **Lua 5.5**, using a small direct C API wrapper |
 | Debug UI | **Dear ImGui** |
@@ -157,8 +157,10 @@ Use stable public target names from the beginning:
 MyCore::Core
 MyCore::Math
 MyCore::Time
+MyCore::PlatformPaths
 MyCore::PlatformSDL
 MyCore::Render
+MyCore::Render2D
 MyCore::Assets
 MyCore::Debug
 MyCore::NetTransport
@@ -293,8 +295,9 @@ target_link_libraries(my_game PRIVATE MyCore::Core MyCore::Render)
 ```
 
 Keep public headers and target names compatible with a future installed package, but do not
-add installation machinery before several engine modules stabilize. After Dots and the aim
-trainer validate the boundaries, export reusable engine targets through
+add engine-library export machinery before several engine modules stabilize. Runtime game
+bundle install rules are independent. After Dots and the aim trainer validate the boundaries,
+export reusable engine targets through
 `MyCoreConfig.cmake` so an external project can use:
 
 ```cmake
@@ -305,6 +308,59 @@ target_link_libraries(my_game PRIVATE MyCore::Core MyCore::Render)
 Game targets are not part of the MyCore engine package by default. Validate packaging with
 a separate minimal consumer project that installs MyCore, calls `find_package`, and links
 only the requested components.
+
+## 4.4 Playable game distribution
+
+Keep runtime game bundles separate from the future MyCore developer package. A game bundle
+contains an executable, cooked platform assets, runtime shared libraries, and example user
+configuration; the engine package contains headers, libraries, and CMake metadata for another
+developer.
+
+Feature 06 establishes a `DotsClient` install component and verified archive:
+
+```text
+Windows/Linux                 macOS
+dots_client[.exe]             Dots.app/Contents/MacOS/dots_client
+assets/...                    Dots.app/Contents/Resources/assets/...
+dots-client.example.toml      Dots.app/Contents/Resources/dots-client.example.toml
+```
+
+CPack produces ZIP on Windows and `.tar.gz` on macOS/Linux. CI extracts the archive, verifies
+the exact target-declared shader set, and runs a GPU-free package smoke path before retaining
+the archive as a short-lived artifact. Do not package the entire incremental build output
+directory: deleted source assets can remain there until a clean build.
+
+Code signing, macOS notarization, installers, Linux compatibility baselines, and permanent
+tagged release publication are later release-engineering concerns rather than renderer APIs.
+
+## 4.5 Per-user configuration and writable paths
+
+The packaged example configuration is a read-only reference, not the live settings file. A
+desktop application launched from Finder, Explorer, or a Linux menu must not depend on its
+current working directory to locate user settings.
+
+Add an eventual game-neutral `MyCore::PlatformPaths` facility that takes a vendor/application
+identity and returns native locations for configuration, persistent data, cache, and logs. Its
+configuration convention should be:
+
+```text
+macOS    ~/Library/Application Support/<vendor>/<game>/
+Windows  %LOCALAPPDATA%\\<vendor>\\<game>\\
+Linux    $XDG_CONFIG_HOME/<vendor>/<game>/
+         ~/.config/<vendor>/<game>/ when XDG_CONFIG_HOME is unset
+```
+
+Do not put TOML policy in that engine module. The engine discovers directories; Dots or another
+game chooses `dots-client.toml`, supplies defaults, parses its schema, and reports field errors.
+For Dots, preserve an explicit `--config` as the highest-priority source, retain the
+current-directory file as a useful developer/portable override, then check the per-user file
+before falling back to built-in defaults.
+
+Path lookup is read-only. Saving settings, creating directories, migrating versions, and
+deciding whether a setting roams or stays machine-local must be explicit application actions.
+Keep configuration, saves/data, cache, and logs distinct so cleanup or cloud synchronization
+does not accidentally treat them alike. Test path rules with injected platform/environment
+values rather than the test runner's real home directory.
 
 ---
 
@@ -453,10 +509,12 @@ RenderPassDescription
 
 Do not design a large generic RHI before understanding the game’s real needs.
 
-Game presentation owns render-data extraction, shaders, pipelines, and passes that encode
-game meaning. `Dots::Presentation` converts Dots state into circle instances and owns its
-circle and grid shaders. A later aim-trainer presentation library will own its camera,
-meshes, target materials, and scene submission without depending on Dots.
+Game presentation owns render-data extraction and the mapping from game meaning to generic
+visual data. `MyCore::Render2D` owns reusable circle/grid shaders, pipelines, batching, and
+passes; `Dots::Presentation` converts Dots state into its transient draw list. A later small
+Render3D layer may similarly own demonstrated mesh/depth facilities while aim-trainer
+presentation owns its camera behavior, target appearance, and scene submission without
+depending on Dots.
 
 ### Initial renderer scope
 
@@ -467,12 +525,15 @@ The first engine render layer should contain only the facilities needed to suppo
 - A small shared debug-line path and Dear ImGui integration where their contracts are
   genuinely game-neutral.
 
-`Dots::Presentation` initially adds:
+`MyCore::Render2D` initially adds:
 
 - One instanced-quad pipeline for circles.
 - Signed-distance circle evaluation in the fragment shader.
 - A background or grid pass.
-- The initial text or font-atlas use needed by the game.
+
+Dear ImGui owns developer-facing text in the next observability feature. SDL_ttf or a UI
+toolkit should be adopted when player-facing text and layout become demonstrated needs rather
+than implementing glyph rasterization in a game presentation target.
 
 When the aim trainer is implemented, extend `MyCore::Render` only with demonstrated needs
 such as depth attachments, vertex/index meshes, perspective transforms, and material
@@ -482,29 +543,83 @@ resources. Do not introduce a generic scene graph or render graph merely to prep
 
 Use HLSL as the canonical shader source.
 
-Compile shaders during the asset build.
+Compile shaders during the asset build. The current portable host-tool chain is:
 
-SDL_shadercross can accept HLSL or SPIR-V and produce formats such as:
+- `glslang[tools]` for HLSL to SPIR-V on Linux and macOS.
+- `spirv-cross` for SPIR-V to MSL on macOS.
+- `directx-dxc` for HLSL to DXIL on Windows.
 
-- DXIL
-- SPIR-V
-- MSL
-
-Reference:
-
-- [SDL_shadercross README](https://github.com/libsdl-org/SDL_shadercross/blob/master/README.txt)
+These are build tools, not client runtime libraries. SDL_shadercross remains a possible future
+way to consolidate translation if its packaging makes that simpler.
 
 Suggested pipeline:
 
 ```text
-games/dots/assets/shaders/circle.hlsl
+engine/render_2d/assets/shaders/circle.vert.hlsl + circle.frag.hlsl
         ↓ asset build
-generated/shaders/dxil/circle.bin
-generated/shaders/spirv/circle.bin
-generated/shaders/msl/circle.bin
+assets/mycore/render_2d/shaders/circle.vert.<platform-format>
+assets/mycore/render_2d/shaders/circle.frag.<platform-format>
 ```
 
 Prefer offline shader compilation. Do not make runtime shader compilation a shipping requirement.
+
+Keep loose compiled shader files while Render2D has only two programs and no variants. When the
+aim trainer demonstrates multiple materials or feature combinations, evolve the build pipeline
+without changing game-facing draw APIs:
+
+```text
+HLSL + platform-neutral shader manifest + material references
+        |
+        v
+host-only shader cooker
+  enumerate only required variants
+  compile DXIL / SPIR-V / MSL or metallib
+  reflect and validate resource bindings
+  hash and deduplicate blobs
+        |
+        v
+platform shader library
+  logical shader ID + variant key -> blob + entry point + binding metadata
+        |
+        v
+runtime ShaderLibrary -> PipelineCache -> MyCore::Render GPU objects
+```
+
+The manifest may use TOML but is an engine-owned format, not an industry standard. It should
+describe logical programs, stages, entries, variant axes, and platform constraints rather than
+hard-code output paths. Prefer compiler reflection for resource counts and bindings instead of
+duplicating that contract manually in C++.
+
+Keep these runtime responsibilities distinct:
+
+- `ShaderLibrary`: locate compiled stage blobs and reflection metadata by stable ID and variant.
+- `MaterialDefinition`: choose a shader program and variant features plus textures, parameters,
+  blending, depth, and culling intent.
+- `PipelineCache`: combine shader stages, vertex layout, fixed state, and target formats into a
+  live graphics pipeline; support prewarming only after profiling shows first-use stalls.
+- `AssetManager`: own cooked shader, texture, mesh, and material lifetime independently of scene
+  meaning.
+
+A general asset pack becomes worthwhile only when indexing, compression, integrity checks,
+streaming, patches, or file-count overhead are demonstrated. Preserve loose-file development
+mode even after release builds gain packed content.
+
+The intended runtime layering is:
+
+```text
+authoritative game world
+        -> game-owned presentation extraction
+        -> transient RenderSnapshot / optional client-only RenderWorld
+        -> Render2D or future Render3D visibility, sorting, and batching
+        -> materials + ShaderLibrary + PipelineCache
+        -> frame passes / optional render graph
+        -> MyCore::Render resources and command submission
+        -> SDL_GPU -> Metal / Vulkan / D3D12
+```
+
+Do not turn the authoritative world into an engine scene. Add a persistent client-only
+`RenderWorld` only when culling, LOD, interpolation, render-thread ownership, or stable
+mesh/material handles make it simpler than a transient snapshot.
 
 ## 7.3 Direct Vulkan as a research branch
 
@@ -961,6 +1076,32 @@ Snapshot generation is the first natural parallel workload because it can consum
 
 Only partition the actual simulation after profiling proves it necessary.
 
+A task scheduler becomes worthwhile when Tracy and load tests identify several bounded CPU
+work units that can run concurrently and the single-threaded version misses a measured budget.
+Likely candidates are per-client snapshot encoding, visibility/culling, animation, asset
+decompression, path queries, and render-command preparation. Prefer adopting and wrapping a
+small proven scheduler over building work stealing, dependency graphs, and shutdown semantics
+from scratch.
+
+Do not model every long-lived subsystem as an arbitrary task:
+
+- The authoritative game heartbeat remains an owner-thread fixed tick. It may dispatch
+  deterministic sub-work and join it before publishing state, but tick ordering is explicit.
+- Network I/O normally owns its poll thread or library callback context and communicates through
+  queues; packet validation or snapshot encoding may use worker tasks.
+- GPU submission and SDL window/event operations stay on their required owner thread. A renderer
+  may parallelize culling or draw-packet construction before ordered submission.
+- An audio callback or mixer thread is real-time-sensitive and must not wait on a general worker
+  pool; non-real-time decoding or streaming preparation may use tasks.
+- Physics remains inside the simulation dependency graph. If a future physics library has its
+  own job integration, adapt that deliberately rather than running a whole physics step as an
+  unsynchronized background task.
+
+Keep the first scheduler contract small: task groups, explicit dependencies or fences,
+cooperative shutdown, bounded worker count, exception/error propagation, and profiler labels.
+Do not allow jobs to outlive the state they reference. Preserve a deterministic single-threaded
+mode for tests, replay comparison, and debugging.
+
 ---
 
 ## 13. World and Entity Representation
@@ -1194,8 +1335,15 @@ MyCore::Time
     depends on Core only; owns monotonic ticks, durations, and policy-free fixed-step
     accumulation
 
+MyCore::PlatformPaths
+    depends on Core only; discovers OS-native writable locations without owning game schemas
+    or requiring SDL video initialization
+
 MyCore::Assets
     depends on Core only; owns game-neutral asset lookup and byte loading, not game formats
+
+MyCore::Render2D
+    depends on Render + Assets + Math; owns reusable 2D draw data, shaders, and batching
 
 MyCore::Debug
     depends on Core and adopted logging/profiling libraries; owns no game-specific panels
@@ -1210,13 +1358,13 @@ Dots::Replication
     depends on Dots Simulation + Dots Protocol
 
 Dots::Presentation
-    depends on Dots Simulation + MyCore Render + Assets, not on server runtime code
+    depends on Dots Simulation + MyCore Render2D, not on server runtime code
 
 dots_server
     depends on Dots Simulation + Replication + MyCore NetTransport + scripting bindings
 
 dots_client
-    depends on Dots Simulation + Protocol + Presentation + MyCore PlatformSDL + Render +
+    depends on Dots Simulation + Protocol + Presentation + MyCore PlatformSDL + Render2D +
     NetTransport
 
 dots_bot
@@ -1422,7 +1570,9 @@ These systems align directly with the learning goals:
 | 10. Lua rules | Match and spawn rules can be reloaded safely at tick boundaries |
 | 11. Aim-trainer reuse | An offline 3D aim trainer reuses engine libraries without depending on Dots |
 | 12. Engine package | A separate consumer installs MyCore and links selected `MyCore::` components with `find_package` |
-| 13. Research branches | Direct Vulkan, EnTT, Conan, or fixed-point implementations are compared against recorded workloads |
+| 13. Conditional task scheduling | A measured workload improves without weakening deterministic ownership or tick-tail latency |
+| 14. Platform user settings | Packaged games discover per-user configuration through native OS locations without moving game schemas into the engine |
+| 15. Research branches | Direct Vulkan, EnTT, Conan, or fixed-point implementations are compared against recorded workloads |
 
 ## 18.1 Metrics at the 1,000-client milestone
 
@@ -1493,7 +1643,7 @@ small owned math library
 requirement-driven 3D expansion
 
 HLSL
-offline SDL_shadercross compilation
+offline glslang/DXC compilation with SPIRV-Cross translation
 
 GameNetworkingSockets
 
@@ -1554,7 +1704,7 @@ Codex should implement the project in the following order.
 
 1. Create the `dots_client` SDL3 application under `games/dots/apps`.
 2. Add `MyCore::PlatformSDL`, `MyCore::Assets`, and game-neutral SDL_GPU initialization.
-3. Add `MyCore::Render` plus `Dots::Presentation` and render one instanced circle.
+3. Add `MyCore::Render`, `MyCore::Render2D`, and `Dots::Presentation`; render one instanced circle.
 4. Add fixed-step simulation.
 5. Add keyboard and mouse input.
 6. Move one player circle.
@@ -1625,7 +1775,25 @@ Codex should implement the project in the following order.
 7. Export stabilized engine targets through an installed CMake package.
 8. Validate `find_package(MyCore CONFIG REQUIRED)` from a separate minimal consumer.
 
-### Phase H: Research branches
+### Phase H: Conditional task-scheduler validation
+
+Begin this phase only when load-harness or second-game profiles expose independent CPU work and
+a missed budget.
+
+1. Record the single-threaded baseline and tail latency.
+2. Compare a proven task library with a minimal fixed worker pool.
+3. Introduce `MyCore::Tasks` around one immutable workload, preferably snapshot construction.
+4. Preserve deterministic single-thread mode and explicit subsystem owner threads.
+5. Keep the scheduler only if the measured result justifies its complexity.
+
+### Phase I: Platform user settings
+
+1. Add game-neutral config/data/cache/log directory discovery behind `MyCore::PlatformPaths`.
+2. Preserve game-owned filenames, TOML parsing, defaults, and validation.
+3. Add Dots per-user config fallback while retaining explicit CLI and developer overrides.
+4. Test all platform conventions with injected profile locations and no real-home writes.
+
+### Phase J: Research branches
 
 1. Compare EnTT against the Dots manual world representation.
 2. Compare direct Vulkan against SDL_GPU.

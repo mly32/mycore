@@ -4,7 +4,25 @@
   "version-string": "0.1.0",
   "dependencies": [
     "catch2",
+    {
+      "name": "directx-dxc",
+      "host": true,
+      "platform": "windows"
+    },
+    {
+      "name": "glslang",
+      "features": [
+        "tools"
+      ],
+      "host": true,
+      "platform": "!windows"
+    },
     "sdl3",
+    {
+      "name": "spirv-cross",
+      "host": true,
+      "platform": "osx"
+    },
     "tomlplusplus"
   ]
 }

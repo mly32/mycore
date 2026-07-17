@@ -97,6 +97,17 @@ jobs:
       - name: Test
         run: ctest --preset ${{ matrix.preset }}
 
+      - name: Package Dots client
+        run: cmake --build --preset ${{ matrix.preset }} --target dots_client_package
+
+      - name: Upload Dots client package
+        uses: actions/upload-artifact@v4
+        with:
+          name: dots-client-${{ matrix.preset }}
+          path: build/${{ matrix.preset }}/packages/dots-client-*
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Upload diagnostic logs
         if: failure()
         uses: actions/upload-artifact@v4

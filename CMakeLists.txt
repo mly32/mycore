@@ -20,3 +20,5 @@ add_subdirectory(games)
 if(BUILD_TESTING)
     add_subdirectory(tests)
 endif()
+
+include(Packaging)

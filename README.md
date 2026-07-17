@@ -25,6 +25,7 @@ an installable CMake package after the reusable modules stabilize.
 - A C++20 compiler: AppleClang/Clang, GCC, or MSVC
 - vcpkg with the `VCPKG_ROOT` environment variable set to its installation directory
 - pkg-config when building dependencies on macOS or Linux
+- A Metal-, Vulkan-, or D3D12-capable GPU driver to run the graphical client
 
 Confirm the tools are available:
 
@@ -52,8 +53,6 @@ sudo apt-get install --yes \
     build-essential clang cmake ninja-build pkg-config \
     autoconf autoconf-archive automake libtool libltdl-dev \
     libx11-dev libxft-dev libxext-dev \
-    libxcursor-dev libxfixes-dev libxi-dev libxrandr-dev \
-    libxss-dev libxtst-dev \
     libwayland-dev libxkbcommon-dev libegl1-mesa-dev \
     libibus-1.0-dev
 ```
@@ -100,7 +99,7 @@ cmake --build --preset macos-clang-debug
 ### Run Dots
 
 All runnable targets are placed under `build/<preset>/bin`. `dots_client` runs a playable
-offline SDL client; the server and bot remain foundation executables for now:
+offline SDL_GPU client; the server and bot remain foundation executables for now:
 
 | Target | Executable path for `macos-clang-debug` |
 |---|---|
@@ -114,11 +113,20 @@ offline SDL client; the server and bot remain foundation executables for now:
 ./build/macos-clang-debug/bin/dots_bot
 ```
 
-The client uses hybrid input by default: WASD or the arrow keys take precedence while held,
-and otherwise the player moves toward the mouse cursor. Mouse input stops while the cursor is
-inside the player circle, and the bottom-right HUD shows the active input mode. Press Escape
-or close the window to exit. The window is resizable and uses renderer output dimensions so
-high-DPI display and mouse coordinates stay aligned.
+The client uses SDL_GPU through the game-neutral `MyCore::Render` layer and the engine-owned
+`MyCore::Render2D` grid/circle renderer. Dots only extracts game state and maps food and players
+to generic draw data. The GPU backend is Metal on macOS, Vulkan on Linux, and D3D12 on Windows.
+The build compiles Render2D's canonical HLSL shaders to MSL, SPIR-V, or DXIL using
+vcpkg-managed host tools, then stages them under `bin/assets/mycore/render_2d/` beside the
+executable. No shader compiler is loaded at runtime.
+
+Hybrid input is the default: WASD or the arrow keys take precedence while held, and otherwise
+the player moves toward the mouse cursor. Mouse input stops while the cursor is inside the
+player circle, and the window title shows the active input mode. Press Escape or close the
+window to exit. The window is resizable and uses swapchain pixel dimensions so high-DPI display
+and mouse coordinates stay aligned. Asset lookup is relative to the executable, so the client
+can be launched from a different working directory. As the player consumes food, its color
+shifts from `colors.player` toward `colors.player_growth` to make growth easier to see.
 
 Run the checked-in complete configuration explicitly:
 
@@ -136,14 +144,33 @@ case-insensitive and support letters, digits, arrows, Escape, Space, Enter, Tab,
 left/right modifiers, navigation keys, and F1 through F12.
 
 For an initialization-only run that creates a hidden window, polls input once, and does not
-create a renderer or enter the game loop:
+create a GPU device or enter the game loop:
 
 ```bash
 SDL_VIDEODRIVER=dummy \
     ./build/macos-clang-debug/bin/dots_client --headless-smoke
 ```
 
+To produce and verify a relocatable client archive containing the executable, platform shader
+assets, and an example configuration:
+
+```bash
+cmake --build --preset macos-clang-debug --target dots_client_package
+```
+
+Packages and SHA-256 checksum files are written under
+`build/<preset>/packages/`. Windows packages are ZIP files, while macOS and Linux packages are
+`.tar.gz` archives. The macOS archive contains `Dots.app`; its shaders live under
+`Contents/Resources/assets/`, where `SDL_GetBasePath()` resolves them. The package target
+extracts its own archive and runs `--package-smoke`, which creates a dummy-driver window and
+reads all four shaders without creating a GPU device. CI uploads one verified archive per
+platform for short-lived testing.
+
 Use `dots_client --help` for the complete CLI surface.
+
+For a concise introduction to shaders, GPU resources, instanced drawing, and how one Dots
+frame reaches the screen, see the
+[SDL_GPU rendering and shaders guide](docs/sdl_gpu_rendering_guide.md).
 
 ### Visual Studio Code
 
@@ -165,3 +192,4 @@ preset overrides in the ignored `CMakeUserPresets.json`.
 - [Incremental feature branch plan](docs/development_branch_plan.md)
 - [Multi-game architecture revamp](docs/plans/multi_game_architecture_revamp.md)
 - [Feature 05 SDL client plan](docs/plans/05-sdl-client-window-input.md)
+- [Feature 06 SDL_GPU render plan](docs/plans/06-sdl-gpu-render-baseline.md)

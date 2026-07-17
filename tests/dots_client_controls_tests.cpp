@@ -69,7 +69,7 @@ TEST_CASE("Mouse movement uses renderer coordinates and honors its dead zone",
     REQUIRE(scaled.movement.y == Catch::Approx(0.8F));
 }
 
-TEST_CASE("Input modes have HUD labels", "[dots][client][input]") {
+TEST_CASE("Input modes have display labels", "[dots][client][input]") {
     REQUIRE(dots::client::input_mode_name(dots::client::InputMode::Mouse) == "MOUSE");
     REQUIRE(dots::client::input_mode_name(dots::client::InputMode::Keyboard) == "KEYBOARD");
     REQUIRE(dots::client::input_mode_name(dots::client::InputMode::Hybrid) == "HYBRID");

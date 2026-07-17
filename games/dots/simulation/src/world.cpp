@@ -134,6 +134,14 @@ std::size_t World::food_count() const noexcept {
     return food_entity_ids_.size();
 }
 
+std::span<const EntityId> World::player_ids() const noexcept {
+    return entity_ids_;
+}
+
+std::span<const EntityId> World::food_ids() const noexcept {
+    return food_entity_ids_;
+}
+
 std::optional<mycore::math::Vector2> World::position(EntityId entity_id) const noexcept {
     const auto* location = find_location(entity_id);
     if (location == nullptr) {
