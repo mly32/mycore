@@ -1,4 +1,4 @@
-add_library(dots_simulation STATIC src/simulation.cpp src/world.cpp)
+add_library(dots_simulation STATIC src/simulation.cpp src/spatial_grid.cpp src/world.cpp)
 add_library(Dots::Simulation ALIAS dots_simulation)
 
 target_include_directories(
