@@ -15,7 +15,8 @@ enum class WindowFlags : std::uint8_t {
 };
 
 [[nodiscard]] constexpr WindowFlags operator|(WindowFlags lhs, WindowFlags rhs) noexcept {
-    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange) - bitfield enum creates composite values
+    // bitfield enum creates composite values
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     return static_cast<WindowFlags>(static_cast<std::uint8_t>(lhs) |
                                     static_cast<std::uint8_t>(rhs));
 }
