@@ -9,7 +9,7 @@ target_link_libraries(
         MyCore::Time
         Catch2::Catch2WithMain
 )
-mycore_configure_executable(mycore_core_smoke_tests)
+mycore_configure_test_executable(mycore_core_smoke_tests)
 
 include(Catch)
 catch_discover_tests(mycore_core_smoke_tests)
@@ -21,7 +21,7 @@ target_link_libraries(
         MyCore::Debug
         Catch2::Catch2WithMain
 )
-mycore_configure_executable(mycore_debug_tests)
+mycore_configure_test_executable(mycore_debug_tests)
 catch_discover_tests(mycore_debug_tests)
 
 add_executable(mycore_assets_tests mycore_assets_tests.cpp)
@@ -31,7 +31,7 @@ target_link_libraries(
         MyCore::Assets
         Catch2::Catch2WithMain
 )
-mycore_configure_executable(mycore_assets_tests)
+mycore_configure_test_executable(mycore_assets_tests)
 catch_discover_tests(mycore_assets_tests)
 
 add_executable(mycore_platform_sdl_tests mycore_platform_sdl_tests.cpp)
@@ -41,7 +41,7 @@ target_link_libraries(
         MyCore::PlatformSDL
         Catch2::Catch2WithMain
 )
-mycore_configure_executable(mycore_platform_sdl_tests)
+mycore_configure_test_executable(mycore_platform_sdl_tests)
 catch_discover_tests(
     mycore_platform_sdl_tests
     PROPERTIES
@@ -55,7 +55,7 @@ target_link_libraries(
         MyCore::Render
         Catch2::Catch2WithMain
 )
-mycore_configure_executable(mycore_render_tests)
+mycore_configure_test_executable(mycore_render_tests)
 catch_discover_tests(mycore_render_tests)
 
 add_executable(mycore_render_2d_tests mycore_render_2d_tests.cpp)
@@ -65,7 +65,7 @@ target_link_libraries(
         MyCore::Render2D
         Catch2::Catch2WithMain
 )
-mycore_configure_executable(mycore_render_2d_tests)
+mycore_configure_test_executable(mycore_render_2d_tests)
 catch_discover_tests(mycore_render_2d_tests)
 
 add_executable(dots_protocol_tests dots_protocol_tests.cpp)
@@ -75,7 +75,7 @@ target_link_libraries(
         Dots::Protocol
         Catch2::Catch2WithMain
 )
-mycore_configure_executable(dots_protocol_tests)
+mycore_configure_test_executable(dots_protocol_tests)
 catch_discover_tests(dots_protocol_tests)
 
 add_executable(
@@ -90,7 +90,7 @@ target_link_libraries(
         Dots::Simulation
         Catch2::Catch2WithMain
 )
-mycore_configure_executable(dots_simulation_tests)
+mycore_configure_test_executable(dots_simulation_tests)
 catch_discover_tests(dots_simulation_tests)
 
 add_executable(dots_presentation_tests dots_presentation_tests.cpp)
@@ -100,7 +100,7 @@ target_link_libraries(
         Dots::Presentation
         Catch2::Catch2WithMain
 )
-mycore_configure_executable(dots_presentation_tests)
+mycore_configure_test_executable(dots_presentation_tests)
 catch_discover_tests(dots_presentation_tests)
 
 add_executable(
@@ -114,7 +114,7 @@ target_link_libraries(
         dots_client_support
         Catch2::Catch2WithMain
 )
-mycore_configure_executable(dots_client_support_tests)
+mycore_configure_test_executable(dots_client_support_tests)
 catch_discover_tests(dots_client_support_tests)
 
 add_test(NAME dots_client_help COMMAND dots_client --help)
