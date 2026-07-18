@@ -31,6 +31,7 @@ public:
 
     void process_event(const SDL_Event& event) override;
     void begin_frame();
+    [[nodiscard]] bool wants_mouse_capture() const noexcept;
     void render(render::CommandList& commands, const render::SwapchainTarget& target);
     void cancel_frame() noexcept;
 

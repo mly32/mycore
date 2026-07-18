@@ -147,7 +147,12 @@ launcher's `--connect` argument still selects native mode and overrides `[networ
 
 Add `--fake-lag-ms 50` or `--fake-loss-percent 5` to a native executable or the launcher to
 impair outgoing packets. Lag is one-way, so applying 50 ms at both endpoints produces roughly
-100 ms of transport RTT.
+100 ms of transport RTT. The launcher applies the impairment to the server and every client,
+including traffic used to establish connections and join the session. Reliable handshake
+delivery retries while a connection is viable, but it does not override the client's 10-second
+startup deadline; high loss can therefore make individual clients fail to join. See
+[`docs/server_authoritative_networking_guide.md`](docs/server_authoritative_networking_guide.md)
+for the detailed lag, loss, reliability, and lifecycle mental model.
 
 Networked clients send sequenced input at 30 Hz and render full replicated snapshots at 15 Hz.
 Only the authoritative server—embedded or separate—advances the simulation. The client
@@ -177,18 +182,21 @@ executable. No shader compiler is loaded at runtime.
 Hybrid input is the default: WASD or the arrow keys take precedence while held, and otherwise
 the player moves toward the mouse cursor. Mouse input stops while the cursor is inside the
 player circle. Press Escape or close the window to exit. The window is resizable and uses
-swapchain pixel dimensions so high-DPI display and mouse coordinates stay aligned. Asset lookup
-is relative to the executable, so the client can be launched from a different working directory.
-As the player consumes food, its color shifts from `colors.player` toward
-`colors.player_growth` to make growth easier to see.
+swapchain pixel dimensions so high-DPI display and mouse coordinates stay aligned. Its logical
+client area cannot be configured or resized below 500×500. Asset lookup is relative to the
+executable, so the client can be launched from a different working directory. As the player
+consumes food, its color shifts from `colors.player` toward `colors.player_growth` to make growth
+easier to see.
 
-A non-interactive Dear ImGui overlay in the bottom-right reports the active input mode, world
-tick, player and food counts, occupied spatial-grid cells or replicated snapshot ID, frame timing,
-actual and target tick rates, simulation cost, backlog, catch-up frames, step-cap hits, deadline
-misses, and discarded time. Networked modes separately report replication snapshot age/rate and
-transport state, RTT, loss, traffic rates, and queues. Measurements unavailable from the
-in-memory backend are labeled instead of displayed as zero. Logs use owner-qualified categories
-such as `dots.client`, `dots.server`, and `dots.bot`.
+A Dear ImGui panel anchored in the bottom-right reports the active input mode, world tick, player
+and food counts, occupied spatial-grid cells or replicated snapshot ID, frame timing, actual and
+target tick rates, simulation cost, backlog, catch-up frames, step-cap hits, deadline misses, and
+discarded time. Its title-bar arrow collapses or restores it, and content that exceeds the current
+viewport can be scrolled vertically or horizontally. Mouse steering pauses while the panel owns
+the mouse. Networked modes separately report replication snapshot age/rate and transport state,
+RTT, loss, traffic rates, and queues. Measurements unavailable from the in-memory backend are
+labeled instead of displayed as zero. Logs use owner-qualified categories such as `dots.client`,
+`dots.server`, and `dots.bot`.
 Fixed-step overload produces rate-limited warnings, escalates to an error log after ten sustained
 seconds, and reports recovery. The offline client records and discards only whole excess backlog
 after its configured catch-up cap so it remains responsive while preserving the fractional time

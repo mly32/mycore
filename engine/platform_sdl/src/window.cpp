@@ -27,11 +27,23 @@ SDL_WindowFlags to_sdl_flags(const WindowConfig& config) {
 
 } // namespace
 
-Window::Window(const WindowConfig& config)
-    : window_(SDL_CreateWindow(
-          config.title.c_str(), config.width, config.height, to_sdl_flags(config))) {
+Window::Window(const WindowConfig& config) {
+    if (config.minimum_width < 0 || config.minimum_height < 0 ||
+        (config.minimum_width > 0 && config.width < config.minimum_width) ||
+        (config.minimum_height > 0 && config.height < config.minimum_height)) {
+        throw StartupError{"Window size must satisfy its non-negative minimum size"};
+    }
+    window_ =
+        SDL_CreateWindow(config.title.c_str(), config.width, config.height, to_sdl_flags(config));
     if (window_ == nullptr) {
         throw StartupError::from_sdl("Could not create SDL window");
+    }
+    if ((config.minimum_width > 0 || config.minimum_height > 0) &&
+        !SDL_SetWindowMinimumSize(window_, config.minimum_width, config.minimum_height)) {
+        const auto error = StartupError::from_sdl("Could not set SDL window minimum size");
+        SDL_DestroyWindow(window_);
+        window_ = nullptr;
+        throw error;
     }
 }
 

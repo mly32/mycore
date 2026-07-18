@@ -117,20 +117,22 @@ void draw_debug_overlay(const ClientConfig& config,
                         const mycore::debug::FrameMetricsSnapshot& frame_metrics,
                         const mycore::debug::FixedStepMetricsSnapshot& simulation_metrics) {
     constexpr float kMargin = 12.0F;
-    constexpr float kOverlayWidth = 360.0F;
+    constexpr float kPreferredOverlayWidth = 360.0F;
     const auto* viewport = ImGui::GetMainViewport();
+    const auto available_width = std::max(viewport->WorkSize.x - (2.0F * kMargin), 1.0F);
+    const auto available_height = std::max(viewport->WorkSize.y - (2.0F * kMargin), 1.0F);
+    const auto overlay_width = std::min(kPreferredOverlayWidth, available_width);
     ImGui::SetNextWindowPos({viewport->WorkPos.x + viewport->WorkSize.x - kMargin,
                              viewport->WorkPos.y + viewport->WorkSize.y - kMargin},
                             ImGuiCond_Always,
                             {1.0F, 1.0F});
-    ImGui::SetNextWindowSizeConstraints({kOverlayWidth, 0.0F},
-                                        {kOverlayWidth, std::numeric_limits<float>::max()});
+    ImGui::SetNextWindowSizeConstraints({overlay_width, 0.0F}, {overlay_width, available_height});
     ImGui::SetNextWindowBgAlpha(0.82F);
 
     constexpr auto kWindowFlags =
-        ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
-        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
-        ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs;
+        ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
+        ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
     if (ImGui::Begin("Dots observability", nullptr, kWindowFlags)) {
         const auto input_mode = input_mode_name(config.controls.mode);
         ImGui::TextUnformatted("Dots debug");
@@ -388,6 +390,8 @@ int run_networked_game(const ClientConfig& config,
         if (client.state() != dots::client_runtime::State::Ready) {
             throw StartupError{"The networked authoritative session disconnected"};
         }
+        debug_ui.begin_frame();
+        const auto mouse_input_available = !debug_ui.wants_mouse_capture();
         const auto frame_duration =
             std::chrono::duration_cast<mycore::time::Duration>(now - previous_time);
         frame_metrics.add_sample(frame_duration);
@@ -422,7 +426,8 @@ int run_networked_game(const ClientConfig& config,
                 if (client_tick == std::numeric_limits<std::uint32_t>::max()) {
                     throw StartupError{"Networked client ticks are exhausted"};
                 }
-                const auto movement = movement_from_input(input, config.controls, viewport);
+                const auto movement =
+                    movement_from_input(input, config.controls, viewport, mouse_input_available);
                 if (client.send_input(client_tick++, movement) !=
                     dots::client_runtime::InputSendResult::Sent) {
                     throw StartupError{"The networked client could not send input"};
@@ -459,7 +464,6 @@ int run_networked_game(const ClientConfig& config,
 
         const auto frame = dots::presentation::extract_replicated_frame(
             client.world(), client.controlled_entity_id());
-        debug_ui.begin_frame();
         draw_debug_overlay(config,
                            {
                                .presentation = "NETWORKED FIXED",
@@ -526,6 +530,8 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
         .title = config.window.title,
         .width = config.window.width,
         .height = config.window.height,
+        .minimum_width = kMinimumWindowWidth,
+        .minimum_height = kMinimumWindowHeight,
         .flags = window_flags(config.window),
         .visible = false,
     }};
@@ -615,6 +621,8 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
             continue;
         }
 
+        debug_ui.begin_frame();
+        const auto mouse_input_available = !debug_ui.wants_mouse_capture();
         const auto now = std::chrono::steady_clock::now();
         const auto frame_duration =
             std::chrono::duration_cast<mycore::time::Duration>(now - previous_time);
@@ -653,7 +661,8 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
                                        config.controls,
                                        *player,
                                        dots::simulation::InputCommandId{next_command_id},
-                                       viewport);
+                                       viewport,
+                                       mouse_input_available);
                 ++next_command_id;
                 if (!world.apply_input(command)) {
                     throw dots::client::StartupError{"The local world rejected an input command"};
@@ -708,7 +717,6 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
                 });
         }
 
-        debug_ui.begin_frame();
         draw_debug_overlay(
             config,
             {

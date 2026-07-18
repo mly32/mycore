@@ -71,19 +71,23 @@ dots::simulation::InputCommand make_input_command(const mycore::platform_sdl::In
                                                   const ClientControls& controls,
                                                   dots::simulation::EntityId entity_id,
                                                   dots::simulation::InputCommandId command_id,
-                                                  InputViewport viewport) noexcept {
+                                                  InputViewport viewport,
+                                                  bool mouse_input_available) noexcept {
     return {
         .id = command_id,
         .entity_id = entity_id,
-        .movement = movement_from_input(input, controls, viewport),
+        .movement = movement_from_input(input, controls, viewport, mouse_input_available),
     };
 }
 
 mycore::math::Vector2 movement_from_input(const mycore::platform_sdl::InputSnapshot& input,
                                           const ClientControls& controls,
-                                          InputViewport viewport) noexcept {
+                                          InputViewport viewport,
+                                          bool mouse_input_available) noexcept {
     const auto keyboard = keyboard_movement(input.keyboard, controls.bindings);
-    const auto mouse = mouse_movement(input.mouse, controls.mouse_dead_zone_pixels, viewport);
+    const auto mouse = mouse_input_available
+                           ? mouse_movement(input.mouse, controls.mouse_dead_zone_pixels, viewport)
+                           : Vector2{};
 
     auto movement = mouse;
     switch (controls.mode) {

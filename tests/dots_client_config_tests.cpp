@@ -55,6 +55,8 @@ TEST_CASE("Client configuration defaults match the playable client", "[dots][cli
     REQUIRE(config.window.title == "Dots");
     REQUIRE(config.window.width == 1280);
     REQUIRE(config.window.height == 720);
+    REQUIRE(dots::client::kMinimumWindowWidth == 500);
+    REQUIRE(dots::client::kMinimumWindowHeight == 500);
     REQUIRE(config.window.resizable);
     REQUIRE_FALSE(config.window.fullscreen);
     REQUIRE(config.window.high_dpi);
@@ -74,6 +76,15 @@ TEST_CASE("Client configuration defaults match the playable client", "[dots][cli
     REQUIRE(config.colors.player == dots::client::RgbColor{0x4C, 0xC9, 0xF0});
     REQUIRE(config.colors.player_growth == dots::client::RgbColor{0xFF, 0xD1, 0x66});
     REQUIRE(config.colors.food == dots::client::RgbColor{0xF7, 0x25, 0x85});
+}
+
+TEST_CASE("Client configuration accepts the minimum logical window size",
+          "[dots][client][config]") {
+    const auto config = dots::client::parse_client_config("[window]\nwidth = 500\nheight = 500\n",
+                                                          "minimum-window.toml");
+
+    CHECK(config.window.width == 500);
+    CHECK(config.window.height == 500);
 }
 
 TEST_CASE("Presentation modes have display labels", "[dots][client][config]") {
@@ -253,7 +264,8 @@ TEST_CASE("Invalid client TOML reports the source and field", "[dots][client][co
         InvalidDocument{"[window]\nwidht = 10", "window.widht"},
         InvalidDocument{"window = 10", "window"},
         InvalidDocument{"[window]\nwidth = \"wide\"", "window.width"},
-        InvalidDocument{"[window]\nwidth = 0", "window.width"},
+        InvalidDocument{"[window]\nwidth = 499", "window.width"},
+        InvalidDocument{"[window]\nheight = 499", "window.height"},
         InvalidDocument{"[window]\nheight = 16385", "window.height"},
         InvalidDocument{"[input]\nmode = \"controller\"", "input.mode"},
         InvalidDocument{"[input]\nmouse_dead_zone_pixels = -1", "input.mouse_dead_zone_pixels"},

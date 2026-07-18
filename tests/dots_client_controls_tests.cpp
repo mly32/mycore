@@ -16,8 +16,10 @@ constexpr dots::client::InputViewport kViewport{
 };
 
 dots::simulation::InputCommand command_for(const mycore::platform_sdl::InputSnapshot& input,
-                                           const dots::client::ClientControls& controls) {
-    return dots::client::make_input_command(input, controls, kPlayer, kCommand, kViewport);
+                                           const dots::client::ClientControls& controls,
+                                           bool mouse_input_available = true) {
+    return dots::client::make_input_command(
+        input, controls, kPlayer, kCommand, kViewport, mouse_input_available);
 }
 
 } // namespace
@@ -93,6 +95,23 @@ TEST_CASE("Mouse keyboard and hybrid modes select the expected movement", "[dots
 
     const mycore::platform_sdl::InputSnapshot mouse_only{.mouse = {200.0F, 50.0F}};
     REQUIRE(command_for(mouse_only, controls).movement == mycore::math::Vector2{1.0F, 0.0F});
+}
+
+TEST_CASE("Debug UI mouse capture suppresses mouse steering but preserves keyboard movement",
+          "[dots][client][input]") {
+    const mycore::platform_sdl::InputSnapshot input{
+        .keyboard = {mycore::platform_sdl::Key::A},
+        .mouse = {200.0F, 50.0F},
+    };
+    auto controls = dots::client::default_client_config().controls;
+
+    controls.mode = dots::client::InputMode::Mouse;
+    CHECK(command_for(input, controls, false).movement == mycore::math::Vector2{});
+
+    controls.mode = dots::client::InputMode::Hybrid;
+    CHECK(command_for(input, controls, false).movement == mycore::math::Vector2{-1.0F, 0.0F});
+    CHECK(command_for({.mouse = {200.0F, 50.0F}}, controls, false).movement ==
+          mycore::math::Vector2{});
 }
 
 TEST_CASE("Client input propagates IDs and handles configured quit bindings",

@@ -328,15 +328,15 @@ void parse_window(const toml::table& table,
     }
     if (table.contains("width")) {
         const auto value = read_integer(table, "width", source, "window.width");
-        if (value < 1 || value > 16384) {
-            fail(source, "window.width", "must be in the range 1..16384");
+        if (value < kMinimumWindowWidth || value > 16384) {
+            fail(source, "window.width", "must be in the range 500..16384");
         }
         config.window.width = static_cast<int>(value);
     }
     if (table.contains("height")) {
         const auto value = read_integer(table, "height", source, "window.height");
-        if (value < 1 || value > 16384) {
-            fail(source, "window.height", "must be in the range 1..16384");
+        if (value < kMinimumWindowHeight || value > 16384) {
+            fail(source, "window.height", "must be in the range 500..16384");
         }
         config.window.height = static_cast<int>(value);
     }

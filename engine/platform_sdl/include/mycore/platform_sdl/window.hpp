@@ -29,6 +29,8 @@ struct WindowConfig {
     std::string title{"MyCore"};
     int width{1280};
     int height{720};
+    int minimum_width{};
+    int minimum_height{};
     WindowFlags flags{WindowFlags::None};
     bool visible{true};
 };

@@ -82,11 +82,27 @@ wrong-direction messages disconnect only the offending peer.
 Handshake messages are reliable because they are infrequent state transitions that must arrive
 in order. Losing a welcome message cannot be fixed by receiving a newer welcome message.
 
+Reliable delivery means that the transport retransmits and preserves ordering while the
+connection remains usable. It does not mean that the application retries forever or that a
+connection is guaranteed to form. Dots submits each `ClientHello` and `ServerWelcome` once and
+lets GameNetworkingSockets perform any required retransmission. The transport can still declare
+the connection failed, and the client gives the complete connection-plus-handshake sequence a
+10-second startup deadline. Heavy loss can therefore make a reliable handshake fail to complete.
+
+Reliable and unreliable are message delivery modes on the same GameNetworkingSockets connection,
+not separate TCP and UDP application paths. Unreliable means no retransmission guarantee; it does
+not bypass connection security or Dots protocol decoding and validation.
+
+Retransmission also trades timeliness for delivery. Under loss, a reliable message can arrive
+much later and reliable data can wait behind earlier missing data. This is appropriate for the
+small ordered handshake, but not for a continuous stream of replaceable gameplay state.
+
 Input and snapshots are time-sensitive. A delayed old movement command or snapshot is usually
 less useful than the newest one, so they are sent unreliably and carry application sequence IDs.
-The receiver can ignore stale data without waiting for retransmission. Later input redundancy
-and self-healing snapshot deltas will tolerate loss without turning the real-time stream into a
-reliable queue of obsolete state.
+The receiver can ignore stale data without waiting for retransmission. The current server sends
+another full snapshot at 15 Hz, so a lost snapshot is replaced by a newer complete view. Later
+input redundancy and snapshot deltas will improve loss handling without turning the real-time
+stream into a reliable queue of obsolete state.
 
 The in-memory implementation is lossless for both delivery modes. It records the same intended
 semantics as the native implementation so tests and runtimes do not need a different contract.
@@ -156,6 +172,116 @@ A normal client exit explicitly disconnects its transport connection. The server
 disconnect event, removes the corresponding session and authoritative player, and logs the
 reason. Abrupt process loss follows the same cleanup path after the transport detects failure,
 but cannot provide a graceful local-request event.
+
+## Native session startup and lifecycle
+
+There are three related but separate layers during startup:
+
+1. The client process initializes its window, renderer, and other local systems.
+2. GameNetworkingSockets establishes a transport connection between processes.
+3. Dots performs its application handshake and installs the initial replicated world.
+
+This produces the following normal sequence:
+
+```text
+server process                         client process
+--------------                         --------------
+open listen socket                     initialize window and renderer
+print DOTS_SERVER_READY                begin transport connection
+receive Connected event       <------> receive Connected event
+create pending session                 send reliable ClientHello
+validate ClientHello
+spawn authoritative player
+assign client and entity IDs
+send reliable ServerWelcome    ------>
+send unreliable FullSnapshot   ------>
+log "Client ... joined"                install identity and snapshot
+                                        log "Session ready ..."
+```
+
+`DOTS_SERVER_READY` only means that the server is listening. A renderer log before a client
+transport log is also normal because local presentation is initialized first. The server can log
+that a client joined before the client logs that its session is ready: the server has accepted the
+hello at that point, while the client still needs both the welcome and a snapshot containing its
+controlled player. Those two messages may arrive in either order. If the first unreliable
+snapshot is lost, a later 15 Hz full snapshot can still complete the client handshake.
+
+The client starts one 10-second deadline when its networked runtime is created. That deadline
+includes transport connection establishment, the reliable hello/welcome exchange, and receipt
+of a usable snapshot. Reaching it is a failed startup even if the transport was still retrying.
+Dots currently does not reconnect or begin a second handshake automatically; the client exits
+with `Could not establish the authoritative session`.
+
+Connection handles, client IDs, and entity IDs belong to different domains. It is normal for a
+client to report transport connection `0`, Dots client `0`, and a much larger controlled entity
+ID. The server creates food entities before joining players, so the first player is not generally
+entity `0`.
+
+After startup, lifecycle events are handled as follows:
+
+| Event | Client behavior | Server behavior |
+| --- | --- | --- |
+| Escape or window close | Requests a graceful transport disconnect, logs it, and exits normally. | Receives the disconnect event and removes only that client's session and player. |
+| Server closes | Logs the transport close and stops the networked client. | The server process exits. |
+| Connection fails | Logs the transport failure and stops the networked client. | Removes the session and player when it observes the failure. |
+| Malformed or wrong-direction packet | The offending client is disconnected. | Rejects and removes only the offending session; the server and other clients continue. |
+| Client process is killed or loses connectivity | Cannot send a graceful request. | Detects the transport failure later, then removes the session and player. |
+
+The local `dots_session.py` launcher treats an unexpected nonzero client exit or any server exit
+as failure of the development session and terminates the remaining child processes. That cleanup
+may be abrupt, so terminating the launcher is not a good test of every client's graceful-leave
+log path. Close one client window while leaving the launcher running to observe that path.
+
+## Reasoning about simulated lag and packet loss
+
+The native impairment options configure outgoing traffic in each process, and they are active
+before transport connection establishment. They therefore affect connection negotiation,
+application handshake messages, and gameplay traffic rather than only the post-join session.
+
+The launcher passes the same `--fake-lag-ms` and `--fake-loss-percent` values to the server and
+every client. Lag is a one-way delay at each sender. With 50 ms configured by the launcher, a
+request pays about 50 ms on the client-to-server path and its response pays about 50 ms on the
+server-to-client path, producing roughly 100 ms of transport round-trip time before tick,
+snapshot, rendering, or retransmission delays. To test only one direction, run the server and
+clients manually and put the impairment option only on the desired sender.
+
+Packet loss is random per outgoing low-level packet, not a promise to discard exactly that
+percentage of application messages in a short run. Loss at each process is independent. With
+50% loss applied at both endpoints, one simple request-and-response attempt has only a
+`0.5 * 0.5 = 25%` chance that both packets survive that attempt. Reliable transport retries can
+improve the eventual odds while the connection remains alive, but every retry is exposed to loss
+again and may arrive only after transport backoff. This is why two clients started with identical
+settings can have different outcomes, and why one can join while another exceeds 10 seconds.
+
+The current messages behave under impairment like this:
+
+| Message or phase | Delivery | Expected behavior under loss |
+| --- | --- | --- |
+| Transport connection establishment | Transport-managed | May retry, take much longer, or fail before the Dots handshake starts. |
+| `ClientHello` and `ServerWelcome` | Reliable | Transport retransmits while viable; delay increases, but Dots does not repeatedly call `send`. |
+| `InputCommand` at 30 Hz | Unreliable | A lost command is skipped. Newer sequence IDs continue; input redundancy is a later feature. |
+| `FullSnapshot` at 15 Hz | Unreliable | The client holds its previous view until a newer complete snapshot arrives. |
+| Disconnect | Transport lifecycle | Graceful requests are reported promptly when delivered; abrupt loss is reported after failure detection. |
+
+Because the current networked client has neither prediction nor interpolation, these effects are
+visible directly. Lag postpones local input response. Lost inputs can make movement briefly stop,
+and lost snapshots can make the view hold and then jump when a newer snapshot arrives. This is
+expected for the present feature stage, not evidence that the authoritative simulation itself
+stopped.
+
+Use modest impairment to study steady-state behavior and high impairment to study failure paths:
+
+- Start with no impairment to establish a baseline.
+- Use 50--100 ms of lag to make latency visible while keeping startup predictable.
+- Use roughly 5--20% loss to observe recovery during a joined session.
+- Treat 50% loss at both endpoints as a destructive test where startup failure is expected.
+
+The transport debug data and lifecycle logs answer different questions. Transport RTT, loss, and
+queue statistics describe network health; snapshot rate and age describe what replication is
+actually reaching the client. A loss statistic may be unavailable early in a connection while
+the transport gathers enough samples. For startup diagnosis, follow the logs in order: server
+ready, transport open on both peers, server join, then client ready. The missing transition
+identifies which layer did not complete.
 
 ## What server authoritative means
 

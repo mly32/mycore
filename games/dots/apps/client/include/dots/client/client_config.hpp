@@ -56,6 +56,9 @@ public:
 
 // Keep games/dots/config/dots-client.schema.json synchronized with these settings and with
 // client_config.cpp whenever accepted fields, types, defaults, or validation rules change.
+inline constexpr int kMinimumWindowWidth = 500;
+inline constexpr int kMinimumWindowHeight = 500;
+
 struct WindowSettings {
     std::string title{"Dots"};
     int width{1280};

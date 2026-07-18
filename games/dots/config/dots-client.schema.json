@@ -45,16 +45,16 @@
           "default": "Dots"
         },
         "width": {
-          "description": "Initial logical window width.",
+          "description": "Initial logical window width; interactive resizing uses the same minimum.",
           "type": "integer",
-          "minimum": 1,
+          "minimum": 500,
           "maximum": 16384,
           "default": 1280
         },
         "height": {
-          "description": "Initial logical window height.",
+          "description": "Initial logical window height; interactive resizing uses the same minimum.",
           "type": "integer",
-          "minimum": 1,
+          "minimum": 500,
           "maximum": 16384,
           "default": 720
         },

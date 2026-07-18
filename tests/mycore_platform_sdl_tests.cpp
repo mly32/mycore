@@ -1,8 +1,10 @@
+#include "mycore/platform_sdl/error.hpp"
 #include "mycore/platform_sdl/input.hpp"
 #include "mycore/platform_sdl/runtime.hpp"
 #include "mycore/platform_sdl/window.hpp"
 
 #include <SDL3/SDL_events.h>
+#include <SDL3/SDL_video.h>
 #include <catch2/catch_test_macros.hpp>
 #include <cstdint>
 #include <type_traits>
@@ -71,6 +73,33 @@ TEST_CASE("Platform event observers receive events drained for an input snapshot
 
     CHECK(observer.saw_user_event);
     CHECK_FALSE(snapshot.quit_requested);
+}
+
+TEST_CASE("Platform windows enforce configured logical minimum dimensions", "[platform][window]") {
+    mycore::platform_sdl::Runtime runtime;
+    mycore::platform_sdl::Window window{{
+        .width = 500,
+        .height = 500,
+        .minimum_width = 500,
+        .minimum_height = 500,
+        .flags = mycore::platform_sdl::WindowFlags::Resizable,
+        .visible = false,
+    }};
+
+    int minimum_width{};
+    int minimum_height{};
+    REQUIRE(SDL_GetWindowMinimumSize(window.native_handle(), &minimum_width, &minimum_height));
+    CHECK(minimum_width == 500);
+    CHECK(minimum_height == 500);
+
+    CHECK_THROWS_AS(mycore::platform_sdl::Window({
+                        .width = 499,
+                        .height = 500,
+                        .minimum_width = 500,
+                        .minimum_height = 500,
+                        .visible = false,
+                    }),
+                    mycore::platform_sdl::StartupError);
 }
 
 static_assert(!std::is_copy_constructible_v<mycore::platform_sdl::Window>);
