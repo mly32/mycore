@@ -55,7 +55,7 @@ public:
     [[nodiscard]] bool step();
 
 private:
-    enum class EntityKind {
+    enum class EntityKind : std::uint8_t {
         Player,
         Food,
     };

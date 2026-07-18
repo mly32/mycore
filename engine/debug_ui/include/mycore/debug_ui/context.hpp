@@ -16,7 +16,7 @@ namespace mycore::debug_ui {
 
 class Error : public std::runtime_error {
 public:
-    explicit Error(std::string message);
+    explicit Error(const std::string& message);
 };
 
 class Context final : public platform_sdl::EventObserver {

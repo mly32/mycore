@@ -18,7 +18,7 @@ public:
     virtual void process_event(const SDL_Event& event) = 0;
 };
 
-enum class Key {
+enum class Key : std::uint8_t {
     A,
     B,
     C,
@@ -93,7 +93,7 @@ enum class Key {
     Count,
 };
 
-enum class MouseButton {
+enum class MouseButton : std::uint8_t {
     Left,
     Middle,
     Right,

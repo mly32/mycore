@@ -21,39 +21,39 @@ namespace mycore::render {
 
 class Error : public std::runtime_error {
 public:
-    explicit Error(std::string message);
+    explicit Error(const std::string& message);
     [[nodiscard]] static Error from_sdl(std::string_view operation);
 };
 
-enum class ShaderFormat {
+enum class ShaderFormat : std::uint8_t {
     SpirV,
     Dxil,
     Msl,
 };
 
-enum class ShaderStage {
+enum class ShaderStage : std::uint8_t {
     Vertex,
     Fragment,
 };
 
-enum class PresentMode {
+enum class PresentMode : std::uint8_t {
     Vsync,
     Mailbox,
     Immediate,
 };
 
-enum class RenderPassLoadOperation {
+enum class RenderPassLoadOperation : std::uint8_t {
     Clear,
     Load,
 };
 
-enum class VertexFormat {
+enum class VertexFormat : std::uint8_t {
     Float,
     Float2,
     Float4,
 };
 
-enum class VertexInputRate {
+enum class VertexInputRate : std::uint8_t {
     Vertex,
     Instance,
 };

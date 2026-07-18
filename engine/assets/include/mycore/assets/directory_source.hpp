@@ -10,14 +10,14 @@ namespace mycore::assets {
 
 class Error : public std::runtime_error {
 public:
-    explicit Error(std::string message);
+    explicit Error(const std::string& message);
 };
 
 using Bytes = std::vector<std::byte>;
 
 class DirectorySource {
 public:
-    explicit DirectorySource(std::filesystem::path root);
+    explicit DirectorySource(const std::filesystem::path& root);
 
     [[nodiscard]] const std::filesystem::path& root() const noexcept;
     [[nodiscard]] Bytes read(const std::filesystem::path& asset_name) const;

@@ -27,10 +27,10 @@ namespace {
 
 } // namespace
 
-Error::Error(std::string message)
-    : std::runtime_error(std::move(message)) {}
+Error::Error(const std::string& message)
+    : std::runtime_error(message) {}
 
-DirectorySource::DirectorySource(std::filesystem::path root) {
+DirectorySource::DirectorySource(const std::filesystem::path& root) {
     std::error_code error;
     root_ = std::filesystem::canonical(root, error);
     if (error) {

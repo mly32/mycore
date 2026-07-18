@@ -8,8 +8,8 @@
 
 namespace mycore::platform_sdl {
 
-StartupError::StartupError(std::string message)
-    : std::runtime_error(std::move(message)) {}
+StartupError::StartupError(const std::string& message)
+    : std::runtime_error(message) {}
 
 StartupError StartupError::from_sdl(std::string_view operation) {
     return StartupError{std::string{operation} + ": " + SDL_GetError()};

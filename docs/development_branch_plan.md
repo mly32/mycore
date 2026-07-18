@@ -778,6 +778,8 @@ CI should eventually:
 - Configure through CMake presets.
 - Build Windows, Linux, and macOS.
 - Run tests.
+- Run clang-format verification on tracked C/C++ sources.
+- Run clang-tidy against the Linux compile database with warnings treated as errors.
 - Run sanitizer builds.
 - Run selected benchmarks.
 - Build and retain verified Dots client archives for Windows, Linux, and macOS.

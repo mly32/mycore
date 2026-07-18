@@ -473,8 +473,8 @@ void parse_colors(const toml::table& table,
 
 } // namespace
 
-StartupError::StartupError(std::string message)
-    : std::runtime_error(std::move(message)) {}
+StartupError::StartupError(const std::string& message)
+    : std::runtime_error(message) {}
 
 StartupError::StartupError(const std::filesystem::path& file,
                            std::string_view field,

@@ -1505,6 +1505,8 @@ CI should:
 - Configure through CMake presets.
 - Build Windows, Linux, and macOS.
 - Run tests.
+- Verify clang-format on tracked C/C++ sources.
+- Run clang-tidy against the Linux compile database with warnings treated as errors.
 - Run sanitizer builds.
 - Run selected benchmarks.
 - Package the Linux `dots_server`.
