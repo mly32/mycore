@@ -273,6 +273,11 @@ the current uncompensated networked flow, and the later prediction/reconciliatio
 model, see the
 [protocol, transport, and server-authoritative networking guide](docs/server_authoritative_networking_guide.md).
 
+For definitions and troubleshooting help for the Dots overlay, logs, prediction layers,
+reconciliation metrics, transport health, and planned remote-interpolation views, see the
+[debugging and observability guide](docs/debugging_and_observability.md). It marks output as
+current or planned so a feature plan is not mistaken for implemented runtime behavior.
+
 ### Visual Studio Code
 
 Open the repository root in VS Code and install the recommended workspace extensions. The
@@ -298,3 +303,5 @@ preset overrides in the ignored `CMakeUserPresets.json`.
 - [Feature 08 protocol binary codec plan](docs/plans/08-protocol-binary-codec.md)
 - [Feature 09 in-memory transport integration plan](docs/plans/09-inmemory-transport-integration.md)
 - [Feature 10 GameNetworkingSockets transport plan](docs/plans/10-gamenetworkingsockets-transport.md)
+- [Feature 11 prediction and reconciliation plan](docs/plans/11-prediction-reconciliation.md)
+- [Feature 12 remote interpolation plan](docs/plans/12-remote-interpolation.md)

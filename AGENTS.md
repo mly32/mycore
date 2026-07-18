@@ -11,6 +11,8 @@ Read only the documentation relevant to the task:
 - `docs/cpp_style_guide.md`: C++ conventions and engine boundary rules.
 - `docs/server_authoritative_networking_guide.md`: protocol, transport, server authority,
   replication, and the prediction/interpolation mental model.
+- `docs/debugging_and_observability.md`: overlay fields, metric meanings, debug visuals,
+  troubleshooting, and the boundary between current and planned observability.
 - `docs/game_engine_technology_plan.md`: architecture, technology choices, module ownership,
   and cross-game reuse decisions.
 - `docs/development_branch_plan.md`: feature order, planned scope, dependencies, and exit
@@ -41,6 +43,8 @@ and worktree before making changes.
 - Do not edit generated or dependency output under `build/` or `vcpkg_installed/`.
 - Keep changes scoped to the requested task; update canonical documentation when behavior or
   durable workflows change.
+- Keep `docs/debugging_and_observability.md` synchronized when an overlay label, metric source,
+  debug visual, fault control, unit, threshold, or availability rule changes.
 
 ## Build and Validation
 
