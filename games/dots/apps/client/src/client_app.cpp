@@ -1,14 +1,18 @@
 #include "dots/client/client_app.hpp"
 
 #include "dots/client/controls.hpp"
+#include "dots/client_runtime/client_runtime.hpp"
 #include "dots/presentation/presentation.hpp"
+#include "dots/server/server_runtime.hpp"
 #include "dots/simulation/world.hpp"
+#include "dots/simulation/world_setup.hpp"
 #include "mycore/assets/directory_source.hpp"
 #include "mycore/debug/log.hpp"
 #include "mycore/debug/metrics.hpp"
 #include "mycore/debug/profile.hpp"
 #include "mycore/debug_ui/context.hpp"
 #include "mycore/math/vector2.hpp"
+#include "mycore/net_transport/net_transport.hpp"
 #include "mycore/platform_sdl/input.hpp"
 #include "mycore/platform_sdl/runtime.hpp"
 #include "mycore/platform_sdl/window.hpp"
@@ -22,7 +26,10 @@
 #include <cstdint>
 #include <imgui.h>
 #include <limits>
+#include <optional>
 #include <string>
+#include <string_view>
+#include <utility>
 
 namespace dots::client {
 namespace {
@@ -42,22 +49,6 @@ mycore::platform_sdl::WindowFlags window_flags(const WindowSettings& settings) {
         flags = flags | WindowFlags::HighPixelDensity;
     }
     return flags;
-}
-
-void spawn_food_field(dots::simulation::World& world) {
-    constexpr float kSpacing = 8.0F;
-    for (int row = -6; row <= 6; ++row) {
-        for (int column = -10; column <= 10; ++column) {
-            if (row == 0 && column == 0) {
-                continue;
-            }
-            const auto food = world.spawn_food(
-                {static_cast<float>(column) * kSpacing, static_cast<float>(row) * kSpacing});
-            if (!food) {
-                throw dots::client::StartupError{"Could not spawn the local food field"};
-            }
-        }
-    }
 }
 
 [[nodiscard]] mycore::render::Color to_render_color(RgbColor color) noexcept {
@@ -91,8 +82,17 @@ void spawn_food_field(dots::simulation::World& world) {
 #endif
 }
 
+struct DebugWorldStats {
+    std::string_view presentation;
+    std::uint64_t tick{};
+    std::size_t player_count{};
+    std::size_t food_count{};
+    std::optional<std::size_t> occupied_grid_cells;
+    std::optional<std::uint32_t> snapshot_id;
+};
+
 void draw_debug_overlay(const ClientConfig& config,
-                        const dots::simulation::World& world,
+                        const DebugWorldStats& world,
                         const mycore::debug::FrameMetricsSnapshot& frame_metrics,
                         const mycore::debug::FixedStepMetricsSnapshot& simulation_metrics) {
     constexpr float kMargin = 12.0F;
@@ -112,14 +112,18 @@ void draw_debug_overlay(const ClientConfig& config,
         ImGui::TextUnformatted("Dots debug");
         ImGui::Separator();
         ImGui::Text("Input: %.*s", static_cast<int>(input_mode.size()), input_mode.data());
-        const auto presentation_mode = presentation_mode_name(config.debug.presentation_mode);
         ImGui::Text("Presentation: %.*s",
-                    static_cast<int>(presentation_mode.size()),
-                    presentation_mode.data());
-        ImGui::Text("Tick: %llu", static_cast<unsigned long long>(world.tick().value()));
-        ImGui::Text("Players: %zu", world.player_count());
-        ImGui::Text("Food: %zu", world.food_count());
-        ImGui::Text("Grid cells: %zu", world.occupied_spatial_cell_count());
+                    static_cast<int>(world.presentation.size()),
+                    world.presentation.data());
+        ImGui::Text("Tick: %llu", static_cast<unsigned long long>(world.tick));
+        ImGui::Text("Players: %zu", world.player_count);
+        ImGui::Text("Food: %zu", world.food_count);
+        if (world.occupied_grid_cells) {
+            ImGui::Text("Grid cells: %zu", *world.occupied_grid_cells);
+        }
+        if (world.snapshot_id) {
+            ImGui::Text("Snapshot: %u", *world.snapshot_id);
+        }
         ImGui::Separator();
         ImGui::Text("Frame: %.2f ms", frame_metrics.latest_milliseconds);
         ImGui::Text("Average: %.2f ms", frame_metrics.average_milliseconds);
@@ -234,6 +238,139 @@ void validate_render_assets(const mycore::assets::DirectorySource& assets) {
     }
 }
 
+int run_in_memory_game(const ClientConfig& config,
+                       mycore::platform_sdl::Window& window,
+                       mycore::render_2d::Renderer& renderer,
+                       mycore::debug_ui::Context& debug_ui,
+                       const dots::presentation::Settings& render_settings) {
+    dots::simulation::World authoritative_world;
+    if (!dots::simulation::spawn_default_food_field(authoritative_world)) {
+        throw StartupError{"Could not spawn the authoritative food field"};
+    }
+    mycore::net_transport::InMemoryNetwork network;
+    dots::server::Runtime server{network.server_endpoint(), std::move(authoritative_world)};
+    dots::client_runtime::Runtime client{network.connect_client()};
+    if (client.process_events() || server.process_events() || client.process_events() ||
+        client.state() != dots::client_runtime::State::Ready) {
+        throw StartupError{"Could not establish the in-memory authoritative session"};
+    }
+
+    mycore::time::FixedStepAccumulator accumulator{dots::simulation::kTickDuration};
+    auto previous_time = std::chrono::steady_clock::now();
+    std::uint32_t client_tick{};
+    const auto maximum_frame_delta = std::chrono::duration_cast<mycore::time::Duration>(
+        std::chrono::milliseconds{config.simulation.max_frame_delta_ms});
+    mycore::debug::FrameMetrics frame_metrics;
+    mycore::debug::FixedStepMetrics simulation_metrics{dots::simulation::kTickDuration};
+    SimulationHealthReporter simulation_health_reporter;
+
+    while (true) {
+        MYCORE_PROFILE_FRAME();
+        MYCORE_PROFILE_ZONE("Dots in-memory client frame");
+        const auto input = mycore::platform_sdl::poll_input(window, &debug_ui);
+        if (quit_requested(input, config.controls)) {
+            return 0;
+        }
+
+        const auto output_size = window.pixel_size();
+        const auto logical_size = window.size();
+        if (output_size.width <= 0 || output_size.height <= 0 || logical_size.width <= 0 ||
+            logical_size.height <= 0) {
+            previous_time = std::chrono::steady_clock::now();
+            continue;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        const auto frame_duration =
+            std::chrono::duration_cast<mycore::time::Duration>(now - previous_time);
+        frame_metrics.add_sample(frame_duration);
+        const auto elapsed = std::min(frame_duration, maximum_frame_delta);
+        const auto discarded_frame_time = frame_duration - elapsed;
+        previous_time = now;
+        const auto step_result =
+            accumulator.advance(elapsed, config.simulation.max_steps_per_frame);
+        const auto discarded_backlog = step_result.step_limit_reached
+                                           ? accumulator.discard_pending_steps()
+                                           : mycore::time::Duration::zero();
+
+        const auto* controlled = client.world().find(client.controlled_entity_id());
+        if (controlled == nullptr) {
+            throw StartupError{"The replicated local player disappeared"};
+        }
+        auto viewport = InputViewport{
+            .width = static_cast<float>(output_size.width),
+            .height = static_cast<float>(output_size.height),
+            .mouse_scale_x =
+                static_cast<float>(output_size.width) / static_cast<float>(logical_size.width),
+            .mouse_scale_y =
+                static_cast<float>(output_size.height) / static_cast<float>(logical_size.height),
+            .player_radius_pixels = dots::simulation::radius_for_mass(controlled->mass) *
+                                    config.view.pixels_per_world_unit,
+        };
+
+        const auto simulation_start = std::chrono::steady_clock::now();
+        {
+            MYCORE_PROFILE_ZONE("Dots authoritative in-memory steps");
+            for (std::size_t step = 0; step < step_result.steps; ++step) {
+                if (client_tick == std::numeric_limits<std::uint32_t>::max()) {
+                    throw StartupError{"In-memory client ticks are exhausted"};
+                }
+                const auto movement = movement_from_input(input, config.controls, viewport);
+                if (client.send_input(client_tick++, movement) !=
+                    dots::client_runtime::InputSendResult::Sent) {
+                    throw StartupError{"The in-memory client could not send input"};
+                }
+                if (server.process_events() || server.step() || client.process_events()) {
+                    throw StartupError{"The in-memory authoritative session failed"};
+                }
+                controlled = client.world().find(client.controlled_entity_id());
+                if (controlled == nullptr) {
+                    throw StartupError{"The replicated local player disappeared"};
+                }
+                viewport.player_radius_pixels =
+                    dots::simulation::radius_for_mass(controlled->mass) *
+                    config.view.pixels_per_world_unit;
+            }
+        }
+        const auto simulation_duration = std::chrono::duration_cast<mycore::time::Duration>(
+            std::chrono::steady_clock::now() - simulation_start);
+        simulation_metrics.add_sample({
+            .frame_duration = frame_duration,
+            .simulation_duration = simulation_duration,
+            .backlog = accumulator.accumulated_time(),
+            .discarded_time = discarded_frame_time + discarded_backlog,
+            .steps = step_result.steps,
+            .pending_steps = step_result.pending_steps,
+            .step_limit_reached = step_result.step_limit_reached,
+        });
+        const auto simulation_snapshot = simulation_metrics.snapshot();
+        simulation_health_reporter.update(simulation_snapshot, std::chrono::steady_clock::now());
+
+        const auto frame = dots::presentation::extract_replicated_frame(
+            client.world(), client.controlled_entity_id());
+        debug_ui.begin_frame();
+        draw_debug_overlay(config,
+                           {
+                               .presentation = "NETWORKED FIXED",
+                               .tick = client.world().server_tick(),
+                               .player_count = client.world().player_count(),
+                               .food_count = client.world().food_count(),
+                               .snapshot_id = client.world().snapshot_id().value(),
+                           },
+                           frame_metrics.snapshot(),
+                           simulation_snapshot);
+        const auto presented =
+            renderer.render(dots::presentation::build_draw_list(frame, render_settings),
+                            [&debug_ui](mycore::render::CommandList& commands,
+                                        const mycore::render::SwapchainTarget& target) {
+                                debug_ui.render(commands, target);
+                            });
+        if (!presented) {
+            debug_ui.cancel_frame();
+        }
+    }
+}
+
 } // namespace
 
 int run_client(const ClientConfig& config, ClientRunMode mode) {
@@ -271,20 +408,29 @@ int run_client(const ClientConfig& config, ClientRunMode mode) {
     mycore::render_2d::Renderer renderer{device, assets};
     mycore::debug_ui::Context debug_ui{window, device};
     const auto render_settings = presentation_settings(config);
+    const auto presentation_label = mode == ClientRunMode::InMemoryGame
+                                        ? std::string_view{"NETWORKED FIXED"}
+                                        : presentation_mode_name(config.debug.presentation_mode);
     mycore::debug::log_info("dots.client",
                             "Started SDL_GPU renderer '{}' with {}, {} presentation, and {} input",
                             device.driver_name(),
                             config.window.vsync ? "vsync" : "unlocked",
-                            presentation_mode_name(config.debug.presentation_mode),
+                            presentation_label,
                             input_mode_name(config.controls.mode));
     window.show();
+
+    if (mode == ClientRunMode::InMemoryGame) {
+        return run_in_memory_game(config, window, renderer, debug_ui, render_settings);
+    }
 
     dots::simulation::World world;
     const auto player = world.spawn_player();
     if (!player) {
         throw dots::client::StartupError{"Could not spawn the local player"};
     }
-    spawn_food_field(world);
+    if (!dots::simulation::spawn_default_food_field(world)) {
+        throw dots::client::StartupError{"Could not spawn the local food field"};
+    }
 
     mycore::time::FixedStepAccumulator accumulator{dots::simulation::kTickDuration};
     auto previous_time = std::chrono::steady_clock::now();
@@ -412,7 +558,17 @@ int run_client(const ClientConfig& config, ClientRunMode mode) {
         }
 
         debug_ui.begin_frame();
-        draw_debug_overlay(config, world, frame_metrics.snapshot(), simulation_snapshot);
+        draw_debug_overlay(
+            config,
+            {
+                .presentation = presentation_mode_name(config.debug.presentation_mode),
+                .tick = world.tick().value(),
+                .player_count = world.player_count(),
+                .food_count = world.food_count(),
+                .occupied_grid_cells = world.occupied_spatial_cell_count(),
+            },
+            frame_metrics.snapshot(),
+            simulation_snapshot);
         bool presented{};
         {
             MYCORE_PROFILE_ZONE("Dots render submission");

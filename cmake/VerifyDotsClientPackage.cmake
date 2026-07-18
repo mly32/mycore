@@ -80,7 +80,7 @@ execute_process(
     OUTPUT_VARIABLE help_output
     ERROR_VARIABLE help_error
 )
-if(NOT help_result EQUAL 0 OR NOT help_output MATCHES "playable offline SDL_GPU client")
+if(NOT help_result EQUAL 0 OR NOT help_output MATCHES "offline and embedded-authority modes")
     message(
         FATAL_ERROR
         "Packaged client help failed (${help_result}): ${help_output}${help_error}"

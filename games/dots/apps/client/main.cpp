@@ -12,13 +12,14 @@
 namespace {
 
 constexpr std::string_view kHelp = R"(Dots Client
-A playable offline SDL_GPU client that runs and presents the local Dots simulation.
+A playable SDL_GPU client with offline and embedded-authority modes.
 
 Usage:
-  dots_client [--config <path>] [--headless-smoke | --package-smoke] [--help]
+  dots_client [--config <path>] [--in-memory] [--headless-smoke | --package-smoke] [--help]
 
 Options:
   --config <path>   Load this TOML file instead of automatic dots-client.toml.
+  --in-memory       Run an embedded authoritative server and render replicated snapshots.
   --headless-smoke  Initialize SDL and a hidden window, poll input once, then exit.
                     This does not create a GPU device or start the game loop.
   --package-smoke   Perform the headless smoke check and read every packaged shader.
@@ -34,7 +35,8 @@ Controls:
 Configuration:
   Without --config, dots-client.toml in the current directory is loaded when present.
   Otherwise the built-in defaults are used.
-  debug.presentation_mode selects interpolated, fixed, or comparison presentation.
+  debug.presentation_mode selects offline interpolated, fixed, or comparison presentation.
+  In-memory mode presents the latest authoritative snapshot without interpolation.
 )";
 
 class CliError : public std::runtime_error {
@@ -46,6 +48,7 @@ struct CliOptions {
     std::optional<std::filesystem::path> config_path;
     bool headless_smoke{};
     bool package_smoke{};
+    bool in_memory{};
     bool help{};
 };
 
@@ -65,6 +68,10 @@ CliOptions parse_arguments(int argc, char** argv) {
             options.package_smoke = true;
             continue;
         }
+        if (argument == "--in-memory") {
+            options.in_memory = true;
+            continue;
+        }
         if (argument == "--config") {
             if (options.config_path) {
                 throw CliError{"--config may only be specified once"};
@@ -81,8 +88,11 @@ CliOptions parse_arguments(int argc, char** argv) {
         }
         throw CliError{"unknown argument: " + std::string{argument}};
     }
-    if (options.headless_smoke && options.package_smoke) {
-        throw CliError{"--headless-smoke and --package-smoke are mutually exclusive"};
+    const auto special_mode_count = static_cast<int>(options.headless_smoke) +
+                                    static_cast<int>(options.package_smoke) +
+                                    static_cast<int>(options.in_memory);
+    if (special_mode_count > 1) {
+        throw CliError{"--in-memory, --headless-smoke, and --package-smoke are mutually exclusive"};
     }
     return options;
 }
@@ -99,7 +109,9 @@ int main(int argc, char** argv) {
         }
         const auto config = dots::client::load_client_config(options.config_path);
         auto mode = dots::client::ClientRunMode::Game;
-        if (options.headless_smoke) {
+        if (options.in_memory) {
+            mode = dots::client::ClientRunMode::InMemoryGame;
+        } else if (options.headless_smoke) {
             mode = dots::client::ClientRunMode::HeadlessSmoke;
         } else if (options.package_smoke) {
             mode = dots::client::ClientRunMode::PackageSmoke;

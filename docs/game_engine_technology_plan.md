@@ -1363,10 +1363,17 @@ Dots::Replication
     depends on Dots Simulation + Dots Protocol
 
 Dots::Presentation
-    depends on Dots Simulation + MyCore Render2D, not on server runtime code
+    depends on Dots Simulation + Dots Replication + MyCore Render2D, not on server runtime code
+
+Dots::Server
+    depends on Dots Simulation + Dots Replication + Dots Protocol + MyCore NetTransport
+
+Dots::ClientRuntime
+    depends on Dots Replication + Dots Protocol + MyCore NetTransport; owns replicated state,
+    not an authoritative simulation world
 
 dots_server
-    depends on Dots Simulation + Replication + MyCore NetTransport + scripting bindings
+    depends on Dots Server; remains headless
 
 dots_client
     depends on Dots Simulation + Protocol + Presentation + MyCore PlatformSDL + Render2D +

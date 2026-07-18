@@ -13,13 +13,11 @@ TEST_CASE("Dots presentation extracts live food before players", "[dots][present
 
     REQUIRE(frame.camera == mycore::math::Vector2{1.0F, -2.0F});
     REQUIRE(frame.circles.size() == 2);
-    REQUIRE(frame.circles[0].entity_id == *food);
     REQUIRE(frame.circles[0].kind == dots::presentation::CircleKind::Food);
     REQUIRE(frame.circles[0].position == mycore::math::Vector2{8.0F, -4.0F});
     REQUIRE(frame.circles[0].mass == dots::simulation::kFoodMass);
     REQUIRE(frame.circles[0].radius ==
             dots::simulation::radius_for_mass(dots::simulation::kFoodMass));
-    REQUIRE(frame.circles[1].entity_id == *player);
     REQUIRE(frame.circles[1].kind == dots::presentation::CircleKind::Player);
     REQUIRE(frame.circles[1].position == mycore::math::Vector2{2.0F, 3.0F});
     REQUIRE(frame.circles[1].mass == dots::simulation::kInitialPlayerMass);
@@ -44,8 +42,8 @@ TEST_CASE("Dots presentation extraction follows removals without stale IDs",
     const auto frame = dots::presentation::extract_frame(world, {});
 
     REQUIRE(frame.circles.size() == 2);
-    REQUIRE(frame.circles[0].entity_id == *live_food);
-    REQUIRE(frame.circles[1].entity_id == *live_player);
+    REQUIRE(frame.circles[0].kind == dots::presentation::CircleKind::Food);
+    REQUIRE(frame.circles[1].kind == dots::presentation::CircleKind::Player);
     REQUIRE(world.player_count() == 1);
     REQUIRE(world.food_count() == 1);
 }
@@ -56,6 +54,40 @@ TEST_CASE("Dots presentation extracts an empty world", "[dots][presentation]") {
 
     REQUIRE(frame.camera == mycore::math::Vector2{3.0F, 7.0F});
     REQUIRE(frame.circles.empty());
+}
+
+TEST_CASE("Dots presentation extracts replicated state around its controlled player",
+          "[dots][presentation][replication]") {
+    dots::replication::ReplicatedWorld world;
+    REQUIRE(world.apply({
+                .snapshot_id = dots::protocol::SnapshotId{1},
+                .entities =
+                    {
+                        {
+                            .entity_id = dots::protocol::EntityId{3},
+                            .kind = dots::protocol::EntityKind::Player,
+                            .position_x = 5.0F,
+                            .position_y = -2.0F,
+                            .mass = 16.0F,
+                        },
+                        {
+                            .entity_id = dots::protocol::EntityId{7},
+                            .kind = dots::protocol::EntityKind::Food,
+                            .position_x = 8.0F,
+                            .position_y = 4.0F,
+                            .mass = 1.0F,
+                        },
+                    },
+            }) == dots::replication::SnapshotApplyResult::Applied);
+
+    const auto frame =
+        dots::presentation::extract_replicated_frame(world, dots::protocol::EntityId{3});
+    REQUIRE(frame.camera == mycore::math::Vector2{5.0F, -2.0F});
+    REQUIRE(frame.circles.size() == 2);
+    CHECK(frame.circles[0].kind == dots::presentation::CircleKind::Player);
+    CHECK(frame.circles[0].radius == 4.0F);
+    CHECK(frame.circles[1].kind == dots::presentation::CircleKind::Food);
+    CHECK(frame.circles[1].radius == 1.0F);
 }
 
 TEST_CASE("Dots presentation keeps an interpolated follow target aligned with its camera",
@@ -76,11 +108,8 @@ TEST_CASE("Dots presentation keeps an interpolated follow target aligned with it
         });
 
     REQUIRE(frame.circles.size() == 3);
-    REQUIRE(frame.circles[0].entity_id == *food);
     REQUIRE(frame.circles[0].position == mycore::math::Vector2{8.0F, 9.0F});
-    REQUIRE(frame.circles[1].entity_id == *player);
     REQUIRE(frame.circles[1].position == frame.camera);
-    REQUIRE(frame.circles[2].entity_id == *player);
     REQUIRE(frame.circles[2].position == mycore::math::Vector2{4.0F, 5.0F});
     REQUIRE(frame.circles[2].kind == dots::presentation::CircleKind::PositionGhost);
 
@@ -118,14 +147,12 @@ TEST_CASE("Dots presentation maps game meaning to a Render2D draw list", "[dots]
         .circles =
             {
                 {
-                    .entity_id = dots::simulation::EntityId{9},
                     .position = {1.0F, 2.0F},
                     .mass = dots::simulation::kFoodMass,
                     .radius = 0.5F,
                     .kind = dots::presentation::CircleKind::Food,
                 },
                 {
-                    .entity_id = dots::simulation::EntityId{3},
                     .position = {-2.0F, 6.0F},
                     .mass = dots::simulation::kInitialPlayerMass,
                     .radius = 1.5F,
@@ -179,20 +206,17 @@ TEST_CASE("Dots presentation shifts player color as food mass is gained", "[dots
         .circles =
             {
                 {
-                    .entity_id = dots::simulation::EntityId{1},
                     .mass = dots::simulation::kInitialPlayerMass,
                     .radius = 4.0F,
                     .kind = dots::presentation::CircleKind::Player,
                 },
                 {
-                    .entity_id = dots::simulation::EntityId{2},
                     .mass =
                         dots::simulation::kInitialPlayerMass + (4.0F * dots::simulation::kFoodMass),
                     .radius = 5.0F,
                     .kind = dots::presentation::CircleKind::Player,
                 },
                 {
-                    .entity_id = dots::simulation::EntityId{3},
                     .mass =
                         dots::simulation::kInitialPlayerMass + (8.0F * dots::simulation::kFoodMass),
                     .radius = 6.0F,

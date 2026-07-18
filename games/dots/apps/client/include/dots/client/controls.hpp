@@ -41,6 +41,11 @@ struct InputViewport {
 [[nodiscard]] bool quit_requested(const mycore::platform_sdl::InputSnapshot& input,
                                   const ClientControls& controls) noexcept;
 
+[[nodiscard]] mycore::math::Vector2
+movement_from_input(const mycore::platform_sdl::InputSnapshot& input,
+                    const ClientControls& controls,
+                    InputViewport viewport) noexcept;
+
 [[nodiscard]] dots::simulation::InputCommand
 make_input_command(const mycore::platform_sdl::InputSnapshot& input,
                    const ClientControls& controls,

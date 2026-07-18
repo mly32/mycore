@@ -6,6 +6,7 @@ namespace dots::client {
 
 enum class ClientRunMode : std::uint8_t {
     Game,
+    InMemoryGame,
     HeadlessSmoke,
     PackageSmoke,
 };

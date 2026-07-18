@@ -37,8 +37,11 @@ target_link_libraries(
     dots_client
     PRIVATE
         dots_client_support
+        Dots::ClientRuntime
         Dots::Presentation
+        Dots::Server
         MyCore::DebugUI
+        MyCore::NetTransport
         MyCore::Render2D
 )
 mycore_configure_executable(dots_client)
