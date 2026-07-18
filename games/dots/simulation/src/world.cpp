@@ -234,10 +234,14 @@ const World::EntityLocation* World::find_location(EntityId entity_id) const noex
         return nullptr;
     }
     const auto index = static_cast<std::size_t>(entity_id.value());
-    if (index >= entity_locations_.size() || !entity_locations_[index]) {
+    if (index >= entity_locations_.size()) {
         return nullptr;
     }
-    return &*entity_locations_[index];
+    const auto& location = entity_locations_[index];
+    if (!location) {
+        return nullptr;
+    }
+    return &*location;
 }
 
 std::optional<std::size_t> World::find_index(EntityId entity_id) const noexcept {

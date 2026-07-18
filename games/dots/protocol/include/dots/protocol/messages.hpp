@@ -46,7 +46,7 @@ struct InputCommand {
 
 struct EntityState {
     EntityId entity_id;
-    EntityKind kind{};
+    EntityKind kind{EntityKind::Player};
     float position_x{};
     float position_y{};
     float mass{};

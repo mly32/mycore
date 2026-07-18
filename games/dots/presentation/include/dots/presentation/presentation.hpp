@@ -11,7 +11,7 @@
 
 namespace dots::presentation {
 
-enum class CircleKind {
+enum class CircleKind : std::uint8_t {
     Food,
     Player,
     PositionGhost,

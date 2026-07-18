@@ -197,6 +197,7 @@ private:
     return std::nullopt;
 }
 
+// NOLINTNEXTLINE(bugprone-exception-escape) - variants are never valueless in this protocol
 [[nodiscard]] MessageKind message_kind(const Message& message) noexcept {
     return std::visit(
         [](const auto& value) {
@@ -222,6 +223,7 @@ private:
         message);
 }
 
+// NOLINTNEXTLINE(bugprone-exception-escape) - variants are never valueless in this protocol
 [[nodiscard]] std::size_t payload_size(const Message& message) noexcept {
     return std::visit(
         [](const auto& value) -> std::size_t {

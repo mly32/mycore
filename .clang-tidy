@@ -4,7 +4,9 @@ Checks: >
   bugprone-*,
   clang-analyzer-*,
   performance-*,
-  portability-*
+  portability-*,
+  -bugprone-easily-swappable-parameters,
+  -portability-avoid-pragma-once
 WarningsAsErrors: ''
 HeaderFilterRegex: '.*(engine|games|tests)/'
 FormatStyle: file

@@ -16,7 +16,7 @@ constexpr dots::client::InputViewport kViewport{
 };
 
 dots::simulation::InputCommand command_for(const mycore::platform_sdl::InputSnapshot& input,
-                                           dots::client::ClientControls controls) {
+                                           const dots::client::ClientControls& controls) {
     return dots::client::make_input_command(input, controls, kPlayer, kCommand, kViewport);
 }
 

@@ -7,7 +7,7 @@ struct SDL_Window;
 
 namespace mycore::platform_sdl {
 
-enum class WindowFlags : std::uint32_t {
+enum class WindowFlags : std::uint8_t {
     None = 0,
     Resizable = 1U << 0U,
     Fullscreen = 1U << 1U,
@@ -15,12 +15,14 @@ enum class WindowFlags : std::uint32_t {
 };
 
 [[nodiscard]] constexpr WindowFlags operator|(WindowFlags lhs, WindowFlags rhs) noexcept {
-    return static_cast<WindowFlags>(static_cast<std::uint32_t>(lhs) |
-                                    static_cast<std::uint32_t>(rhs));
+    // bitfield enum creates composite values
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+    return static_cast<WindowFlags>(static_cast<std::uint8_t>(lhs) |
+                                    static_cast<std::uint8_t>(rhs));
 }
 
 [[nodiscard]] constexpr bool has_flag(WindowFlags flags, WindowFlags flag) noexcept {
-    return (static_cast<std::uint32_t>(flags) & static_cast<std::uint32_t>(flag)) != 0U;
+    return (static_cast<std::uint8_t>(flags) & static_cast<std::uint8_t>(flag)) != 0U;
 }
 
 struct WindowConfig {

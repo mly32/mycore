@@ -10,8 +10,8 @@
 
 namespace mycore::debug_ui {
 
-Error::Error(std::string message)
-    : std::runtime_error(std::move(message)) {}
+Error::Error(const std::string& message)
+    : std::runtime_error(message) {}
 
 Context::Context(platform_sdl::Window& window, render::Device& device) {
     IMGUI_CHECKVERSION();

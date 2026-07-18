@@ -1,0 +1,8 @@
+---
+# Test-specific clang-tidy configuration
+# Inherits from parent .clang-tidy and disables additional checks for test code
+InheritParentConfig: true
+Checks: >
+  -clang-analyzer-optin.core.EnumCastOutOfRange,
+  -bugprone-unchecked-optional-access
+...
