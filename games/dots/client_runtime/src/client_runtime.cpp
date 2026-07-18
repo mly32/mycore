@@ -1,9 +1,14 @@
 #include "dots/client_runtime/client_runtime.hpp"
 
 #include "dots/protocol/codec.hpp"
+#include "mycore/debug/log.hpp"
 
+#include <algorithm>
+#include <chrono>
 #include <cstdint>
+#include <deque>
 #include <optional>
+#include <string_view>
 #include <utility>
 #include <variant>
 
@@ -13,6 +18,20 @@ namespace {
 using mycore::net_transport::DeliveryMode;
 using mycore::net_transport::SendStatus;
 
+[[nodiscard]] constexpr std::string_view
+disconnect_reason_name(mycore::net_transport::DisconnectReason reason) noexcept {
+    using mycore::net_transport::DisconnectReason;
+    switch (reason) {
+    case DisconnectReason::LocalRequest:
+        return "local request";
+    case DisconnectReason::RemoteRequest:
+        return "remote request";
+    case DisconnectReason::TransportFailure:
+        return "transport failure";
+    }
+    return "unknown reason";
+}
+
 } // namespace
 
 class Runtime::Impl {
@@ -20,7 +39,8 @@ public:
     explicit Impl(mycore::net_transport::Endpoint& endpoint)
         : endpoint_(endpoint) {}
 
-    [[nodiscard]] std::optional<RuntimeError> process_events() {
+    [[nodiscard]] std::optional<RuntimeError>
+    process_events(std::chrono::steady_clock::time_point now) {
         for (const auto& event : endpoint_.poll()) {
             if (const auto* connected = std::get_if<mycore::net_transport::Connected>(&event)) {
                 if (connection_.is_valid()) {
@@ -28,12 +48,20 @@ public:
                 }
                 connection_ = connected->connection;
                 state_ = State::Handshaking;
+                mycore::debug::log_info("dots.client.session",
+                                        "Transport connection {} opened; starting handshake",
+                                        connection_.value());
                 if (!transmit(protocol::ClientHello{}, DeliveryMode::Reliable)) {
                     return fail(RuntimeError::TransportSendFailed);
                 }
                 continue;
             }
-            if (std::holds_alternative<mycore::net_transport::Disconnected>(event)) {
+            if (const auto* disconnected =
+                    std::get_if<mycore::net_transport::Disconnected>(&event)) {
+                mycore::debug::log_info("dots.client.session",
+                                        "Transport connection {} closed ({})",
+                                        disconnected->connection.value(),
+                                        disconnect_reason_name(disconnected->reason));
                 state_ = State::Disconnected;
                 continue;
             }
@@ -62,6 +90,12 @@ public:
                 const auto result = world_.apply(*snapshot);
                 if (result == replication::SnapshotApplyResult::Invalid) {
                     return fail(RuntimeError::InvalidSnapshot);
+                }
+                if (result == replication::SnapshotApplyResult::Applied) {
+                    snapshot_times_.push_back(now);
+                    latest_snapshot_time_ = now;
+                    ++accepted_snapshot_count_;
+                    prune_snapshot_times(now);
                 }
                 if (const auto error = update_ready_state()) {
                     return error;
@@ -102,7 +136,16 @@ public:
     }
 
     [[nodiscard]] bool disconnect() {
-        return connection_.is_valid() && endpoint_.disconnect(connection_);
+        if (!connection_.is_valid() || state_ == State::Disconnected ||
+            !endpoint_.disconnect(connection_)) {
+            return false;
+        }
+        state_ = State::Disconnected;
+        mycore::debug::log_info("dots.client.session",
+                                "Requested disconnect for client {} on connection {}",
+                                client_id_.value(),
+                                connection_.value());
+        return true;
     }
 
     [[nodiscard]] State state() const noexcept {
@@ -121,7 +164,35 @@ public:
         return controlled_entity_id_;
     }
 
+    [[nodiscard]] mycore::net_transport::ConnectionHandle connection_handle() const noexcept {
+        return connection_;
+    }
+
+    [[nodiscard]] ReplicationStatistics
+    replication_statistics(std::chrono::steady_clock::time_point now) const noexcept {
+        ReplicationStatistics result;
+        result.accepted_snapshot_count = accepted_snapshot_count_;
+        if (latest_snapshot_time_) {
+            result.latest_snapshot_age =
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::max(
+                    now - *latest_snapshot_time_, std::chrono::steady_clock::duration::zero()));
+        }
+        const auto window_start = now - std::chrono::seconds{1};
+        const auto first =
+            std::lower_bound(snapshot_times_.begin(), snapshot_times_.end(), window_start);
+        result.accepted_snapshots_per_second =
+            static_cast<float>(std::distance(first, snapshot_times_.end()));
+        return result;
+    }
+
 private:
+    void prune_snapshot_times(std::chrono::steady_clock::time_point now) {
+        const auto retention_start = now - std::chrono::seconds{2};
+        while (!snapshot_times_.empty() && snapshot_times_.front() < retention_start) {
+            snapshot_times_.pop_front();
+        }
+    }
+
     [[nodiscard]] std::optional<RuntimeError> update_ready_state() {
         if (!client_id_.is_valid() || !world_.snapshot_id().is_valid()) {
             return std::nullopt;
@@ -130,7 +201,13 @@ private:
         if (controlled == nullptr || controlled->kind != protocol::EntityKind::Player) {
             return fail(RuntimeError::MissingControlledEntity);
         }
-        state_ = State::Ready;
+        if (state_ != State::Ready) {
+            state_ = State::Ready;
+            mycore::debug::log_info("dots.client.session",
+                                    "Session ready as client {} controlling entity {}",
+                                    client_id_.value(),
+                                    controlled_entity_id_.value());
+        }
         return std::nullopt;
     }
 
@@ -156,6 +233,9 @@ private:
     protocol::EntityId controlled_entity_id_;
     replication::ReplicatedWorld world_;
     std::uint32_t next_input_id_{};
+    std::deque<std::chrono::steady_clock::time_point> snapshot_times_;
+    std::optional<std::chrono::steady_clock::time_point> latest_snapshot_time_;
+    std::uint64_t accepted_snapshot_count_{};
 };
 
 Runtime::Runtime(mycore::net_transport::Endpoint& endpoint)
@@ -165,8 +245,8 @@ Runtime::~Runtime() = default;
 Runtime::Runtime(Runtime&&) noexcept = default;
 Runtime& Runtime::operator=(Runtime&&) noexcept = default;
 
-std::optional<RuntimeError> Runtime::process_events() {
-    return impl_->process_events();
+std::optional<RuntimeError> Runtime::process_events(std::chrono::steady_clock::time_point now) {
+    return impl_->process_events(now);
 }
 
 InputSendResult Runtime::send_input(std::uint32_t client_tick, mycore::math::Vector2 movement) {
@@ -191,6 +271,15 @@ protocol::ClientId Runtime::client_id() const noexcept {
 
 protocol::EntityId Runtime::controlled_entity_id() const noexcept {
     return impl_->controlled_entity_id();
+}
+
+mycore::net_transport::ConnectionHandle Runtime::connection_handle() const noexcept {
+    return impl_->connection_handle();
+}
+
+ReplicationStatistics
+Runtime::replication_statistics(std::chrono::steady_clock::time_point now) const noexcept {
+    return impl_->replication_statistics(now);
 }
 
 } // namespace dots::client_runtime

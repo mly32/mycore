@@ -101,9 +101,10 @@ cmake --build --preset macos-clang-debug
 ### Run Dots
 
 All runnable targets are placed under `build/<preset>/bin`. `dots_client` runs a playable
-offline SDL_GPU client by default and can also embed the authoritative server through the
-in-memory transport. `dots_server` runs the headless authoritative heartbeat; the bot remains a
-foundation executable for now:
+offline SDL_GPU client by default, can embed the authoritative server through the in-memory
+transport, or can connect to a separate native server. `dots_server` listens for native clients
+while running the headless authoritative heartbeat; the bot remains a foundation executable for
+now:
 
 | Target | Executable path for `macos-clang-debug` |
 |---|---|
@@ -123,18 +124,48 @@ Run the client against an embedded authoritative server without opening sockets:
 ./build/macos-clang-debug/bin/dots_client --in-memory
 ```
 
-This mode sends sequenced input at 30 Hz, advances only the embedded server's simulation, and
-renders full replicated snapshots at 15 Hz. It deliberately has no prediction or remote
-interpolation yet, so movement is less smooth than offline mode. Those behaviors arrive in later
-networking features. The transport remains unaware of Dots messages.
+Run separate server and client processes over GameNetworkingSockets:
+
+```bash
+./build/macos-clang-debug/bin/dots_server --listen 127.0.0.1:27020
+./build/macos-clang-debug/bin/dots_client --connect 127.0.0.1:27020
+```
+
+For a local multi-client session, use the developer launcher. It waits for the server readiness
+line, prefixes child output, and cleans up every process on exit:
+
+```bash
+python3 games/dots/tools/dots_session.py \
+    --build-dir build/macos-clang-debug \
+    --clients 2 \
+    --client-config games/dots/config/dots-client.toml
+```
+
+`--client-config` resolves the TOML path once and passes it to every graphical client. The
+launcher's `--connect` argument still selects native mode and overrides `[network].mode` and
+`[network].server_address` from that file for the session.
+
+Add `--fake-lag-ms 50` or `--fake-loss-percent 5` to a native executable or the launcher to
+impair outgoing packets. Lag is one-way, so applying 50 ms at both endpoints produces roughly
+100 ms of transport RTT.
+
+Networked clients send sequenced input at 30 Hz and render full replicated snapshots at 15 Hz.
+Only the authoritative server—embedded or separate—advances the simulation. The client
+deliberately has no prediction or remote interpolation yet, so movement is less smooth than
+offline mode. Those behaviors arrive in later networking features. The transport remains
+unaware of Dots messages.
+
+Closing a networked client normally, including Escape or the window close control, requests a
+graceful transport disconnect. The server removes that client's authoritative player and both
+sides log the connection and session lifecycle under `dots.client.session` and
+`dots.server.session`. A crashed or forcibly killed process cannot send the graceful request;
+the peer instead reports a transport failure when it detects the loss.
 
 The standalone server runs until interrupted. Use a bounded run for smoke testing:
 
 ```bash
 ./build/macos-clang-debug/bin/dots_server --ticks 10
 ```
-
-Feature 09 does not connect separate processes; the native socket backend arrives in Feature 10.
 
 The client uses SDL_GPU through the game-neutral `MyCore::Render` layer and the engine-owned
 `MyCore::Render2D` grid/circle renderer. Dots only extracts game state and maps food and players
@@ -154,8 +185,10 @@ As the player consumes food, its color shifts from `colors.player` toward
 A non-interactive Dear ImGui overlay in the bottom-right reports the active input mode, world
 tick, player and food counts, occupied spatial-grid cells or replicated snapshot ID, frame timing,
 actual and target tick rates, simulation cost, backlog, catch-up frames, step-cap hits, deadline
-misses, and discarded time. Logs use owner-qualified categories such as `dots.client`,
-`dots.server`, and `dots.bot`.
+misses, and discarded time. Networked modes separately report replication snapshot age/rate and
+transport state, RTT, loss, traffic rates, and queues. Measurements unavailable from the
+in-memory backend are labeled instead of displayed as zero. Logs use owner-qualified categories
+such as `dots.client`, `dots.server`, and `dots.bot`.
 Fixed-step overload produces rate-limited warnings, escalates to an error log after ten sustained
 seconds, and reports recovery. The offline client records and discards only whole excess backlog
 after its configured catch-up cap so it remains responsive while preserving the fractional time
@@ -174,8 +207,10 @@ Run the checked-in complete configuration explicitly:
 Configuration precedence is built-in defaults, then `dots-client.toml` in the current
 working directory when it exists. `--config <path>` replaces that automatic path. A missing
 automatic file is allowed; an explicitly requested missing file, invalid TOML, unknown field,
-or invalid value is a startup error. The sample documents settings for the window, input mode,
-bindings, fixed-step catch-up, camera scale/grid, and debug colors. Binding names are
+or invalid value is a startup error. The sample documents settings for the window, network mode
+and address, input mode, bindings, fixed-step catch-up, camera scale/grid, and debug colors. The
+built-in and sample network mode is `offline`; select `in_memory` or `native` in `[network]`, or
+override it with `--offline`, `--in-memory`, or `--connect`. Binding names are
 case-insensitive and support letters, digits, arrows, Escape, Space, Enter, Tab, Backspace,
 left/right modifiers, navigation keys, and F1 through F12.
 
@@ -226,7 +261,7 @@ frame reaches the screen, see the
 [SDL_GPU rendering and shaders guide](docs/sdl_gpu_rendering_guide.md).
 
 For the corresponding networking model, including protocol versus transport, server authority,
-the current uncompensated in-memory flow, and the later prediction/reconciliation/interpolation
+the current uncompensated networked flow, and the later prediction/reconciliation/interpolation
 model, see the
 [protocol, transport, and server-authoritative networking guide](docs/server_authoritative_networking_guide.md).
 
@@ -254,3 +289,4 @@ preset overrides in the ignored `CMakeUserPresets.json`.
 - [Feature 07 debug observability plan](docs/plans/07-debug-observability.md)
 - [Feature 08 protocol binary codec plan](docs/plans/08-protocol-binary-codec.md)
 - [Feature 09 in-memory transport integration plan](docs/plans/09-inmemory-transport-integration.md)
+- [Feature 10 GameNetworkingSockets transport plan](docs/plans/10-gamenetworkingsockets-transport.md)

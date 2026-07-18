@@ -25,10 +25,10 @@ latest state received from the server. It does not currently simulate its player
 networked mode.
 
 `dots_client --in-memory` exercises this complete path without opening a socket. Its client and
-server live in one process and communicate through the same abstract transport interface that a
-native network backend will implement. This proves the ownership and message flow, but the
-in-memory backend is FIFO and lossless and does not introduce real latency, jitter, or packet
-loss.
+server live in one process and communicate through the same abstract transport interface used by
+the native backend. `dots_client --connect 127.0.0.1:27020` instead connects to a separate
+`dots_server` process through GameNetworkingSockets. The in-memory backend remains FIFO and
+lossless, while the native backend supports realistic outgoing latency and loss simulation.
 
 The current mode has **no client-side prediction, reconciliation, or remote interpolation**.
 That is why its overlay says `NETWORKED FIXED` and why movement advances at the 15 Hz snapshot
@@ -88,9 +88,8 @@ The receiver can ignore stale data without waiting for retransmission. Later inp
 and self-healing snapshot deltas will tolerate loss without turning the real-time stream into a
 reliable queue of obsolete state.
 
-The current in-memory implementation is lossless for both delivery modes. The mode still records
-the intended semantics so tests and runtimes do not need a different contract when the native
-transport arrives.
+The in-memory implementation is lossless for both delivery modes. It records the same intended
+semantics as the native implementation so tests and runtimes do not need a different contract.
 
 ### Packet size policy
 
@@ -139,7 +138,7 @@ queues copied payloads in FIFO order, delivers them when the receiving endpoint 
 clients, and reports disconnects exactly once to each side. This makes multiplayer session tests
 deterministic without pretending to be a real network.
 
-Feature 10 will put a GameNetworkingSockets implementation behind the same endpoint contract:
+Feature 10 puts a GameNetworkingSockets implementation behind the same endpoint contract:
 
 ```text
                  MyCore::NetTransport::Endpoint
@@ -149,9 +148,14 @@ Feature 10 will put a GameNetworkingSockets implementation behind the same endpo
           InMemoryNetwork        GameNetworkingSockets
 ```
 
-The protocol and Dots runtimes should not care which implementation carries their bytes. The
+The protocol and Dots runtimes do not care which implementation carries their bytes. The
 native backend adds cross-process connections, encryption, congestion behavior, and realistic
 latency/loss simulation; it does not add gameplay replication or prediction by itself.
+
+A normal client exit explicitly disconnects its transport connection. The server receives the
+disconnect event, removes the corresponding session and authoritative player, and logs the
+reason. Abrupt process loss follows the same cleanup path after the transport detects failure,
+but cannot provide a graceful local-request event.
 
 ## What server authoritative means
 
@@ -245,8 +249,9 @@ press key -> input travels to server -> later server tick -> snapshot travels ba
 ```
 
 The in-memory mode validates the architecture but largely hides that responsiveness problem
-because it has no simulated network delay. Feature 10 makes separate processes possible;
-Features 11 and 12 address how the game feels under latency and jitter.
+because it has no simulated network delay. Native sessions make the delay visible and allow it
+to be amplified with the fake-lag and fake-loss options. Features 11 and 12 address how the game
+feels under latency and jitter.
 
 Some groundwork is already present. Input commands have sequence IDs, snapshots acknowledge
 `last_processed_input`, and inputs report the latest received snapshot. The current client does
@@ -262,9 +267,9 @@ physical display do not have to advance together.
 |---|---:|---:|---|
 | Client loop/render frame | Variable; commonly limited by vsync | 16.67 ms on a 60 Hz display | Poll input, run zero or more due fixed steps, extract presentation, submit rendering. |
 | Authoritative simulation tick | Fixed 30 Hz | 33.33 ms | Apply current movement, move entities, resolve food collisions, increment server tick. |
-| Client input command | At each due fixed step in current in-memory mode | 33.33 ms | Encode and send the newest sampled movement with a new sequence ID. |
+| Client input command | At each due client fixed step | 33.33 ms | Encode and send the newest sampled movement with a new sequence ID. |
 | Full snapshot | Every two server ticks, fixed 15 Hz | 66.67 ms | Send the latest authoritative entity state and input acknowledgement. |
-| Transport poll | No independent frequency in Feature 09 | Called at explicit loop points | Deliver queued connection and payload events to a runtime. |
+| Transport poll | Once or more at explicit loop points | Render-loop or server-tick dependent | Deliver queued connection and payload events to a runtime. |
 | Display refresh | Monitor-dependent | 16.67 ms at 60 Hz | Make a completed GPU image physically visible. |
 
 The 60 Hz render rate in examples below is illustrative, not guaranteed. The default client uses
@@ -320,11 +325,11 @@ sends no input command and advances no server tick. A catch-up render frame may 
 fixed steps using the same most-recent input sample. Catch-up is capped so one slow frame cannot
 make the client unresponsive indefinitely.
 
-The embedded server is called directly inside this loop only for `--in-memory`. Once Feature 10
-runs client and server in separate processes, each owns its own clock. The server loop polls its
-transport, advances one 30 Hz tick, emits any due snapshots, and sleeps until its next tick. The
-client cannot call or synchronize that loop; it only sends messages and processes messages that
-have arrived.
+The embedded server is called directly inside this loop only for `--in-memory`. In native mode,
+the client and server processes each own their clock. The server loop polls its transport,
+advances one 30 Hz tick, emits any due snapshots, and sleeps until its next tick. The client
+cannot call or synchronize that loop; it only sends messages and processes messages that have
+arrived.
 
 ### Concrete current timeline: when one input becomes visible
 
@@ -541,35 +546,33 @@ self-contained baseline, never partial mutation into an uncertain world.
 
 ## Networking observability roadmap
 
-The current overlay already shows useful Feature 09 replication evidence: presentation mode,
-server tick, snapshot ID, entity counts, fixed-step rate, and simulation health. It would also be
-reasonable to expose semantic values that the current protocol genuinely knows, such as:
+The current overlay separates replication health from transport health. Replication data
+includes server tick, snapshot ID, entity counts, latest snapshot age, and accepted snapshot
+rate. Native transport data includes connection state, RTT, packet loss, traffic rates, outbound
+queue depths, and queue delay. In-memory endpoints report connection state but leave measurements
+they cannot provide unavailable instead of implying zero latency or loss.
+
+Additional protocol-level values that may be useful in later work include:
 
 - Client session state.
 - Last input sequence sent and last input sequence acknowledged by a snapshot.
 - Number of currently unacknowledged inputs.
-- Age of the latest installed snapshot.
 - Applied, stale, and invalid snapshot counts.
 
-Those are replication/runtime statistics, not measurements of a real network. The FIFO,
-lossless in-memory transport cannot provide meaningful ping, RTT, jitter, packet loss,
-congestion, or socket-queue values. Displaying zeros for those fields would imply a realism the
-backend does not have.
+Those are replication/runtime statistics, not measurements of a real network.
 
 The recommended staging is:
 
 | Feature | Debug information to add |
 |---|---|
-| 09: in-memory replication | Existing tick/snapshot/entity data; optionally session, input ACK gap, and snapshot age. |
-| 10: native transport | Connection state, RTT, packet loss, bytes/packets per second, reliable queue depth, and transport diagnostics. |
+| 09: in-memory replication | Tick, snapshot, entity, session, and fixed-step data. |
+| 10: native transport | Snapshot age/rate plus connection state, RTT, packet loss, traffic rates, outbound queues, and queue delay. |
 | 11: prediction/reconciliation | Unacknowledged input count, replay count, correction distance, correction frequency, and presentation smoothing offset. |
 | 12: remote interpolation | Snapshot-buffer fill, interpolation delay, measured jitter, late snapshots, and extrapolation/hold events. |
 
-Therefore, genuine **network transport stats belong in Feature 10**, when GameNetworkingSockets
-can supply real measurements and simulated impairment. Replication acknowledgements and snapshot
-age may be added earlier if they help inspect Feature 09, but they should be labeled separately
-from transport health. One-way latency should not be inferred by simply halving RTT once clocks
-and routes can differ.
+Genuine **network transport stats come from GameNetworkingSockets**. They remain labeled
+separately from replication health. One-way latency should not be inferred by simply halving RTT
+because clocks and routes can differ.
 
 ## Useful invariants when changing networking code
 
@@ -588,8 +591,8 @@ and routes can differ.
 ## Where to read the implementation
 
 - `games/dots/protocol/`: message value types, strong wire IDs, framing, encoding, and decoding.
-- `engine/net_transport/`: the game-neutral endpoint contract and deterministic in-memory
-  implementation.
+- `engine/net_transport/`: the game-neutral endpoint contract plus deterministic in-memory and
+  native GameNetworkingSockets implementations.
 - `games/dots/server/`: connection sessions, handshake validation, input ownership, stepping,
   snapshots, and peer rejection.
 - `games/dots/replication/`: simulation/protocol ID mapping, snapshot construction, and the
@@ -599,12 +602,13 @@ and routes can differ.
 - `games/dots/simulation/`: authoritative Dots rules and fixed-step world, independent of
   transport and rendering.
 - `games/dots/presentation/`: extraction of replicated entities into client-only draw data.
-- `games/dots/apps/client/src/client_app.cpp`: composition of the current offline and in-memory
+- `games/dots/apps/client/src/client_app.cpp`: composition of the offline, in-memory, and native
   runtime modes.
 - `docs/plans/08-protocol-binary-codec.md`: the implemented wire-format slice.
 - `docs/plans/09-inmemory-transport-integration.md`: the implemented authoritative in-memory
   slice.
-- `docs/development_branch_plan.md`: Features 10–14 and their exit criteria.
+- `docs/plans/10-gamenetworkingsockets-transport.md`: the implemented native transport slice.
+- `docs/development_branch_plan.md`: Features 11–14 and their exit criteria.
 
 ## Glossary
 

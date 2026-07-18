@@ -81,6 +81,18 @@ public:
         return true;
     }
 
+    [[nodiscard]] std::optional<TransportStatistics>
+    statistics(ConnectionHandle connection) const override {
+        const auto* value = find_connection(connection);
+        if (value == nullptr) {
+            return std::nullopt;
+        }
+        TransportStatistics result;
+        result.state =
+            value->connected ? ConnectionState::Connected : ConnectionState::Disconnected;
+        return result;
+    }
+
     void push(Event event) {
         events_.push_back(std::move(event));
     }
@@ -91,6 +103,14 @@ public:
 
 private:
     [[nodiscard]] Connection* find_connection(ConnectionHandle connection) noexcept {
+        if (!connection.is_valid() || (!server_ && connection != client_connection_)) {
+            return nullptr;
+        }
+        const auto iterator = state_.connections.find(connection.value());
+        return iterator == state_.connections.end() ? nullptr : &iterator->second;
+    }
+
+    [[nodiscard]] const Connection* find_connection(ConnectionHandle connection) const noexcept {
         if (!connection.is_valid() || (!server_ && connection != client_connection_)) {
             return nullptr;
         }

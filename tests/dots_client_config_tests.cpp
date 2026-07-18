@@ -59,6 +59,8 @@ TEST_CASE("Client configuration defaults match the playable client", "[dots][cli
     REQUIRE_FALSE(config.window.fullscreen);
     REQUIRE(config.window.high_dpi);
     REQUIRE(config.window.vsync);
+    REQUIRE(config.network.mode == dots::client::NetworkMode::Offline);
+    REQUIRE(config.network.server_address == "127.0.0.1:27020");
     REQUIRE(config.controls.mode == dots::client::InputMode::Hybrid);
     REQUIRE(config.controls.mouse_dead_zone_pixels == 12.0F);
     REQUIRE(config.controls.bindings.up ==
@@ -92,6 +94,10 @@ resizable = false
 fullscreen = true
 high_dpi = false
 vsync = false
+
+[network]
+mode = "native"
+server_address = "[::1]:28020"
 
 [input]
 mode = "keyboard"
@@ -132,6 +138,8 @@ food = "#FEDCBA"
     REQUIRE(config.window.fullscreen);
     REQUIRE_FALSE(config.window.high_dpi);
     REQUIRE_FALSE(config.window.vsync);
+    REQUIRE(config.network.mode == dots::client::NetworkMode::Native);
+    REQUIRE(config.network.server_address == "[::1]:28020");
     REQUIRE(config.controls.mode == dots::client::InputMode::Keyboard);
     REQUIRE(config.controls.mouse_dead_zone_pixels == 4.5F);
     REQUIRE(config.controls.bindings.up == std::vector{mycore::platform_sdl::Key::I});
@@ -237,6 +245,10 @@ TEST_CASE("Invalid client TOML reports the source and field", "[dots][client][co
     };
     const std::vector invalid_documents{
         InvalidDocument{"[window", "<document>"},
+        InvalidDocument{"[network]\nmode = \"remote\"", "network.mode"},
+        InvalidDocument{"[network]\nserver_address = \"localhost:27020\"",
+                        "network.server_address"},
+        InvalidDocument{"[network]\nserver_address = \"127.0.0.1:0\"", "network.server_address"},
         InvalidDocument{"mystery = true", "mystery"},
         InvalidDocument{"[window]\nwidht = 10", "window.widht"},
         InvalidDocument{"window = 10", "window"},

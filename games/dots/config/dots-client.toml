@@ -9,6 +9,10 @@ fullscreen = false
 high_dpi = true
 vsync = true
 
+[network]
+mode = "offline"
+server_address = "127.0.0.1:27020"
+
 [input]
 mode = "hybrid"
 mouse_dead_zone_pixels = 12.0

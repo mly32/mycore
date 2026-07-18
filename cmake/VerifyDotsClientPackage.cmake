@@ -80,7 +80,8 @@ execute_process(
     OUTPUT_VARIABLE help_output
     ERROR_VARIABLE help_error
 )
-if(NOT help_result EQUAL 0 OR NOT help_output MATCHES "offline and embedded-authority modes")
+set(expected_help "offline, embedded-authority, and native-network modes")
+if(NOT help_result EQUAL 0 OR NOT help_output MATCHES "${expected_help}")
     message(
         FATAL_ERROR
         "Packaged client help failed (${help_result}): ${help_output}${help_error}"

@@ -3,11 +3,13 @@
 #include "dots/protocol/codec.hpp"
 #include "dots/replication/replication.hpp"
 #include "dots/simulation/input_command.hpp"
+#include "mycore/debug/log.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <variant>
@@ -19,6 +21,20 @@ namespace {
 using mycore::net_transport::ConnectionHandle;
 using mycore::net_transport::DeliveryMode;
 using mycore::net_transport::SendStatus;
+
+[[nodiscard]] constexpr std::string_view
+disconnect_reason_name(mycore::net_transport::DisconnectReason reason) noexcept {
+    using mycore::net_transport::DisconnectReason;
+    switch (reason) {
+    case DisconnectReason::LocalRequest:
+        return "local request";
+    case DisconnectReason::RemoteRequest:
+        return "remote request";
+    case DisconnectReason::TransportFailure:
+        return "transport failure";
+    }
+    return "unknown reason";
+}
 
 struct Session {
     ConnectionHandle connection;
@@ -43,12 +59,26 @@ public:
     [[nodiscard]] std::optional<RuntimeError> process_events() {
         for (const auto& event : endpoint_.poll()) {
             if (const auto* connected = std::get_if<mycore::net_transport::Connected>(&event)) {
-                sessions_.try_emplace(connected->connection.value(),
-                                      Session{.connection = connected->connection});
+                const auto [unused, inserted] =
+                    sessions_.try_emplace(connected->connection.value(),
+                                          Session{
+                                              .connection = connected->connection,
+                                              .client_id = {},
+                                              .player_id = {},
+                                              .last_processed_input_id = {},
+                                              .next_snapshot_id = 0,
+                                          });
+                static_cast<void>(unused);
+                if (inserted) {
+                    mycore::debug::log_info("dots.server.session",
+                                            "Transport connection {} opened",
+                                            connected->connection.value());
+                }
                 continue;
             }
             if (const auto* disconnected =
                     std::get_if<mycore::net_transport::Disconnected>(&event)) {
+                log_disconnect(*disconnected);
                 remove_session(disconnected->connection);
                 continue;
             }
@@ -166,7 +196,15 @@ private:
             return error;
         }
         if (sessions_.contains(connection.value())) {
-            return send_snapshot(connection);
+            const auto snapshot_error = send_snapshot(connection);
+            if (!snapshot_error && sessions_.contains(connection.value())) {
+                mycore::debug::log_info("dots.server.session",
+                                        "Client {} joined on connection {} controlling entity {}",
+                                        session.client_id.value(),
+                                        connection.value(),
+                                        session.player_id.value());
+            }
+            return snapshot_error;
         }
         return std::nullopt;
     }
@@ -210,6 +248,9 @@ private:
             return RuntimeError::ProtocolEncodeFailed;
         }
         if (endpoint_.send(connection, *bytes, delivery) != SendStatus::Sent) {
+            mycore::debug::log_warning("dots.server.session",
+                                       "Send failed on connection {}; removing its session",
+                                       connection.value());
             remove_session(connection);
         }
         return std::nullopt;
@@ -217,8 +258,27 @@ private:
 
     void reject(ConnectionHandle connection) {
         ++rejected_packet_count_;
+        mycore::debug::log_warning("dots.server.session",
+                                   "Rejected invalid packet on connection {}; disconnecting peer",
+                                   connection.value());
         static_cast<void>(endpoint_.disconnect(connection));
         remove_session(connection);
+    }
+
+    void log_disconnect(const mycore::net_transport::Disconnected& disconnected) const {
+        const auto iterator = sessions_.find(disconnected.connection.value());
+        if (iterator != sessions_.end() && iterator->second.ready()) {
+            mycore::debug::log_info("dots.server.session",
+                                    "Client {} disconnected from connection {} ({})",
+                                    iterator->second.client_id.value(),
+                                    disconnected.connection.value(),
+                                    disconnect_reason_name(disconnected.reason));
+            return;
+        }
+        mycore::debug::log_info("dots.server.session",
+                                "Transport connection {} closed before handshake ({})",
+                                disconnected.connection.value(),
+                                disconnect_reason_name(disconnected.reason));
     }
 
     void remove_session(ConnectionHandle connection) {

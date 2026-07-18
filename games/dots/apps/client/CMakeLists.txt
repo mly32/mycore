@@ -26,6 +26,7 @@ target_link_libraries(
     dots_client_support
     PUBLIC
         Dots::Simulation
+        MyCore::NetTransport
         MyCore::PlatformSDL
     PRIVATE
         tomlplusplus::tomlplusplus
@@ -45,21 +46,7 @@ target_link_libraries(
         MyCore::Render2D
 )
 mycore_configure_executable(dots_client)
-
-if(WIN32)
-    # vcpkg's Windows triplet provides SDL as a DLL. Stage all transitive runtime DLLs beside the
-    # client so direct runs and CTest work from the build tree; install() handles package staging.
-    add_custom_command(
-        TARGET dots_client
-        POST_BUILD
-        COMMAND
-            "${CMAKE_COMMAND}" -E copy_if_different
-            $<TARGET_RUNTIME_DLLS:dots_client>
-            $<TARGET_FILE_DIR:dots_client>
-        COMMAND_EXPAND_LISTS
-        VERBATIM
-    )
-endif()
+mycore_stage_runtime_dependencies(dots_client)
 
 get_target_property(
     dots_client_shader_assets
