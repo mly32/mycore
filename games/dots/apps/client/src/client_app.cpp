@@ -332,7 +332,10 @@ int run_networked_game(const ClientConfig& config,
                        mycore::net_transport::Endpoint& endpoint,
                        dots::server::Runtime* embedded_server) {
     using namespace std::chrono_literals;
-    dots::client_runtime::Runtime client{endpoint};
+    dots::client_runtime::Runtime client{
+        endpoint,
+        {.input_redundancy = config.network.input_redundancy},
+    };
     const auto handshake_deadline = std::chrono::steady_clock::now() + 10s;
     while (client.state() != dots::client_runtime::State::Ready) {
         if (client.process_events()) {

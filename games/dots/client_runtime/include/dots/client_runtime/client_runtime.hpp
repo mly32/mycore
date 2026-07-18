@@ -44,9 +44,13 @@ struct ReplicationStatistics {
     std::uint64_t accepted_snapshot_count{};
 };
 
+struct Settings {
+    bool input_redundancy{true};
+};
+
 class Runtime {
 public:
-    explicit Runtime(mycore::net_transport::Endpoint& endpoint);
+    explicit Runtime(mycore::net_transport::Endpoint& endpoint, Settings settings = {});
     ~Runtime();
 
     Runtime(const Runtime&) = delete;

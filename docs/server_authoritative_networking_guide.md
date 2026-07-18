@@ -12,7 +12,7 @@ The current networked path is deliberately simple:
 ```text
 client input
     |
-    | InputCommand bytes
+    | InputPacket bytes
     v
 transport -> authoritative server simulation -> FullSnapshot bytes -> replicated client world
                                                                   |
@@ -58,7 +58,7 @@ The Dots protocol is a game-owned contract. It defines four messages today:
 |---|---|---|---|
 | `ClientHello` | Client to server | Reliable | Request a session using the supported protocol version. |
 | `ServerWelcome` | Server to client | Reliable | Assign the client ID and controlled entity ID. |
-| `InputCommand` | Client to server | Unreliable | Submit sequenced movement and acknowledge the latest received snapshot. |
+| `InputPacket` | Client to server | Unreliable | Submit one to three sequenced movement samples and acknowledge the latest received snapshot. |
 | `FullSnapshot` | Server to client | Unreliable | Replace the client's replicated view with authoritative entity state. |
 
 Every encoded message starts with a 12-byte header containing:
@@ -66,6 +66,12 @@ Every encoded message starts with a 12-byte header containing:
 ```text
 magic "DOTS" + protocol version + message kind + flags + payload length
 ```
+
+The current protocol version is 2. Version 1, used by Features 8--10, carried one input sample
+and no pending-input depth. Version 2 keeps input message-kind value `3`, replaces that payload
+with one to three ordered samples, and adds per-client queue depth to full snapshots. There is no
+dual-version negotiation: a version-1 binary receives `UnsupportedVersion` rather than having its
+payload interpreted as version 2.
 
 Integers and floating-point bit patterns have defined widths and use big-endian network byte
 order. Fields are encoded individually; the implementation never copies a C++ struct directly
@@ -97,12 +103,14 @@ Retransmission also trades timeliness for delivery. Under loss, a reliable messa
 much later and reliable data can wait behind earlier missing data. This is appropriate for the
 small ordered handshake, but not for a continuous stream of replaceable gameplay state.
 
-Input and snapshots are time-sensitive. A delayed old movement command or snapshot is usually
+Input and snapshots are time-sensitive. A delayed old movement sample or snapshot is usually
 less useful than the newest one, so they are sent unreliably and carry application sequence IDs.
-The receiver can ignore stale data without waiting for retransmission. The current server sends
-another full snapshot at 15 Hz, so a lost snapshot is replaced by a newer complete view. Later
-input redundancy and snapshot deltas will improve loss handling without turning the real-time
-stream into a reliable queue of obsolete state.
+The receiver can ignore stale data without waiting for retransmission. Protocol-v2 input packets
+contain the current sample and, by default, up to two prior unacknowledged samples. The server
+deduplicates overlapping packets before its bounded scheduling queue. The current server also
+sends another full snapshot at 15 Hz, so a lost snapshot is replaced by a newer complete view.
+Later snapshot deltas will improve loss handling without turning the real-time stream into a
+reliable queue of obsolete state.
 
 The in-memory implementation is lossless for both delivery modes. It records the same intended
 semantics as the native implementation so tests and runtimes do not need a different contract.
@@ -259,15 +267,15 @@ The current messages behave under impairment like this:
 | --- | --- | --- |
 | Transport connection establishment | Transport-managed | May retry, take much longer, or fail before the Dots handshake starts. |
 | `ClientHello` and `ServerWelcome` | Reliable | Transport retransmits while viable; delay increases, but Dots does not repeatedly call `send`. |
-| `InputCommand` at 30 Hz | Unreliable | A lost command is skipped. Newer sequence IDs continue; input redundancy is a later feature. |
+| `InputPacket` at 30 Hz | Unreliable | The next one or two packets can recover a lost current sample while it remains inside the default two-sample redundancy window. Three consecutive losses, or any loss with redundancy disabled, can skip a sample. |
 | `FullSnapshot` at 15 Hz | Unreliable | The client holds its previous view until a newer complete snapshot arrives. |
 | Disconnect | Transport lifecycle | Graceful requests are reported promptly when delivered; abrupt loss is reported after failure detection. |
 
 Because the current networked client has neither prediction nor interpolation, these effects are
-visible directly. Lag postpones local input response. Lost inputs can make movement briefly stop,
-and lost snapshots can make the view hold and then jump when a newer snapshot arrives. This is
-expected for the present feature stage, not evidence that the authoritative simulation itself
-stopped.
+visible directly. Lag postpones local input response. Inputs lost beyond the configured
+redundancy window can make movement briefly use an older desired direction, and lost snapshots
+can make the view hold and then jump when a newer snapshot arrives. This is expected for the
+present feature stage, not evidence that the authoritative simulation itself stopped.
 
 Use modest impairment to study steady-state behavior and high impairment to study failure paths:
 
@@ -301,10 +309,10 @@ my player is now at (900, 400), has mass 500, and consumed entity 17
 ```
 
 The server associates each connection with the player it spawned for that session. An
-`InputCommand` does not choose an entity to control. The server validates the command, maps its
-sequence to a simulation input ID, applies it only to the session's owned player, and advances
-the fixed-step world. Movement, collision, eating, mass, spawning, and removal remain server
-decisions.
+`InputPacket` samples do not choose an entity to control. The server validates and queues them,
+maps at most the oldest queued sequence to a simulation input ID before each tick, applies it
+only to the session's owned player, and advances the fixed-step world. Movement, collision,
+eating, mass, spawning, and removal remain server decisions.
 
 Authority is an ownership rule, not a statement about where code can execute. A future client
 may run the same movement code speculatively for responsiveness, but the server result still
@@ -333,10 +341,13 @@ its controlled player.
 After the handshake, each current in-memory fixed step is composed in this order:
 
 1. The client maps keyboard or mouse state to a normalized movement vector.
-2. It creates the next sequenced `InputCommand`, including its latest snapshot ID.
+2. It creates the next sequenced input sample and a bounded `InputPacket`, including its latest
+   snapshot ID and, when enabled, up to two prior unacknowledged samples.
 3. The protocol encoder produces bytes and the client sends them unreliably.
-4. The server polls, decodes, validates, and applies fresh input to that connection's player.
-5. The server advances its authoritative `World` by one 30 Hz tick.
+4. The server polls, decodes, validates, deduplicates, and orders fresh samples in that
+   connection's bounded queue.
+5. The server applies at most the oldest queued sample for each client, then advances its
+   authoritative `World` by one 30 Hz tick.
 6. Every two ticks, the server builds and sends a 15 Hz full snapshot for each ready client.
 7. The client polls and atomically installs a newer snapshot.
 8. Presentation extracts circles from the replicated world and centers the camera on the
@@ -348,6 +359,7 @@ ID, plus:
 - Its snapshot sequence ID.
 - The authoritative server tick.
 - The last input sequence processed for that client.
+- That client's current pending-input queue depth after the tick.
 
 `ReplicatedWorld` rejects invalid snapshots, ignores stale snapshots, and fully replaces its
 entity collection when it accepts a newer one. It is a client view, not a second authoritative
@@ -379,10 +391,11 @@ because it has no simulated network delay. Native sessions make the delay visibl
 to be amplified with the fake-lag and fake-loss options. Features 11 and 12 address how the game
 feels under latency and jitter.
 
-Some groundwork is already present. Input commands have sequence IDs, snapshots acknowledge
-`last_processed_input`, and inputs report the latest received snapshot. The current client does
-not retain and replay input history, and the server does not yet use snapshot acknowledgements
-for delta baselines.
+Some groundwork is already present. Input samples have sequence IDs, protocol-v2 packets provide
+bounded redundancy, the server schedules at most one queued sample per client per tick, snapshots
+acknowledge `last_processed_input`, and inputs report the latest received snapshot. The current
+client does not retain the full prediction history or replay it, and the server does not yet use
+snapshot acknowledgements for delta baselines.
 
 ## There is no single “game frame”
 
@@ -393,7 +406,7 @@ physical display do not have to advance together.
 |---|---:|---:|---|
 | Client loop/render frame | Variable; commonly limited by vsync | 16.67 ms on a 60 Hz display | Poll input, run zero or more due fixed steps, extract presentation, submit rendering. |
 | Authoritative simulation tick | Fixed 30 Hz | 33.33 ms | Apply current movement, move entities, resolve food collisions, increment server tick. |
-| Client input command | At each due client fixed step | 33.33 ms | Encode and send the newest sampled movement with a new sequence ID. |
+| Client input packet | At each due client fixed step | 33.33 ms | Encode and send the newest sampled movement, plus configured redundancy, with a new sequence ID. |
 | Full snapshot | Every two server ticks, fixed 15 Hz | 66.67 ms | Send the latest authoritative entity state and input acknowledgement. |
 | Transport poll | Once or more at explicit loop points | Render-loop or server-tick dependent | Deliver queued connection and payload events to a runtime. |
 | Display refresh | Monitor-dependent | 16.67 ms at 60 Hz | Make a completed GPU image physically visible. |
@@ -435,8 +448,9 @@ ask the fixed-step accumulator how many 30 Hz steps are due
 
 for each due step:
     map the latest input sample to movement
-    client encodes and sends one InputCommand
-    server polls, decodes, validates, and applies the input
+    client encodes and sends one bounded InputPacket
+    server polls, validates, and queues its input samples
+    server applies at most one queued sample for this tick
     server advances one authoritative World tick
     server sends a FullSnapshot if this is every second tick
     client polls and installs any delivered snapshot

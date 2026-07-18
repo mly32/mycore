@@ -10,8 +10,9 @@
 
 namespace dots::protocol {
 
-inline constexpr std::uint16_t kProtocolVersion = 1;
+inline constexpr std::uint16_t kProtocolVersion = 2;
 inline constexpr std::size_t kPacketHeaderBytes = 12;
+inline constexpr std::size_t kMaximumEncodedInputPacketBytes = 71;
 inline constexpr std::size_t kTargetTransportPayloadBytes = 1'200;
 inline constexpr std::size_t kMaximumEncodedMessageBytes = std::size_t{64} * 1'024;
 
@@ -28,6 +29,7 @@ enum class CodecError : std::uint8_t {
     InvalidEnum,
     InvalidNumber,
     OutOfRange,
+    InvalidInputOrdering,
     DuplicateEntity,
     TooManyEntities,
 };

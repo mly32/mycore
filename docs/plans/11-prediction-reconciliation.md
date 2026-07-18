@@ -57,8 +57,9 @@ Add `[network].input_redundancy = true` to the built-in configuration, sample TO
 schema. Enabled packets contain the current input and up to two prior unacknowledged samples.
 Disabled packets contain only the current sample. The server always accepts either valid form.
 
-Add the current bounded server pending-input count to each client-specific full snapshot. This is
-input-scheduling telemetry, not transport queue depth or a measurement of network RTT.
+Add the current bounded server pending-input count to each client-specific full snapshot as a
+`u8` after `last_processed_input_id` and before the entity count. Valid values are `0..64`. This
+is input-scheduling telemetry, not transport queue depth or a measurement of network RTT.
 
 ## Server Input Scheduling
 
@@ -228,10 +229,10 @@ Expose utilization rather than adding a runtime configuration that changes corre
 
 ### Phase 11.1: Protocol and server input foundation
 
-- [ ] Protocol version 2 and bounded input packet.
-- [ ] Redundancy configuration and schema.
-- [ ] Server input queue and snapshot queue-depth telemetry.
-- [ ] Protocol, queue, recovery, and overflow-isolation tests.
+- [x] Protocol version 2 and bounded input packet.
+- [x] Redundancy configuration and schema.
+- [x] Server input queue and snapshot queue-depth telemetry.
+- [x] Protocol, queue, recovery, and overflow-isolation tests.
 - [ ] Checkpoint approved before continuing.
 
 ### Phase 11.2: Prediction and atomic reconciliation
@@ -268,4 +269,3 @@ Expose utilization rather than adding a runtime configuration that changes corre
 - Presentation correction converges in 100 ms without altering simulation state.
 - The server remains authoritative, headless, bounded per client, and isolated from offender
   failures.
-

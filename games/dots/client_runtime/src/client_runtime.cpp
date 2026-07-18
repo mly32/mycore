@@ -36,8 +36,9 @@ disconnect_reason_name(mycore::net_transport::DisconnectReason reason) noexcept 
 
 class Runtime::Impl {
 public:
-    explicit Impl(mycore::net_transport::Endpoint& endpoint)
-        : endpoint_(endpoint) {}
+    Impl(mycore::net_transport::Endpoint& endpoint, Settings settings)
+        : endpoint_(endpoint),
+          settings_(settings) {}
 
     [[nodiscard]] std::optional<RuntimeError>
     process_events(std::chrono::steady_clock::time_point now) {
@@ -92,6 +93,7 @@ public:
                     return fail(RuntimeError::InvalidSnapshot);
                 }
                 if (result == replication::SnapshotApplyResult::Applied) {
+                    prune_sent_input_samples();
                     snapshot_times_.push_back(now);
                     latest_snapshot_time_ = now;
                     ++accepted_snapshot_count_;
@@ -115,14 +117,24 @@ public:
         if (next_input_id_ == protocol::InputSequenceId::kInvalidValue) {
             return InputSendResult::SequenceExhausted;
         }
-        const protocol::InputCommand input{
+        const protocol::InputSample sample{
             .sequence_id = protocol::InputSequenceId{next_input_id_},
             .client_tick = client_tick,
             .movement_x = movement.x,
             .movement_y = movement.y,
-            .last_received_snapshot_id = world_.snapshot_id(),
         };
-        const auto encoded = protocol::encode(input);
+        protocol::InputPacket packet{
+            .last_received_snapshot_id = world_.snapshot_id(),
+            .samples = {},
+        };
+        packet.samples.reserve(protocol::kMaximumInputSamplesPerPacket);
+        if (settings_.input_redundancy) {
+            packet.samples.insert(
+                packet.samples.end(), sent_input_samples_.begin(), sent_input_samples_.end());
+        }
+        packet.samples.push_back(sample);
+
+        const auto encoded = protocol::encode(packet);
         const auto* bytes = std::get_if<protocol::EncodedMessage>(&encoded);
         if (bytes == nullptr) {
             return InputSendResult::InvalidMovement;
@@ -130,6 +142,13 @@ public:
         if (endpoint_.send(connection_, *bytes, DeliveryMode::Unreliable) != SendStatus::Sent) {
             state_ = State::Disconnected;
             return InputSendResult::TransportFailure;
+        }
+        if (settings_.input_redundancy) {
+            constexpr auto kRetainedPriorSampleCount = protocol::kMaximumInputSamplesPerPacket - 1;
+            sent_input_samples_.push_back(sample);
+            while (sent_input_samples_.size() > kRetainedPriorSampleCount) {
+                sent_input_samples_.pop_front();
+            }
         }
         ++next_input_id_;
         return InputSendResult::Sent;
@@ -186,6 +205,17 @@ public:
     }
 
 private:
+    void prune_sent_input_samples() {
+        const auto acknowledged = world_.last_processed_input_id();
+        if (!acknowledged.is_valid()) {
+            return;
+        }
+        while (!sent_input_samples_.empty() &&
+               sent_input_samples_.front().sequence_id <= acknowledged) {
+            sent_input_samples_.pop_front();
+        }
+    }
+
     void prune_snapshot_times(std::chrono::steady_clock::time_point now) {
         const auto retention_start = now - std::chrono::seconds{2};
         while (!snapshot_times_.empty() && snapshot_times_.front() < retention_start) {
@@ -227,19 +257,21 @@ private:
     }
 
     mycore::net_transport::Endpoint& endpoint_;
+    Settings settings_;
     mycore::net_transport::ConnectionHandle connection_;
     State state_{State::Connecting};
     protocol::ClientId client_id_;
     protocol::EntityId controlled_entity_id_;
     replication::ReplicatedWorld world_;
     std::uint32_t next_input_id_{};
+    std::deque<protocol::InputSample> sent_input_samples_;
     std::deque<std::chrono::steady_clock::time_point> snapshot_times_;
     std::optional<std::chrono::steady_clock::time_point> latest_snapshot_time_;
     std::uint64_t accepted_snapshot_count_{};
 };
 
-Runtime::Runtime(mycore::net_transport::Endpoint& endpoint)
-    : impl_(std::make_unique<Impl>(endpoint)) {}
+Runtime::Runtime(mycore::net_transport::Endpoint& endpoint, Settings settings)
+    : impl_(std::make_unique<Impl>(endpoint, settings)) {}
 
 Runtime::~Runtime() = default;
 Runtime::Runtime(Runtime&&) noexcept = default;

@@ -11,11 +11,10 @@ but this guide must clearly distinguish implemented behavior from planned behavi
 
 This document uses three status labels:
 
-- **Current:** implemented on `feature/11-prediction-reconciliation` before Feature 11 runtime
-  work begins.
-- **Feature 11 planned:** specified in
-  [`plans/11-prediction-reconciliation.md`](plans/11-prediction-reconciliation.md), but not yet
-  implemented.
+- **Current:** implemented on `feature/11-prediction-reconciliation`, including the approved
+  baseline and the Phase 11.1 protocol/server foundation.
+- **Feature 11 planned:** remaining prediction, reconciliation, presentation, and debug-view work
+  specified in [`plans/11-prediction-reconciliation.md`](plans/11-prediction-reconciliation.md).
 - **Feature 12 planned:** specified in
   [`plans/12-remote-interpolation.md`](plans/12-remote-interpolation.md), but not yet
   implemented.
@@ -67,6 +66,19 @@ remain Dots-owned.
 
 Snapshot age describes freshness of the client's replicated view. It must not be presented as
 RTT, interpolation delay, or server tick health.
+
+### Input scheduling telemetry — Current protocol data, overlay planned
+
+Protocol-v2 full snapshots now carry `pending_input_count`, the number of distinct samples left
+in this client's bounded authoritative input queue after the snapshot tick. `ReplicatedWorld`
+stores the newest value, but the overlay does not display it until the Feature 11 prediction
+panel is implemented. It is not transport queue depth, RTT, or total input across all clients.
+
+The queue capacity is 64 samples. The server consumes at most one sample per client before each
+authoritative tick and continues the last installed movement when the queue is empty. With
+`[network].input_redundancy = true` (the default), each outgoing packet includes the current
+sample and up to two prior unacknowledged samples. Setting it to `false` sends only the current
+sample. Overlapping samples are deduplicated by sequence ID.
 
 ### Transport fields — Current
 
@@ -155,7 +167,7 @@ The planned **Prediction** section will include:
 | Last acknowledged input | Newest sequence the server says was included in authoritative stepping. |
 | Command lead | Count of sent inputs newer than the latest ACK. |
 | History use/high-water | Current and maximum occupancy of the fixed 256-entry replay ring. |
-| Server pending input | Per-client authoritative input queue depth reported in the latest snapshot. |
+| Server pending input | Per-client authoritative input queue depth already reported in the latest snapshot; its overlay row is still planned. |
 | Rollback base | Snapshot ID, server tick, and ACK used to start the latest reconciliation. |
 | Replay count | Inputs replayed after installing that authoritative base. |
 | Replay duration | CPU duration for scratch replay and atomic commit. |
@@ -304,4 +316,3 @@ When changing observability:
 
 Do not add an unlabeled zero for unavailable transport data, call a delayed sample live server
 state, mix presentation delay with RTT, or present a client-side timing counter as server health.
-

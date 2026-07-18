@@ -63,6 +63,7 @@ TEST_CASE("Client configuration defaults match the playable client", "[dots][cli
     REQUIRE(config.window.vsync);
     REQUIRE(config.network.mode == dots::client::NetworkMode::Offline);
     REQUIRE(config.network.server_address == "127.0.0.1:27020");
+    REQUIRE(config.network.input_redundancy);
     REQUIRE(config.controls.mode == dots::client::InputMode::Hybrid);
     REQUIRE(config.controls.mouse_dead_zone_pixels == 12.0F);
     REQUIRE(config.controls.bindings.up ==
@@ -109,6 +110,7 @@ vsync = false
 [network]
 mode = "native"
 server_address = "[::1]:28020"
+input_redundancy = false
 
 [input]
 mode = "keyboard"
@@ -151,6 +153,7 @@ food = "#FEDCBA"
     REQUIRE_FALSE(config.window.vsync);
     REQUIRE(config.network.mode == dots::client::NetworkMode::Native);
     REQUIRE(config.network.server_address == "[::1]:28020");
+    REQUIRE_FALSE(config.network.input_redundancy);
     REQUIRE(config.controls.mode == dots::client::InputMode::Keyboard);
     REQUIRE(config.controls.mouse_dead_zone_pixels == 4.5F);
     REQUIRE(config.controls.bindings.up == std::vector{mycore::platform_sdl::Key::I});
@@ -260,6 +263,7 @@ TEST_CASE("Invalid client TOML reports the source and field", "[dots][client][co
         InvalidDocument{"[network]\nserver_address = \"localhost:27020\"",
                         "network.server_address"},
         InvalidDocument{"[network]\nserver_address = \"127.0.0.1:0\"", "network.server_address"},
+        InvalidDocument{"[network]\ninput_redundancy = 1", "network.input_redundancy"},
         InvalidDocument{"mystery = true", "mystery"},
         InvalidDocument{"[window]\nwidht = 10", "window.widht"},
         InvalidDocument{"window = 10", "window"},

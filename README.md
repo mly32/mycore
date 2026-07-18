@@ -154,11 +154,14 @@ startup deadline; high loss can therefore make individual clients fail to join. 
 [`docs/server_authoritative_networking_guide.md`](docs/server_authoritative_networking_guide.md)
 for the detailed lag, loss, reliability, and lifecycle mental model.
 
-Networked clients send sequenced input at 30 Hz and render full replicated snapshots at 15 Hz.
-Only the authoritative server—embedded or separate—advances the simulation. The client
-deliberately has no prediction or remote interpolation yet, so movement is less smooth than
-offline mode. Those behaviors arrive in later networking features. The transport remains
-unaware of Dots messages.
+Networked clients send protocol-v2 input packets at 30 Hz and render full replicated snapshots
+at 15 Hz. Input redundancy is enabled by default: each packet can repeat up to two prior
+unacknowledged samples, while the server deduplicates and queues at most 64 samples per client
+and consumes at most one before each authoritative tick. Set
+`[network].input_redundancy = false` to send only the current sample. Only the authoritative
+server—embedded or separate—advances the simulation. The client deliberately has no prediction
+or remote interpolation yet, so movement is less smooth than offline mode. Those behaviors
+arrive in the remaining networking phases. The transport remains unaware of Dots messages.
 
 Closing a networked client normally, including Escape or the window close control, requests a
 graceful transport disconnect. The server removes that client's authoritative player and both
@@ -215,10 +218,10 @@ Run the checked-in complete configuration explicitly:
 Configuration precedence is built-in defaults, then `dots-client.toml` in the current
 working directory when it exists. `--config <path>` replaces that automatic path. A missing
 automatic file is allowed; an explicitly requested missing file, invalid TOML, unknown field,
-or invalid value is a startup error. The sample documents settings for the window, network mode
-and address, input mode, bindings, fixed-step catch-up, camera scale/grid, and debug colors. The
-built-in and sample network mode is `offline`; select `in_memory` or `native` in `[network]`, or
-override it with `--offline`, `--in-memory`, or `--connect`. Binding names are
+or invalid value is a startup error. The sample documents settings for the window, network mode,
+address and input redundancy, input mode, bindings, fixed-step catch-up, camera scale/grid, and
+debug colors. The built-in and sample network mode is `offline`; select `in_memory` or `native`
+in `[network]`, or override it with `--offline`, `--in-memory`, or `--connect`. Binding names are
 case-insensitive and support letters, digits, arrows, Escape, Space, Enter, Tab, Backspace,
 left/right modifiers, navigation keys, and F1 through F12.
 
