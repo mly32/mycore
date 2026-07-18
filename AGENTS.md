@@ -9,6 +9,8 @@ Read only the documentation relevant to the task:
 
 - `README.md`: setup, build, test, packaging, and runtime usage.
 - `docs/cpp_style_guide.md`: C++ conventions and engine boundary rules.
+- `docs/server_authoritative_networking_guide.md`: protocol, transport, server authority,
+  replication, and the prediction/interpolation mental model.
 - `docs/game_engine_technology_plan.md`: architecture, technology choices, module ownership,
   and cross-game reuse decisions.
 - `docs/development_branch_plan.md`: feature order, planned scope, dependencies, and exit

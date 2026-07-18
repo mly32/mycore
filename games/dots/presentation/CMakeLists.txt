@@ -10,6 +10,7 @@ target_include_directories(
 target_link_libraries(
     dots_presentation
     PUBLIC
+        Dots::Replication
         Dots::Simulation
         MyCore::Render2D
 )

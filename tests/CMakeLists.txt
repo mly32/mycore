@@ -24,6 +24,16 @@ target_link_libraries(
 mycore_configure_test_executable(mycore_debug_tests)
 catch_discover_tests(mycore_debug_tests)
 
+add_executable(mycore_net_transport_tests mycore_net_transport_tests.cpp)
+target_link_libraries(
+    mycore_net_transport_tests
+    PRIVATE
+        MyCore::NetTransport
+        Catch2::Catch2WithMain
+)
+mycore_configure_test_executable(mycore_net_transport_tests)
+catch_discover_tests(mycore_net_transport_tests)
+
 add_executable(mycore_assets_tests mycore_assets_tests.cpp)
 target_link_libraries(
     mycore_assets_tests
@@ -78,6 +88,27 @@ target_link_libraries(
 mycore_configure_test_executable(dots_protocol_tests)
 catch_discover_tests(dots_protocol_tests)
 
+add_executable(dots_replication_tests dots_replication_tests.cpp)
+target_link_libraries(
+    dots_replication_tests
+    PRIVATE
+        Dots::Replication
+        Catch2::Catch2WithMain
+)
+mycore_configure_test_executable(dots_replication_tests)
+catch_discover_tests(dots_replication_tests)
+
+add_executable(dots_session_tests dots_session_tests.cpp)
+target_link_libraries(
+    dots_session_tests
+    PRIVATE
+        Dots::ClientRuntime
+        Dots::Server
+        Catch2::Catch2WithMain
+)
+mycore_configure_test_executable(dots_session_tests)
+catch_discover_tests(dots_session_tests)
+
 add_executable(
     dots_simulation_tests
     dots_collision_tests.cpp
@@ -121,7 +152,7 @@ add_test(NAME dots_client_help COMMAND dots_client --help)
 set_tests_properties(
     dots_client_help
     PROPERTIES
-        PASS_REGULAR_EXPRESSION "playable offline SDL_GPU client"
+        PASS_REGULAR_EXPRESSION "offline and embedded-authority modes"
 )
 
 add_test(NAME dots_client_headless_smoke COMMAND dots_client --headless-smoke)
@@ -137,3 +168,8 @@ set_tests_properties(
     PROPERTIES
         ENVIRONMENT "SDL_VIDEODRIVER=dummy"
 )
+
+add_test(NAME dots_server_help COMMAND dots_server --help)
+set_tests_properties(dots_server_help PROPERTIES PASS_REGULAR_EXPRESSION "authoritative Dots")
+
+add_test(NAME dots_server_ticks_smoke COMMAND dots_server --ticks 2)

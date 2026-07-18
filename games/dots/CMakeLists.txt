@@ -1,4 +1,7 @@
 add_subdirectory(protocol)
 add_subdirectory(simulation)
+add_subdirectory(replication)
+add_subdirectory(server)
+add_subdirectory(client_runtime)
 add_subdirectory(presentation)
 add_subdirectory(apps)

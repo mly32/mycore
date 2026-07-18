@@ -345,6 +345,11 @@ Changes:
 - Add connection lifecycle handling.
 - Use reliable control messages and unreliable input/snapshot messages.
 - Preserve the transport interface used by in-memory tests.
+- Expose a game-neutral transport-statistics snapshot for connection state, RTT, packet loss,
+  byte/packet rates, and reliable/outbound queue depth where the native backend provides them.
+- Extend the Dots debug overlay with native transport health plus replication-level snapshot age
+  and receive rate. Keep those categories labeled separately, and do not fabricate ping, loss,
+  or queue measurements for the deterministic in-memory backend.
 - Add the developer-only `games/dots/tools/dots_session.py` launcher. It accepts an explicit
   build directory and client count, starts `dots_server`, waits for a readiness signal,
   launches clients, prefixes child output, and shuts every child down on interruption or
@@ -355,14 +360,18 @@ Tests:
 - Loopback client/server integration test.
 - Handshake success and failure tests.
 - Packet validation tests through the transport boundary.
+- Transport-statistics mapping tests cover unavailable values, counter/rate updates, and
+  connection-state transitions without requiring Dear ImGui in the test target.
+- Loopback impairment tests confirm that the debug metrics reflect simulated latency and loss
+  while the session remains authoritative.
 - Keep all in-memory integration tests running.
 - Launcher smoke test with a short-lived server/client fixture; process failures propagate
   through the launcher's exit code and no child is left running.
 
 Exit criterion:
 
-- Two real `dots_client` processes can connect to a headless `dots_server` and see
-  authoritative movement.
+- Two real `dots_client` processes can connect to a headless `dots_server`, see authoritative
+  movement, and inspect truthful connection, transport, and snapshot-flow health.
 
 ### `feature/11-prediction-reconciliation`
 
@@ -375,17 +384,22 @@ Changes:
 - Include `last_processed_input` in snapshots.
 - Reconcile by installing authoritative state and replaying unacknowledged input.
 - Smooth presentation only; never smooth authoritative simulation state.
+- Track and display last input sent/acknowledged, unacknowledged input count, replay count,
+  correction distance and frequency, and the remaining presentation-smoothing offset.
 
 Tests:
 
 - Prediction applies input immediately.
 - Reconciliation replays unacknowledged commands.
 - Dropped or delayed snapshots do not corrupt simulation state.
+- Deterministic correction cases verify the prediction metrics, including a matching prediction
+  that records no correction and a mismatch that records replay and correction magnitude.
 - Artificial `100-200 ms` latency test remains playable in loopback or in-memory mode.
 
 Exit criterion:
 
-- Local player movement remains responsive and corrects cleanly under simulated latency.
+- Local player movement remains responsive and corrects cleanly under simulated latency, with
+  enough input-acknowledgement and correction telemetry to explain each reconciliation.
 
 ### `feature/12-remote-interpolation`
 
@@ -396,17 +410,22 @@ Changes:
 - Add a Dots presentation snapshot buffer for remote entities.
 - Interpolate presentation state with a two-to-three snapshot interval delay.
 - Track jitter and buffer fill metrics.
+- Display snapshot-buffer fill, target interpolation delay, measured jitter, late-snapshot count,
+  and buffer-underrun/hold count without treating presentation delay as transport RTT.
 - Keep remote entities non-predicted.
 
 Tests:
 
 - Interpolation between known snapshots.
 - Jitter/loss simulation without presentation state explosions.
+- Deterministic arrival schedules verify buffer-fill, late-snapshot, jitter, and underrun/hold
+  metrics.
 - Remote entity create, update, and remove behavior.
 
 Exit criterion:
 
-- Remote players render smoothly under simulated jitter and packet loss.
+- Remote players render smoothly under simulated jitter and packet loss, and the interpolation
+  panel explains buffer health and any visible holds.
 
 ### `feature/13-interest-management`
 

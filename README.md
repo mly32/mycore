@@ -101,7 +101,9 @@ cmake --build --preset macos-clang-debug
 ### Run Dots
 
 All runnable targets are placed under `build/<preset>/bin`. `dots_client` runs a playable
-offline SDL_GPU client; the server and bot remain foundation executables for now:
+offline SDL_GPU client by default and can also embed the authoritative server through the
+in-memory transport. `dots_server` runs the headless authoritative heartbeat; the bot remains a
+foundation executable for now:
 
 | Target | Executable path for `macos-clang-debug` |
 |---|---|
@@ -114,6 +116,25 @@ offline SDL_GPU client; the server and bot remain foundation executables for now
 ./build/macos-clang-debug/bin/dots_server
 ./build/macos-clang-debug/bin/dots_bot
 ```
+
+Run the client against an embedded authoritative server without opening sockets:
+
+```bash
+./build/macos-clang-debug/bin/dots_client --in-memory
+```
+
+This mode sends sequenced input at 30 Hz, advances only the embedded server's simulation, and
+renders full replicated snapshots at 15 Hz. It deliberately has no prediction or remote
+interpolation yet, so movement is less smooth than offline mode. Those behaviors arrive in later
+networking features. The transport remains unaware of Dots messages.
+
+The standalone server runs until interrupted. Use a bounded run for smoke testing:
+
+```bash
+./build/macos-clang-debug/bin/dots_server --ticks 10
+```
+
+Feature 09 does not connect separate processes; the native socket backend arrives in Feature 10.
 
 The client uses SDL_GPU through the game-neutral `MyCore::Render` layer and the engine-owned
 `MyCore::Render2D` grid/circle renderer. Dots only extracts game state and maps food and players
@@ -131,9 +152,10 @@ As the player consumes food, its color shifts from `colors.player` toward
 `colors.player_growth` to make growth easier to see.
 
 A non-interactive Dear ImGui overlay in the bottom-right reports the active input mode, world
-tick, player and food counts, occupied spatial-grid cells, frame timing, actual and target tick
-rates, simulation cost, backlog, catch-up frames, step-cap hits, deadline misses, and discarded
-time. Logs use owner-qualified categories such as `dots.client`, `dots.server`, and `dots.bot`.
+tick, player and food counts, occupied spatial-grid cells or replicated snapshot ID, frame timing,
+actual and target tick rates, simulation cost, backlog, catch-up frames, step-cap hits, deadline
+misses, and discarded time. Logs use owner-qualified categories such as `dots.client`,
+`dots.server`, and `dots.bot`.
 Fixed-step overload produces rate-limited warnings, escalates to an error log after ten sustained
 seconds, and reports recovery. The offline client records and discards only whole excess backlog
 after its configured catch-up cap so it remains responsive while preserving the fractional time
@@ -203,6 +225,11 @@ For a concise introduction to shaders, GPU resources, instanced drawing, and how
 frame reaches the screen, see the
 [SDL_GPU rendering and shaders guide](docs/sdl_gpu_rendering_guide.md).
 
+For the corresponding networking model, including protocol versus transport, server authority,
+the current uncompensated in-memory flow, and the later prediction/reconciliation/interpolation
+model, see the
+[protocol, transport, and server-authoritative networking guide](docs/server_authoritative_networking_guide.md).
+
 ### Visual Studio Code
 
 Open the repository root in VS Code and install the recommended workspace extensions. The
@@ -226,3 +253,4 @@ preset overrides in the ignored `CMakeUserPresets.json`.
 - [Feature 06 SDL_GPU render plan](docs/plans/06-sdl-gpu-render-baseline.md)
 - [Feature 07 debug observability plan](docs/plans/07-debug-observability.md)
 - [Feature 08 protocol binary codec plan](docs/plans/08-protocol-binary-codec.md)
+- [Feature 09 in-memory transport integration plan](docs/plans/09-inmemory-transport-integration.md)

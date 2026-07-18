@@ -56,7 +56,6 @@ FrameData extract_frame(const simulation::World& world,
                 throw std::runtime_error{"Dots presentation encountered invalid entity geometry"};
             }
             frame.circles.push_back({
-                .entity_id = entity_id,
                 .position = *position,
                 .mass = *mass,
                 .radius = *radius,
@@ -92,18 +91,42 @@ FrameData extract_interpolated_follow_frame(const simulation::World& world,
     };
     auto frame = extract_frame(world, position, overrides);
     if (follow_target.show_current_position_ghost) {
-        const auto followed = std::find_if(frame.circles.begin(),
-                                           frame.circles.end(),
-                                           [&follow_target](const CircleInstance& circle) {
-                                               return circle.entity_id == follow_target.entity_id;
-                                           });
-        if (followed == frame.circles.end()) {
+        const auto mass = world.mass(follow_target.entity_id);
+        const auto radius = world.radius(follow_target.entity_id);
+        if (!mass || !radius) {
             throw std::runtime_error{"Dots presentation could not find its follow target"};
         }
-        auto ghost = *followed;
-        ghost.position = follow_target.current_position;
-        ghost.kind = CircleKind::PositionGhost;
-        frame.circles.push_back(ghost);
+        frame.circles.push_back({
+            .position = follow_target.current_position,
+            .mass = *mass,
+            .radius = *radius,
+            .kind = CircleKind::PositionGhost,
+        });
+    }
+    return frame;
+}
+
+FrameData extract_replicated_frame(const replication::ReplicatedWorld& world,
+                                   protocol::EntityId controlled_entity_id) {
+    const auto* controlled = world.find(controlled_entity_id);
+    if (controlled == nullptr || controlled->kind != protocol::EntityKind::Player) {
+        throw std::runtime_error{"Dots replicated presentation could not find its player"};
+    }
+
+    FrameData frame{.camera = {controlled->position_x, controlled->position_y}};
+    frame.circles.reserve(world.entities().size());
+    for (const auto& entity : world.entities()) {
+        if (!std::isfinite(entity.position_x) || !std::isfinite(entity.position_y) ||
+            !std::isfinite(entity.mass) || entity.mass <= 0.0F) {
+            throw std::runtime_error{"Dots replicated presentation encountered invalid geometry"};
+        }
+        frame.circles.push_back({
+            .position = {entity.position_x, entity.position_y},
+            .mass = entity.mass,
+            .radius = simulation::radius_for_mass(entity.mass),
+            .kind =
+                entity.kind == protocol::EntityKind::Food ? CircleKind::Food : CircleKind::Player,
+        });
     }
     return frame;
 }

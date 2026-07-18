@@ -1,5 +1,7 @@
 #pragma once
 
+#include "dots/protocol/ids.hpp"
+#include "dots/replication/replication.hpp"
 #include "dots/simulation/ids.hpp"
 #include "dots/simulation/world.hpp"
 #include "mycore/math/vector2.hpp"
@@ -18,7 +20,6 @@ enum class CircleKind : std::uint8_t {
 };
 
 struct CircleInstance {
-    simulation::EntityId entity_id;
     mycore::math::Vector2 position;
     float mass{};
     float radius{};
@@ -68,6 +69,9 @@ extract_frame(const simulation::World& world,
 [[nodiscard]] FrameData
 extract_interpolated_follow_frame(const simulation::World& world,
                                   const InterpolatedFollowTarget& follow_target);
+
+[[nodiscard]] FrameData extract_replicated_frame(const replication::ReplicatedWorld& world,
+                                                 protocol::EntityId controlled_entity_id);
 
 [[nodiscard]] mycore::render_2d::DrawList build_draw_list(const FrameData& frame,
                                                           const Settings& settings);

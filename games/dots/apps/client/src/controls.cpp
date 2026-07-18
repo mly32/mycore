@@ -72,6 +72,16 @@ dots::simulation::InputCommand make_input_command(const mycore::platform_sdl::In
                                                   dots::simulation::EntityId entity_id,
                                                   dots::simulation::InputCommandId command_id,
                                                   InputViewport viewport) noexcept {
+    return {
+        .id = command_id,
+        .entity_id = entity_id,
+        .movement = movement_from_input(input, controls, viewport),
+    };
+}
+
+mycore::math::Vector2 movement_from_input(const mycore::platform_sdl::InputSnapshot& input,
+                                          const ClientControls& controls,
+                                          InputViewport viewport) noexcept {
     const auto keyboard = keyboard_movement(input.keyboard, controls.bindings);
     const auto mouse = mouse_movement(input.mouse, controls.mouse_dead_zone_pixels, viewport);
 
@@ -88,11 +98,7 @@ dots::simulation::InputCommand make_input_command(const mycore::platform_sdl::In
         break;
     }
 
-    return {
-        .id = command_id,
-        .entity_id = entity_id,
-        .movement = movement,
-    };
+    return movement;
 }
 
 } // namespace dots::client
