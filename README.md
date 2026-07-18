@@ -25,6 +25,7 @@ an installable CMake package after the reusable modules stabilize.
 - A C++20 compiler: AppleClang/Clang, GCC, or MSVC
 - vcpkg with the `VCPKG_ROOT` environment variable set to its installation directory
 - pkg-config when building dependencies on macOS or Linux
+- Python 3 for running tests that exercise the session launcher
 - A Metal-, Vulkan-, or D3D12-capable GPU driver to run the graphical client
 
 Confirm the tools are available:
@@ -34,6 +35,7 @@ cmake --version
 ninja --version
 clang++ --version
 vcpkg version
+python3 --version
 ```
 
 On macOS, CMake and Ninja can be installed with Homebrew, while AppleClang is provided by
