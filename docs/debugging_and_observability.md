@@ -12,9 +12,9 @@ but this guide must clearly distinguish implemented behavior from planned behavi
 This document uses three status labels:
 
 - **Current:** implemented on `feature/11-prediction-reconciliation`, including the approved
-  baseline, the Phase 11.1 protocol/server foundation, and the Phase 11.2 prediction runtime.
-- **Feature 11 planned:** remaining presentation, visual-debugging, overlay, and fault-injection
-  work specified in [`plans/11-prediction-reconciliation.md`](plans/11-prediction-reconciliation.md).
+  baseline and the Phase 11.1 through 11.3 protocol, prediction, presentation, and debugging work.
+- **Feature 11 planned:** remaining impairment validation and final documentation work specified
+  in [`plans/11-prediction-reconciliation.md`](plans/11-prediction-reconciliation.md).
 - **Feature 12 planned:** specified in
   [`plans/12-remote-interpolation.md`](plans/12-remote-interpolation.md), but not yet
   implemented.
@@ -50,7 +50,7 @@ remain Dots-owned.
 | Label | Source and units | Meaning |
 |---|---|---|
 | `Input` | Client configuration | Active mouse, keyboard, or hybrid input mapping mode. |
-| `Presentation` | Client mode | Offline presentation mode, or `NETWORKED FIXED` while the networked app still draws replicated rather than predicted state. |
+| `Presentation` | Client mode | Offline presentation mode, or `NETWORKED PREDICTED` when owned movement is predicted and corrections are smoothed. Remote entities still use their latest replicated sample. |
 | `Tick` | Offline world tick or latest replicated server tick | In offline play this is the local world tick. In networked play it is the tick stored in the latest accepted server snapshot. |
 | `Players` | Current offline or replicated entity collection | Number of player entities visible to this client state. It is not the server's total connected-client count. |
 | `Food` | Current offline or replicated entity collection | Number of food entities visible to this client state. |
@@ -67,13 +67,12 @@ remain Dots-owned.
 Snapshot age describes freshness of the client's replicated view. It must not be presented as
 RTT, interpolation delay, or server tick health.
 
-### Input scheduling telemetry — Current protocol/runtime data, overlay planned
+### Input scheduling telemetry — Current
 
 Protocol-v2 full snapshots carry `pending_input_count`, the number of distinct samples left in
 this client's bounded authoritative input queue after the snapshot tick. `ReplicatedWorld`
-stores the newest value, and `PredictionStatistics` exposes its current and runtime high-water
-values. The overlay does not display them until the Feature 11 prediction panel is implemented.
-This value is not transport queue depth, RTT, or total input across all clients.
+stores the newest value, and the **Prediction** overlay shows its current and runtime high-water
+values. This value is not transport queue depth, RTT, or total input across all clients.
 
 The queue capacity is 64 samples. The server consumes at most one sample per client before each
 authoritative tick and continues the last installed movement when the queue is empty. With
@@ -141,7 +140,7 @@ Important log categories include:
 | `dots.client` | Client startup and general runtime information. |
 | `dots.client.session` | Client transport, handshake, assigned identity, and disconnect lifecycle. |
 | `dots.client.simulation` | Client fixed-step overload warnings, escalation, and recovery. |
-| `dots.client.prediction` | Prediction history pressure/recovery, hard resyncs, and replay-budget warnings. |
+| `dots.client.prediction` | Prediction history pressure/recovery, hard resyncs, replay-budget warnings, and explicit debug fault injection. |
 | `dots.server` | Headless server startup, listen address, tick lifetime, and shutdown. |
 | `dots.server.session` | Connection acceptance, assigned players, rejected packets, and cleanup. |
 
@@ -150,33 +149,33 @@ render submission. Phase 11.2 adds `Dots prediction reconciliation`, covering bo
 history replay and its atomic state commit. Tracy is on-demand; dormant instrumentation does not
 mean the zones were removed.
 
-## Prediction and Reconciliation Output — Runtime Current, Overlay Planned
+## Prediction and Reconciliation Output — Current
 
 `Dots::ClientRuntime` currently predicts controlled-player movement immediately after each
 successful input send. Every newer snapshot is validated in scratch state, the acknowledged
 history prefix is discarded, and at most 256 remaining inputs are replayed in the same client
-frame before replicated and predicted state commit together. The graphical client does not use
-the predicted position for drawing yet; that presentation switch and 100 ms correction smoothing
-belong to Phase 11.3.
+frame before replicated and predicted state commit together. The graphical client draws the
+controlled player and follows it with the camera from one presentation position: corrected
+prediction plus the current visual-only smoothing offset. Remote entities still draw from the
+latest replicated sample until Feature 12.
 
 The runtime exposes `predicted_position()`, `pre_correction_position()`,
-`latest_replay_path()`, and `prediction_statistics()`. These are current diagnostic APIs, not
-current ImGui rows. `pre_correction_position()` retains the previous prediction only after a
-nonzero correction; `latest_replay_path()` is replaced by each successful reconciliation. Both
-are cleared by a history-capacity hard resync. Phase 11.3 will add the two-second visual retention
-policy.
+`latest_replay_path()`, `latest_correction_replay_path()`, and `prediction_statistics()`.
+`pre_correction_position()` and the correction-specific replay path update only after a nonzero
+correction. Presentation copies them for two seconds of visual retention. A history-capacity hard
+resync clears prediction history, smoothing, and retained correction visuals.
 
-Phase 11.3 will add a dedicated **Session** overlay section with:
+The **Session** overlay section shows:
 
 - Runtime/connection state and protocol version.
 - Server-assigned client ID.
 - Controlled entity ID and transport connection handle.
 - Latest snapshot ID/server tick and local input tick.
 
-The server and client tick values will be shown separately. Until a future tick-synchronization
+The server and client tick values are shown separately. Until a future tick-synchronization
 feature defines their mapping, subtracting them does not produce a meaningful latency value.
 
-The current runtime statistics and their planned **Prediction** overlay rows are:
+The **Prediction** overlay rows are:
 
 | Field | Current meaning and lifetime |
 |---|---|
@@ -195,34 +194,38 @@ The current runtime statistics and their planned **Prediction** overlay rows are
 | Corrections/min | Count of nonzero corrections in the trailing 60 seconds of the client steady clock. |
 | Replay over budget | Lifetime count of reconciliations exceeding 2 ms; warnings are rate-limited to once per five seconds. |
 | Hard resync | Lifetime count of full-ring recoveries that snap prediction to the newest replicated controlled-player sample and clear history/debug replay state. |
-| Smoothing offset | Phase 11.3 presentation-only displacement; it does not exist in Phase 11.2. |
+| Smoothing offset | Current presentation-only displacement vector and magnitude. It decays linearly to zero over 100 ms without modifying predicted state. |
+| Injected faults | Pending/total client-only packet drops and the number of explicit prediction-error injections. These do not alter transport loss metrics. |
 
 History-pressure warnings begin above 75% occupancy and are rate-limited to once per five
 seconds while pressure persists. Recovery is logged once occupancy returns to 75% or below. All
-counts and high-water values reset with a new `Dots::ClientRuntime` instance.
+counts and high-water values reset with a new `Dots::ClientRuntime` instance. The overlay colors
+history utilization green below 50%, yellow at 50%, orange at 75%, and red at 90%.
 
-### Planned Feature 11 world-space legend
+### Current prediction world-space legend
 
 | Visual | Meaning |
 |---|---|
 | Filled player | Actual presented position and camera target. |
 | White outline | Corrected predicted simulation position. |
-| Orange outline | Latest received authoritative position. |
+| Orange outline | Latest received authoritative sample. It is historical, not the server's live position. |
 | Magenta outline | Prediction immediately before the most recent nonzero correction. |
 | Purple markers | Results of replayed unacknowledged inputs after the rollback base. |
 
 Correction-specific magenta/purple visuals remain for two seconds. Slight radius offsets keep
 coincident outlines visible.
 
-### Planned Feature 11 fault controls
+### Current prediction fault controls
 
 - Inject `+1` world unit of client-only X prediction error.
 - Drop the next three input packets while continuing local prediction.
 - Show/hide state layers and replay markers.
 - Clear retained correction visuals.
 
-Injected drops are application debug events and will have their own counter. They must not be
-added to transport packet-loss measurements.
+The layer and replay toggles default on. An armed injected-drop burst displays an explicit red
+warning until all three sends have been suppressed. Suppressed sends still record and predict
+their input exactly as deliberate network loss would. Injected drops have a separate counter and
+are never added to transport packet-loss measurements.
 
 ## Remote Interpolation Output — Feature 12 Planned
 
@@ -275,25 +278,25 @@ the newest snapshot.
 The application is not accepting newer snapshots. Check loss, snapshot send cadence, protocol
 decode/rejection logs, and server health. Transport state alone does not prove replication flow.
 
-### Command lead and server input queue grow together — metrics current, overlay planned
+### Command lead and server input queue grow together
 
 The client is producing input faster than the server consumes it, the server is overloaded, or
 clock drift is accumulating. Feature 11 observes this trend but does not speed or slow local
 simulation.
 
-### Frequent corrections with low loss — metrics current, visuals planned
+### Frequent corrections with low loss
 
 Check shared movement operations, tick application order, ACK semantics, collision/mass events
 that are intentionally not predicted, and floating-point divergence. Use the orange, magenta,
 white, and replay markers to identify where states first disagree.
 
-### Smoothing offset never settles — Feature 11 planned
+### Smoothing offset never settles
 
 Corrections are arriving more frequently than the 100 ms residual can decay. Inspect correction
 distance/frequency, replay count, server input depth, and fault-injection state. Do not lengthen
 smoothing until the underlying divergence is understood.
 
-### History use exceeds 75% — runtime warning current, overlay planned
+### History use exceeds 75%
 
 Snapshot acknowledgements have stalled for several seconds. Inspect snapshot age, loss,
 connection state, and server health. At full capacity the client performs a visible hard resync

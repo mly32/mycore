@@ -226,7 +226,11 @@ public:
             }
         }
 
-        if (endpoint_.send(connection_, *bytes, DeliveryMode::Unreliable) != SendStatus::Sent) {
+        if (pending_injected_input_drop_count_ > 0) {
+            --pending_injected_input_drop_count_;
+            ++injected_input_drop_count_;
+        } else if (endpoint_.send(connection_, *bytes, DeliveryMode::Unreliable) !=
+                   SendStatus::Sent) {
             state_ = State::Disconnected;
             return InputSendResult::TransportFailure;
         }
@@ -292,6 +296,40 @@ public:
         return {latest_replay_path_.data(), latest_replay_path_.size()};
     }
 
+    [[nodiscard]] std::span<const mycore::math::Vector2>
+    latest_correction_replay_path() const noexcept {
+        return {latest_correction_replay_path_.data(), latest_correction_replay_path_.size()};
+    }
+
+    [[nodiscard]] bool debug_inject_prediction_error(mycore::math::Vector2 displacement) {
+        if (state_ != State::Ready || !predicted_position_ || !std::isfinite(displacement.x) ||
+            !std::isfinite(displacement.y) || displacement == mycore::math::Vector2{}) {
+            return false;
+        }
+        const auto injected_position = *predicted_position_ + displacement;
+        if (!std::isfinite(injected_position.x) || !std::isfinite(injected_position.y)) {
+            return false;
+        }
+        *predicted_position_ = injected_position;
+        ++injected_prediction_error_count_;
+        mycore::debug::log_warning("dots.client.prediction",
+                                   "Injected client-only prediction error ({:.3f}, {:.3f})",
+                                   displacement.x,
+                                   displacement.y);
+        return true;
+    }
+
+    [[nodiscard]] bool debug_drop_next_input_packets(std::size_t count) {
+        if (state_ != State::Ready || count == 0 ||
+            count > kPredictionHistoryCapacity - pending_injected_input_drop_count_) {
+            return false;
+        }
+        pending_injected_input_drop_count_ += count;
+        mycore::debug::log_warning(
+            "dots.client.prediction", "Armed {} client-only injected input packet drops", count);
+        return true;
+    }
+
     [[nodiscard]] PredictionStatistics
     prediction_statistics(std::chrono::steady_clock::time_point now) const noexcept {
         PredictionStatistics result{
@@ -318,8 +356,13 @@ public:
             .latest_correction_distance = latest_correction_distance_,
             .maximum_correction_distance = maximum_correction_distance_,
             .corrections_per_minute = 0.0F,
+            .accumulated_correction_displacement = accumulated_correction_displacement_,
+            .correction_sequence_since_hard_resync = correction_sequence_since_hard_resync_,
             .replay_over_budget_count = replay_over_budget_count_,
             .hard_resync_count = hard_resync_count_,
+            .pending_injected_input_drop_count = pending_injected_input_drop_count_,
+            .injected_input_drop_count = injected_input_drop_count_,
+            .injected_prediction_error_count = injected_prediction_error_count_,
         };
         if (next_input_id_ > 0) {
             result.last_input_sent = protocol::InputSequenceId{next_input_id_ - 1U};
@@ -455,6 +498,9 @@ private:
         latest_replay_path_ = std::move(scratch_replay_path);
         if (nonzero_correction) {
             pre_correction_position_ = previous_prediction;
+            latest_correction_replay_path_ = latest_replay_path_;
+            accumulated_correction_displacement_ =
+                accumulated_correction_displacement_ + (previous_prediction - scratch_position);
         }
         const auto replay_duration = std::chrono::steady_clock::now() - replay_start;
 
@@ -470,6 +516,7 @@ private:
         prune_correction_times(now);
         if (nonzero_correction) {
             ++nonzero_correction_count_;
+            ++correction_sequence_since_hard_resync_;
             correction_times_.push_back(now);
         }
         record_replay_duration(replay_duration, now);
@@ -487,6 +534,9 @@ private:
         input_history_.clear();
         pre_correction_position_.reset();
         latest_replay_path_.clear();
+        latest_correction_replay_path_.clear();
+        accumulated_correction_displacement_ = {};
+        correction_sequence_since_hard_resync_ = 0;
         ++hard_resync_count_;
         mycore::debug::log_warning(
             "dots.client.prediction",
@@ -616,6 +666,7 @@ private:
     std::optional<mycore::math::Vector2> predicted_position_;
     std::optional<mycore::math::Vector2> pre_correction_position_;
     std::vector<mycore::math::Vector2> latest_replay_path_;
+    std::vector<mycore::math::Vector2> latest_correction_replay_path_;
     std::size_t history_high_water_mark_{};
     std::uint8_t server_pending_input_high_water_mark_{};
     protocol::SnapshotId rollback_snapshot_id_;
@@ -633,9 +684,14 @@ private:
     std::uint64_t nonzero_correction_count_{};
     float latest_correction_distance_{};
     float maximum_correction_distance_{};
+    mycore::math::Vector2 accumulated_correction_displacement_;
+    std::uint64_t correction_sequence_since_hard_resync_{};
     std::deque<std::chrono::steady_clock::time_point> correction_times_;
     std::uint64_t replay_over_budget_count_{};
     std::uint64_t hard_resync_count_{};
+    std::size_t pending_injected_input_drop_count_{};
+    std::uint64_t injected_input_drop_count_{};
+    std::uint64_t injected_prediction_error_count_{};
     std::optional<std::chrono::steady_clock::time_point> last_replay_warning_time_;
     std::optional<std::chrono::steady_clock::time_point> last_history_warning_time_;
     bool history_pressure_warning_active_{};
@@ -693,6 +749,18 @@ std::optional<mycore::math::Vector2> Runtime::pre_correction_position() const no
 
 std::span<const mycore::math::Vector2> Runtime::latest_replay_path() const noexcept {
     return impl_->latest_replay_path();
+}
+
+std::span<const mycore::math::Vector2> Runtime::latest_correction_replay_path() const noexcept {
+    return impl_->latest_correction_replay_path();
+}
+
+bool Runtime::debug_inject_prediction_error(mycore::math::Vector2 displacement) {
+    return impl_->debug_inject_prediction_error(displacement);
+}
+
+bool Runtime::debug_drop_next_input_packets(std::size_t count) {
+    return impl_->debug_drop_next_input_packets(count);
 }
 
 PredictionStatistics

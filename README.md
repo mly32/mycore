@@ -161,11 +161,19 @@ and consumes at most one before each authoritative tick. Set
 `[network].input_redundancy = false` to send only the current sample. Only the authoritative
 server—embedded or separate—advances the gameplay simulation. `Dots::ClientRuntime` now keeps a
 bounded movement-only prediction, validates snapshot acknowledgements, and atomically replays
-unacknowledged input for the controlled player. The graphical client still renders the replicated
-snapshot position until Feature 11's presentation phase connects that predicted state to drawing
-and correction smoothing. Remote interpolation remains Feature 12 work, so the currently visible
-networked movement is still less responsive and smooth than offline mode. The transport remains
-unaware of Dots messages.
+unacknowledged input for the controlled player. The graphical client renders that predicted
+position immediately and smooths only visible reconciliation displacement over 100 ms; the
+following camera uses the same presentation position. Remote interpolation remains Feature 12
+work, so other players still advance from their latest replicated snapshots. The transport
+remains unaware of Dots messages.
+
+The networked ImGui overlay reports the server-assigned client and controlled-entity IDs,
+connection/session state, input ACK and history pressure, rollback/replay timing, corrections,
+the latest authoritative sample, predicted position, presentation position, and smoothing
+offset. Its world-space legend uses white for corrected prediction, orange for the latest
+received authoritative sample, magenta for pre-correction prediction, and purple for replay.
+Controls can inject a `+1` X prediction error or suppress the next three input packets while
+continuing local prediction; injected drops are counted separately from transport loss.
 
 Closing a networked client normally, including Escape or the window close control, requests a
 graceful transport disconnect. The server removes that client's authoritative player and both

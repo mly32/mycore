@@ -394,3 +394,62 @@ TEST_CASE("Prediction history capacity hard-resyncs before recording new input",
     REQUIRE(packet->samples.size() == 1);
     CHECK(packet->samples.front().sequence_id == dots::protocol::InputSequenceId{256});
 }
+
+TEST_CASE("Injected input drops suppress transport while preserving prediction",
+          "[dots][prediction][debug]") {
+    ManualEndpoint endpoint;
+    dots::client_runtime::Runtime client{endpoint};
+    complete_handshake(endpoint, client, mycore::net_transport::ConnectionHandle{20});
+
+    CHECK_FALSE(client.debug_drop_next_input_packets(0));
+    REQUIRE(client.debug_drop_next_input_packets(3));
+    CHECK(client.prediction_statistics(clock_time(10s)).pending_injected_input_drop_count == 3);
+
+    for (std::uint32_t tick = 0; tick < 3; ++tick) {
+        REQUIRE(client.send_input(tick, {1.0F, 0.0F}) ==
+                dots::client_runtime::InputSendResult::Sent);
+    }
+    CHECK(endpoint.sent_payloads.empty());
+    check_position(client.predicted_position(), 0.6F, 0.0F);
+    auto statistics = client.prediction_statistics(clock_time(11s));
+    CHECK(statistics.history_count == 3);
+    CHECK(statistics.pending_injected_input_drop_count == 0);
+    CHECK(statistics.injected_input_drop_count == 3);
+
+    REQUIRE(client.send_input(3, {1.0F, 0.0F}) == dots::client_runtime::InputSendResult::Sent);
+    REQUIRE(endpoint.sent_payloads.size() == 1);
+    auto message = decode_bytes(endpoint.sent_payloads.front());
+    const auto* packet = std::get_if<dots::protocol::InputPacket>(&message);
+    REQUIRE(packet != nullptr);
+    REQUIRE(packet->samples.size() == 3);
+    CHECK(packet->samples[0].sequence_id == dots::protocol::InputSequenceId{1});
+    CHECK(packet->samples[1].sequence_id == dots::protocol::InputSequenceId{2});
+    CHECK(packet->samples[2].sequence_id == dots::protocol::InputSequenceId{3});
+}
+
+TEST_CASE("Injected prediction error is corrected and exposed separately from packet loss",
+          "[dots][prediction][debug]") {
+    ManualEndpoint endpoint;
+    dots::client_runtime::Runtime client{endpoint};
+    const mycore::net_transport::ConnectionHandle connection{21};
+    complete_handshake(endpoint, client, connection);
+    REQUIRE(client.send_input(0, {1.0F, 0.0F}) == dots::client_runtime::InputSendResult::Sent);
+
+    CHECK_FALSE(client.debug_inject_prediction_error({}));
+    REQUIRE(client.debug_inject_prediction_error({1.0F, 0.0F}));
+    check_position(client.predicted_position(), 1.2F, 0.0F);
+    auto statistics = client.prediction_statistics(clock_time(10s));
+    CHECK(statistics.injected_prediction_error_count == 1);
+    CHECK(statistics.injected_input_drop_count == 0);
+
+    push_snapshot(
+        endpoint, connection, snapshot(1, 1, dots::protocol::InputSequenceId{0}, {0.2F, 0.0F}));
+    REQUIRE_FALSE(client.process_events(clock_time(11s)).has_value());
+    check_position(client.predicted_position(), 0.2F, 0.0F);
+    check_position(client.pre_correction_position(), 1.2F, 0.0F);
+    statistics = client.prediction_statistics(clock_time(11s));
+    CHECK(statistics.latest_correction_distance == Catch::Approx(1.0F));
+    CHECK(statistics.accumulated_correction_displacement.x == Catch::Approx(1.0F));
+    CHECK(statistics.accumulated_correction_displacement.y == Catch::Approx(0.0F));
+    CHECK(client.latest_correction_replay_path().empty());
+}

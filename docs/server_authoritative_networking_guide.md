@@ -11,20 +11,20 @@ phases.
 The current networked path is deliberately simple:
 
 ```text
-client input
+client input -> owned-player prediction -> smoothed local presentation
     |
     | InputPacket bytes
     v
-transport -> authoritative server simulation -> FullSnapshot bytes -> replicated client world
-                                                                  |
-                                                                  v
-                                                               rendering
+transport -> authoritative server simulation -> FullSnapshot -> replicated client world
+                                                       |                 |
+                                                       v                 v
+                                             reconcile prediction   remote rendering
 ```
 
-The server owns the only gameplay `World`. The client sends movement requests and currently
-renders the latest state received from the server. `Dots::ClientRuntime` also maintains a
-movement-only controlled-player prediction and reconciles it to validated snapshots, but the
-graphical presentation does not draw that prediction until Feature 11 Phase 11.3.
+The server owns the only gameplay `World`. The client sends movement requests, predicts only its
+controlled player's movement, and reconciles that prediction to validated snapshots. Gameplay
+state corrects immediately; only the visible correction offset decays over 100 ms. Remote
+players still render their latest received snapshot sample until Feature 12 interpolation.
 
 `dots_client --in-memory` exercises this complete path without opening a socket. Its client and
 server live in one process and communicate through the same abstract transport interface used by
@@ -32,10 +32,10 @@ the native backend. `dots_client --connect 127.0.0.1:27020` instead connects to 
 `dots_server` process through GameNetworkingSockets. The in-memory backend remains FIFO and
 lossless, while the native backend supports realistic outgoing latency and loss simulation.
 
-The runtime now has **client-side movement prediction and reconciliation**, without owning or
-stepping a gameplay `World`. The current app still has no predicted presentation, correction
-smoothing, or remote interpolation. That is why its overlay says `NETWORKED FIXED` and why the
-visible movement advances at the 15 Hz snapshot rate even though the server simulates at 30 Hz.
+The runtime has **client-side movement prediction and reconciliation** without owning or stepping
+a gameplay `World`. The overlay says `NETWORKED PREDICTED` and separately displays the latest
+authoritative sample, corrected prediction, and smoothed presentation. Remote interpolation is
+still absent, so other players visibly advance at the 15 Hz snapshot rate.
 
 ## Three different responsibilities
 
@@ -271,14 +271,13 @@ The current messages behave under impairment like this:
 | Transport connection establishment | Transport-managed | May retry, take much longer, or fail before the Dots handshake starts. |
 | `ClientHello` and `ServerWelcome` | Reliable | Transport retransmits while viable; delay increases, but Dots does not repeatedly call `send`. |
 | `InputPacket` at 30 Hz | Unreliable | The next one or two packets can recover a lost current sample while it remains inside the default two-sample redundancy window. Three consecutive losses, or any loss with redundancy disabled, can skip a sample. |
-| `FullSnapshot` at 15 Hz | Unreliable | The client holds its previous view until a newer complete snapshot arrives. |
+| `FullSnapshot` at 15 Hz | Unreliable | Replicated/remotely rendered state holds until a newer snapshot. Owned movement keeps predicting, increasing ACK lead and later replay work. |
 | Disconnect | Transport lifecycle | Graceful requests are reported promptly when delivered; abrupt loss is reported after failure detection. |
 
-Because the current networked presentation still draws neither prediction nor interpolation,
-these effects remain visible directly even though the client runtime is predicting internally.
-Lag postpones visible local input response. Inputs lost beyond the configured redundancy window
-can make movement briefly use an older desired direction, and lost snapshots can make the view
-hold and then jump when a newer snapshot arrives. This is expected for the present feature stage,
+Owned movement responds locally despite lag, but authority and its ACK arrive later, increasing
+history use and replay work. Inputs lost beyond the configured redundancy window can leave the
+server using an older desired direction and produce a later correction. Lost snapshots make
+remote entities hold and delay owned-player reconciliation. This is expected under impairment,
 not evidence that the authoritative simulation itself stopped.
 
 Use modest impairment to study steady-state behavior and high impairment to study failure paths:
@@ -369,9 +368,9 @@ ID, plus:
 entity collection when it accepts a newer one. It is a client view, not a second authoritative
 `simulation::World`.
 
-## The current no-compensation mental model
+## The baseline no-compensation mental model
 
-Today, the networked client renders the last authoritative sample it has received:
+Without prediction, a networked client would render only the last authoritative sample received:
 
 ```text
 server truth at ticks:       0 -- 1 -- 2 -- 3 -- 4 -- 5 -- 6
@@ -379,9 +378,9 @@ snapshots sent:              S0      S1      S2      S3
 client renders:              S0------S1------S2------S3
 ```
 
-There is no state between `S1` and `S2` for presentation to estimate. The client holds `S1`
-until `S2` arrives, then jumps to `S2`. With the in-memory backend this appears as 15 Hz stepping
-inside a faster render loop.
+There is no known state between `S1` and `S2` for remote presentation to estimate. Dots still
+uses this hold model for remote entities until Feature 12, but the owned player now predicts from
+its known local input.
 
 On a real network without compensation, the same model would also put round-trip and scheduling
 delay between pressing a key and seeing the returned authoritative result:
@@ -391,9 +390,9 @@ press key -> input travels to server -> later server tick -> snapshot travels ba
 ```
 
 The in-memory mode validates the architecture but largely hides that responsiveness problem
-because it has no simulated network delay. Native sessions make the delay visible and allow it
-to be amplified with the fake-lag and fake-loss options. The remaining Feature 11 presentation
-work and Feature 12 remote interpolation address how the game feels under latency and jitter.
+because it has no simulated network delay. Native sessions make the distinction visible and
+allow it to be amplified with fake lag and loss: owned movement responds immediately, while
+authoritative samples and remote entities remain delayed. Feature 12 adds remote interpolation.
 
 Input samples have sequence IDs, protocol-v2 packets provide bounded redundancy, the server
 schedules at most one queued sample per client per tick, snapshots acknowledge
@@ -460,7 +459,7 @@ for each due step:
     server sends a FullSnapshot if this is every second tick
     client polls and installs any delivered snapshot
 
-extract presentation from the latest replicated state
+extract the owned player/camera from smoothed prediction and remotes from replicated state
 record and submit GPU rendering
 present through the swapchain
 ```
@@ -476,45 +475,46 @@ advances one 30 Hz tick, emits any due snapshots, and sleeps until its next tick
 cannot call or synchronize that loop; it only sends messages and processes messages that have
 arrived.
 
-### Concrete current timeline: when one input becomes visible
+### Concrete current timeline: prediction and authority
 
 Assume a ready in-memory session, a stable 60 Hz client render loop, and that snapshot `S10`
 contains server tick `T20`. The player presses and holds right immediately before render frame
 `R102`:
 
 ```text
-time       client/render work                 server work                  visible state
+time       client/render work                 server work                  visible owned state
 ------------------------------------------------------------------------------------------------
 33.3 ms    R102 polls RIGHT
-           sends input I42 -----------------> validate I42
+           predicts and sends I42 ----------> validate I42
                                                step authoritative T21
                                                no snapshot due
-           renders old S10                                                still S10
+           renders predicted I42                                          P(I42)
 
 50.0 ms    R103 polls RIGHT
            no fixed step is due
            sends nothing
-           renders old S10                                                still S10
+           renders current prediction                                     P(I42)
 
 66.7 ms    R104 polls RIGHT
-           sends input I43 -----------------> validate I43
+           predicts and sends I43 ----------> validate I43
                                                step authoritative T22
                           <------------------ send periodic snapshot S11
            installs S11, which contains T22
            and last_processed_input = I43
-           submits a render using S11                                      S11 at next refresh
+           reconciles with no correction
+           renders prediction equal to S11                                P(I43) = S11
 ```
 
 Input `I42` is measured and sent in client render frame `R102`. The server processes it before
 advancing authoritative tick `T21`, inside that same outer loop iteration because the in-memory
-transport adds no delay. The player position changes on the server at `T21`, but no snapshot is
-due on that odd tick, so the client still renders `S10`.
+transport adds no delay. The owned player already renders the predicted result of `I42`; remote
+and replicated state remain at `S10` because no snapshot is due on that odd tick.
 
 The server sends `S11` after tick `T22`, two render frames later in this example. `S11` is not a
 special response to `I42`; snapshots are a periodic stream containing the newest cumulative
 state. It also includes the newer `I43` acknowledgement because that input was processed before
-`T22`. The client installs and submits the new state during `R104`. With vsync, the monitor shows
-that submitted image at or shortly after the next refresh.
+`T22`. The client installs it, discards acknowledged history, and finds that replay produces its
+existing prediction, so no smoothing correction is needed.
 
 This gives four useful answers for the example:
 
@@ -523,7 +523,7 @@ This gives four useful answers for the example:
 | When was the input measured? | SDL input polling in client render frame `R102`. |
 | When did authority process it? | Immediately before server simulation tick `T21`. |
 | When was its result sent back? | As part of periodic snapshot `S11`, after tick `T22`. |
-| When did the player see it? | Submitted by render frame `R104`, physically visible on a following display refresh. |
+| When did the player see it? | Predicted and submitted by `R102`, physically visible on a following display refresh. |
 
 Depending on phase, a newly held input may just make a simulation tick and snapshot, or it may
 wait nearly one input interval before processing and then one additional server tick for the next
@@ -697,8 +697,8 @@ rate. Native transport data includes connection state, RTT, packet loss, traffic
 queue depths, and queue delay. In-memory endpoints report connection state but leave measurements
 they cannot provide unavailable instead of implying zero latency or loss.
 
-The client runtime now exposes these protocol/prediction values programmatically, although their
-ImGui rows arrive in the next Feature 11 phase:
+The client runtime exposes these protocol/prediction values programmatically and the ImGui
+**Session** and **Prediction** sections display them:
 
 - Client session state.
 - Last input sequence sent and last input sequence acknowledged by a snapshot.

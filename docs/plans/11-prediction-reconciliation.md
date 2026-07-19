@@ -241,15 +241,15 @@ Expose utilization rather than adding a runtime configuration that changes corre
 - [x] Immediate prediction and transactional ACK validation.
 - [x] One-frame scratch replay, hard resync, metrics, and Tracy zone.
 - [x] Matching, mismatch, stale, delayed, invalid-ACK, and capacity tests.
-- [ ] Checkpoint approved before continuing.
+- [x] Checkpoint approved before continuing.
 
 ### Phase 11.3: Local presentation and visual debugging
 
-- [ ] 100 ms correction smoothing.
-- [ ] Authority, prediction, pre-correction, presentation, and replay visuals.
-- [ ] Client/session identifiers and prediction overlay.
-- [ ] Interactive fault injection and debug tests.
-- [ ] Debugging guide updated from planned to implemented.
+- [x] 100 ms correction smoothing.
+- [x] Authority, prediction, pre-correction, presentation, and replay visuals.
+- [x] Client/session identifiers and prediction overlay.
+- [x] Interactive fault injection and debug tests.
+- [x] Debugging guide updated from planned to implemented.
 - [ ] Checkpoint approved before continuing.
 
 ### Phase 11.4: Integration and exit validation
