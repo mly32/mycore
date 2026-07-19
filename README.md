@@ -85,7 +85,7 @@ ctest --preset macos-clang-debug
 ```
 
 Linux and Windows use the corresponding host presets from `CMakePresets.json`, such as
-`linux-clang-debug` or `windows-msvc-debug`. The Windows preset targets x64 and uses vcpkg's
+`linux-clang-debug` or `windows-msvc-x64-debug`. The Windows preset targets x64 and uses vcpkg's
 `x64-windows-static-md` triplet so third-party libraries are linked statically while the MSVC
 runtime remains dynamically linked.
 
@@ -103,6 +103,9 @@ cmake --build --preset macos-clang-debug
 ```
 
 ### Run Dots
+
+See the [Dots game README](games/dots/README.md) for its modes, controls, configuration, and code
+ownership.
 
 All runnable targets are placed under `build/<preset>/bin`. `dots_client` runs a playable
 offline SDL_GPU client by default, can embed the authoritative server through the in-memory
@@ -302,3 +305,13 @@ preset overrides in the ignored `CMakeUserPresets.json`.
 - [Feature 08 protocol binary codec plan](docs/plans/08-protocol-binary-codec.md)
 - [Feature 09 in-memory transport integration plan](docs/plans/09-inmemory-transport-integration.md)
 - [Feature 10 GameNetworkingSockets transport plan](docs/plans/10-gamenetworkingsockets-transport.md)
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow
+and project boundaries. Please report security issues according to [SECURITY.md](SECURITY.md).
+
+## License
+
+MyCore is available under the [MIT License](LICENSE). Third-party dependencies retain their
+respective licenses.
