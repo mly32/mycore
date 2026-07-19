@@ -226,6 +226,11 @@ public:
             }
         }
 
+        if (!predicted_position_) {
+            return InputSendResult::NotReady;
+        }
+        const auto current_prediction = *predicted_position_;
+
         if (pending_injected_input_drop_count_ > 0) {
             --pending_injected_input_drop_count_;
             ++injected_input_drop_count_;
@@ -235,7 +240,7 @@ public:
             return InputSendResult::TransportFailure;
         }
 
-        const auto resulting_position = advance_prediction(*predicted_position_, sample);
+        const auto resulting_position = advance_prediction(current_prediction, sample);
         if (!input_history_.push_back({
                 .sample = sample,
                 .resulting_position = resulting_position,
@@ -447,8 +452,13 @@ private:
         }
 
         if (state_ == State::Ready) {
+            if (controlled == nullptr || !predicted_position_) {
+                return {.error = RuntimeError::MissingControlledEntity};
+            }
             const auto controlled_state = *controlled;
-            return reconcile_snapshot(std::move(candidate_world), controlled_state, now);
+            const auto previous_prediction = *predicted_position_;
+            return reconcile_snapshot(
+                std::move(candidate_world), controlled_state, previous_prediction, now);
         }
 
         world_ = std::move(candidate_world);
@@ -471,6 +481,7 @@ private:
     [[nodiscard]] SnapshotProcessResult
     reconcile_snapshot(replication::ReplicatedWorld candidate_world,
                        const protocol::EntityState& controlled,
+                       mycore::math::Vector2 previous_prediction,
                        std::chrono::steady_clock::time_point now) {
         MYCORE_PROFILE_ZONE("Dots prediction reconciliation");
         const auto replay_start = std::chrono::steady_clock::now();
@@ -487,7 +498,6 @@ private:
             scratch_replay_path.push_back(scratch_position);
         }
 
-        const auto previous_prediction = *predicted_position_;
         const auto correction_distance =
             mycore::math::length(previous_prediction - scratch_position);
         const auto nonzero_correction = correction_distance > kCorrectionTolerance;

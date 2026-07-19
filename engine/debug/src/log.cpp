@@ -64,8 +64,8 @@ void shutdown_logging() noexcept {
     try {
         const std::scoped_lock lock{logging_mutex};
         spdlog::shutdown();
-        // noexcept function must swallow exceptions during shutdown
     } catch (...) { // NOLINT(bugprone-empty-catch)
+        // best-effort shutdown cannot report safely
     }
 }
 

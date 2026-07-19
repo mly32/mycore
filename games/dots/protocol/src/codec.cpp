@@ -230,8 +230,7 @@ private:
     return std::nullopt;
 }
 
-// NOLINTNEXTLINE(bugprone-exception-escape) - variants are never valueless in this protocol
-[[nodiscard]] MessageKind message_kind(const Message& message) noexcept {
+[[nodiscard]] MessageKind message_kind(const Message& message) {
     return std::visit(
         [](const auto& value) {
             using Value = std::decay_t<decltype(value)>;
@@ -256,8 +255,7 @@ private:
         message);
 }
 
-// NOLINTNEXTLINE(bugprone-exception-escape) - variants are never valueless in this protocol
-[[nodiscard]] std::size_t payload_size(const Message& message) noexcept {
+[[nodiscard]] std::size_t payload_size(const Message& message) {
     return std::visit(
         [](const auto& value) -> std::size_t {
             using Value = std::decay_t<decltype(value)>;
