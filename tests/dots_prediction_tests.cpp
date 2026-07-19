@@ -437,19 +437,20 @@ TEST_CASE("Injected prediction error is corrected and exposed separately from pa
 
     CHECK_FALSE(client.debug_inject_prediction_error({}));
     REQUIRE(client.debug_inject_prediction_error({1.0F, 0.0F}));
-    check_position(client.predicted_position(), 1.2F, 0.0F);
+    REQUIRE(client.debug_inject_prediction_error({0.0F, 1.0F}));
+    check_position(client.predicted_position(), 1.2F, 1.0F);
     auto statistics = client.prediction_statistics(clock_time(10s));
-    CHECK(statistics.injected_prediction_error_count == 1);
+    CHECK(statistics.injected_prediction_error_count == 2);
     CHECK(statistics.injected_input_drop_count == 0);
 
     push_snapshot(
         endpoint, connection, snapshot(1, 1, dots::protocol::InputSequenceId{0}, {0.2F, 0.0F}));
     REQUIRE_FALSE(client.process_events(clock_time(11s)).has_value());
     check_position(client.predicted_position(), 0.2F, 0.0F);
-    check_position(client.pre_correction_position(), 1.2F, 0.0F);
+    check_position(client.pre_correction_position(), 1.2F, 1.0F);
     statistics = client.prediction_statistics(clock_time(11s));
-    CHECK(statistics.latest_correction_distance == Catch::Approx(1.0F));
+    CHECK(statistics.latest_correction_distance == Catch::Approx(std::sqrt(2.0F)));
     CHECK(statistics.accumulated_correction_displacement.x == Catch::Approx(1.0F));
-    CHECK(statistics.accumulated_correction_displacement.y == Catch::Approx(0.0F));
+    CHECK(statistics.accumulated_correction_displacement.y == Catch::Approx(1.0F));
     CHECK(client.latest_correction_replay_path().empty());
 }

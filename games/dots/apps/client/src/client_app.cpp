@@ -106,16 +106,50 @@ struct DebugWorldStats {
         Vector2 predicted_position;
         Vector2 presentation_position;
         Vector2 smoothing_offset;
+        std::optional<Vector2> last_nonzero_movement_input;
     };
     std::optional<NetworkSession> network_session;
 };
 
+constexpr std::size_t kInjectedInputDropBurstSize = 3;
+constexpr auto kFaultCompletionReceiptDuration = std::chrono::seconds{2};
+
 struct PredictionDebugControls {
     bool show_prediction_layers{true};
     bool show_replay_path{true};
-    bool inject_prediction_error_requested{};
+    std::optional<Vector2> requested_prediction_error;
     bool drop_input_packets_requested{};
     bool clear_correction_visuals_requested{};
+    std::optional<std::uint64_t> input_drop_count_at_burst_start;
+    std::optional<std::chrono::steady_clock::time_point> input_drop_burst_completed_at;
+
+    void begin_input_drop_burst(std::uint64_t injected_drop_count) noexcept {
+        input_drop_count_at_burst_start = injected_drop_count;
+        input_drop_burst_completed_at.reset();
+    }
+
+    void observe_input_drop_burst(const dots::client_runtime::PredictionStatistics& prediction,
+                                  std::chrono::steady_clock::time_point now) noexcept {
+        if (!input_drop_count_at_burst_start) {
+            return;
+        }
+        if (prediction.injected_input_drop_count < *input_drop_count_at_burst_start) {
+            input_drop_count_at_burst_start.reset();
+            input_drop_burst_completed_at.reset();
+            return;
+        }
+        const auto dropped_since_start =
+            prediction.injected_input_drop_count - *input_drop_count_at_burst_start;
+        if (!input_drop_burst_completed_at && prediction.pending_injected_input_drop_count == 0 &&
+            dropped_since_start >= kInjectedInputDropBurstSize) {
+            input_drop_burst_completed_at = now;
+        }
+        if (input_drop_burst_completed_at &&
+            now - *input_drop_burst_completed_at >= kFaultCompletionReceiptDuration) {
+            input_drop_count_at_burst_start.reset();
+            input_drop_burst_completed_at.reset();
+        }
+    }
 };
 
 [[nodiscard]] constexpr std::string_view
@@ -183,6 +217,285 @@ void draw_snapshot_sequence(std::string_view label, dots::protocol::SnapshotId v
     return {0.35F, 0.9F, 0.45F, 1.0F};
 }
 
+void draw_runtime_debug_tab(const ClientConfig& config,
+                            const DebugWorldStats& world,
+                            const mycore::debug::FrameMetricsSnapshot& frame_metrics,
+                            const mycore::debug::FixedStepMetricsSnapshot& simulation_metrics) {
+    const auto input_mode = input_mode_name(config.controls.mode);
+    ImGui::Text("Input: %.*s", static_cast<int>(input_mode.size()), input_mode.data());
+    ImGui::Text("Presentation: %.*s",
+                static_cast<int>(world.presentation.size()),
+                world.presentation.data());
+    ImGui::Text("Tick: %llu", static_cast<unsigned long long>(world.tick));
+    ImGui::Text("Players: %zu", world.player_count);
+    ImGui::Text("Food: %zu", world.food_count);
+    if (world.occupied_grid_cells) {
+        ImGui::Text("Grid cells: %zu", *world.occupied_grid_cells);
+    }
+    if (world.snapshot_id) {
+        ImGui::Text("Snapshot: %u", *world.snapshot_id);
+    }
+
+    ImGui::Separator();
+    ImGui::Text("Frame: %.2f ms", frame_metrics.latest_milliseconds);
+    ImGui::Text("Average: %.2f ms", frame_metrics.average_milliseconds);
+    ImGui::Text("FPS: %.1f", frame_metrics.frames_per_second);
+
+    ImGui::Separator();
+    const auto unhealthy = simulation_metrics.latest_step_limit_reached ||
+                           simulation_metrics.latest_deadline_missed ||
+                           simulation_metrics.latest_discarded_milliseconds > 0.0;
+    if (unhealthy) {
+        ImGui::TextColored({1.0F, 0.55F, 0.2F, 1.0F}, "Simulation health: OVERLOAD");
+    } else {
+        ImGui::TextColored({0.35F, 0.9F, 0.45F, 1.0F}, "Simulation health: OK");
+    }
+    ImGui::Text("Tick rate: %.1f / %.1f Hz",
+                simulation_metrics.actual_steps_per_second,
+                simulation_metrics.target_steps_per_second);
+    ImGui::Text("Steps: %zu (excess: %zu)",
+                simulation_metrics.latest_steps,
+                simulation_metrics.latest_pending_steps);
+    ImGui::Text("Simulation: %.2f ms (%.2f ms/step)",
+                simulation_metrics.latest_simulation_milliseconds,
+                simulation_metrics.latest_step_milliseconds);
+    ImGui::Text("Backlog: %.2f ms", simulation_metrics.backlog_milliseconds);
+    ImGui::Text("Catch-up / cap hits: %llu / %llu",
+                static_cast<unsigned long long>(simulation_metrics.catch_up_frame_count),
+                static_cast<unsigned long long>(simulation_metrics.step_limit_hit_count));
+    ImGui::Text("Deadline misses: %llu",
+                static_cast<unsigned long long>(simulation_metrics.deadline_miss_count));
+    ImGui::Text("Discarded time: %.2f ms", simulation_metrics.total_discarded_milliseconds);
+}
+
+void draw_network_debug_tab(const DebugWorldStats& world) {
+    if (world.network_session) {
+        const auto& session = *world.network_session;
+        ImGui::TextUnformatted("Session");
+        const auto runtime_state = runtime_state_name(session.runtime_state);
+        ImGui::Text("Runtime: %.*s", static_cast<int>(runtime_state.size()), runtime_state.data());
+        if (world.transport) {
+            const auto connection_state = connection_state_name(world.transport->state);
+            ImGui::Text("Connection: %.*s",
+                        static_cast<int>(connection_state.size()),
+                        connection_state.data());
+        } else {
+            ImGui::TextUnformatted("Connection: unavailable");
+        }
+        ImGui::Text("Protocol: %u", static_cast<unsigned int>(dots::protocol::kProtocolVersion));
+        ImGui::Text("Client ID: %u", session.client_id.value());
+        ImGui::Text("Controlled entity: %u", session.controlled_entity_id.value());
+        ImGui::Text("Connection handle: %u", session.connection_handle.value());
+        ImGui::Text(
+            "Snapshot / server tick: %u / %u", world.snapshot_id.value_or(0), session.server_tick);
+        ImGui::Text("Local input tick (next): %u", session.local_input_tick);
+        ImGui::TextDisabled("Local and server ticks are not synchronized.");
+    } else {
+        ImGui::TextDisabled("No network session in offline presentation mode.");
+    }
+
+    if (world.replication) {
+        ImGui::Separator();
+        ImGui::TextUnformatted("Replication");
+        if (world.replication->latest_snapshot_age) {
+            ImGui::Text("Snapshot age: %lld ms",
+                        static_cast<long long>(world.replication->latest_snapshot_age->count()));
+        } else {
+            ImGui::TextUnformatted("Snapshot age: unavailable");
+        }
+        ImGui::Text("Receive rate: %.1f snapshots/s",
+                    world.replication->accepted_snapshots_per_second);
+    }
+
+    if (world.transport) {
+        ImGui::Separator();
+        ImGui::TextUnformatted("Transport");
+        const auto state = connection_state_name(world.transport->state);
+        ImGui::Text("State: %.*s", static_cast<int>(state.size()), state.data());
+        if (world.transport->round_trip_time) {
+            ImGui::Text("RTT: %lld ms",
+                        static_cast<long long>(world.transport->round_trip_time->count()));
+        } else {
+            ImGui::TextUnformatted("RTT: unavailable");
+        }
+        if (world.transport->packet_loss_percent) {
+            ImGui::Text("Packet loss: %.2f%%", *world.transport->packet_loss_percent);
+        } else {
+            ImGui::TextUnformatted("Packet loss: unavailable");
+        }
+        if (world.transport->inbound_bytes_per_second &&
+            world.transport->outbound_bytes_per_second &&
+            world.transport->inbound_packets_per_second &&
+            world.transport->outbound_packets_per_second) {
+            ImGui::Text("Bytes/s in / out: %.0f / %.0f",
+                        *world.transport->inbound_bytes_per_second,
+                        *world.transport->outbound_bytes_per_second);
+            ImGui::Text("Packets/s in / out: %.1f / %.1f",
+                        *world.transport->inbound_packets_per_second,
+                        *world.transport->outbound_packets_per_second);
+        } else {
+            ImGui::TextUnformatted("Rates: unavailable");
+        }
+        if (world.transport->pending_reliable_bytes && world.transport->pending_unreliable_bytes) {
+            ImGui::Text("Queued reliable / unreliable: %zu / %zu bytes",
+                        *world.transport->pending_reliable_bytes,
+                        *world.transport->pending_unreliable_bytes);
+        } else {
+            ImGui::TextUnformatted("Queues: unavailable");
+        }
+        if (world.transport->sent_unacknowledged_reliable_bytes) {
+            ImGui::Text("Reliable sent unacked: %zu bytes",
+                        *world.transport->sent_unacknowledged_reliable_bytes);
+        }
+        if (world.transport->outbound_queue_delay) {
+            const auto delay =
+                std::chrono::duration<double, std::milli>{*world.transport->outbound_queue_delay};
+            ImGui::Text("Queue delay: %.2f ms", delay.count());
+        }
+    }
+}
+
+void draw_prediction_debug_tab(const DebugWorldStats& world) {
+    if (!world.network_session) {
+        ImGui::TextDisabled("Prediction diagnostics require a network session.");
+        return;
+    }
+
+    const auto& session = *world.network_session;
+    const auto& prediction = session.prediction;
+    ImGui::TextUnformatted("Input history and rollback");
+    ImGui::Text("Redundancy: %s", prediction.input_redundancy_enabled ? "ENABLED" : "DISABLED");
+    draw_input_sequence("Last input sent", prediction.last_input_sent);
+    draw_input_sequence("Last input acknowledged", prediction.last_input_acknowledged);
+    ImGui::Text("Command lead: %zu", prediction.unacknowledged_input_count);
+    const auto history_percent = prediction.history_capacity > 0
+                                     ? (100.0F * static_cast<float>(prediction.history_count)) /
+                                           static_cast<float>(prediction.history_capacity)
+                                     : 0.0F;
+    ImGui::TextColored(history_utilization_color(history_percent),
+                       "History: %zu / %zu (%.1f%%), high %zu",
+                       prediction.history_count,
+                       prediction.history_capacity,
+                       history_percent,
+                       prediction.history_high_water_mark);
+    ImGui::Text("Server pending: %u, high %u",
+                static_cast<unsigned int>(prediction.latest_server_pending_input_count),
+                static_cast<unsigned int>(prediction.server_pending_input_high_water_mark));
+    draw_snapshot_sequence("Rollback snapshot", prediction.rollback_snapshot_id);
+    ImGui::Text("Rollback server tick: %u", prediction.rollback_server_tick);
+    draw_input_sequence("Rollback input ACK", prediction.rollback_input_acknowledgement);
+    ImGui::Text("Replay last / total / max: %zu / %llu / %zu",
+                prediction.latest_replay_count,
+                static_cast<unsigned long long>(prediction.total_replayed_input_count),
+                prediction.maximum_replay_count);
+    ImGui::Text("Replay ms last / avg / max: %.3f / %.3f / %.3f",
+                prediction.latest_replay_milliseconds,
+                prediction.average_replay_milliseconds,
+                prediction.maximum_replay_milliseconds);
+    ImGui::Text("Replay over budget / hard resync: %llu / %llu",
+                static_cast<unsigned long long>(prediction.replay_over_budget_count),
+                static_cast<unsigned long long>(prediction.hard_resync_count));
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Correction and presentation");
+    ImGui::Text("Reconciliations / corrections: %llu / %llu",
+                static_cast<unsigned long long>(prediction.reconciliation_count),
+                static_cast<unsigned long long>(prediction.nonzero_correction_count));
+    ImGui::Text("Correction last / max: %.4f / %.4f units",
+                prediction.latest_correction_distance,
+                prediction.maximum_correction_distance);
+    ImGui::Text("Corrections/min: %.0f", prediction.corrections_per_minute);
+    ImGui::Text("Authority sample: (%.3f, %.3f)",
+                session.latest_authoritative_sample.x,
+                session.latest_authoritative_sample.y);
+    ImGui::Text(
+        "Predicted: (%.3f, %.3f)", session.predicted_position.x, session.predicted_position.y);
+    ImGui::Text("Presentation: (%.3f, %.3f)",
+                session.presentation_position.x,
+                session.presentation_position.y);
+    ImGui::Text("Smoothing offset: (%.3f, %.3f), |v| %.4f",
+                session.smoothing_offset.x,
+                session.smoothing_offset.y,
+                mycore::math::length(session.smoothing_offset));
+    ImGui::Text("Injected drops / errors: %llu / %llu",
+                static_cast<unsigned long long>(prediction.injected_input_drop_count),
+                static_cast<unsigned long long>(prediction.injected_prediction_error_count));
+}
+
+void draw_prediction_tools_tab(const DebugWorldStats& world,
+                               PredictionDebugControls* prediction_controls) {
+    if (!world.network_session) {
+        ImGui::TextDisabled("Prediction tools require a network session.");
+        return;
+    }
+
+    if (prediction_controls == nullptr) {
+        ImGui::TextDisabled("Prediction tools are unavailable.");
+        return;
+    }
+
+    const auto& session = *world.network_session;
+    const auto& prediction = session.prediction;
+    ImGui::TextUnformatted("Fault injection");
+    if (prediction_controls->input_drop_count_at_burst_start) {
+        const auto dropped_since_start =
+            prediction.injected_input_drop_count -
+            std::min(prediction.injected_input_drop_count,
+                     *prediction_controls->input_drop_count_at_burst_start);
+        if (prediction.pending_injected_input_drop_count > 0) {
+            ImGui::TextColored({1.0F, 0.65F, 0.2F, 1.0F},
+                               "Injected drop burst: %llu / %zu dropped (%zu remaining)",
+                               static_cast<unsigned long long>(dropped_since_start),
+                               kInjectedInputDropBurstSize,
+                               prediction.pending_injected_input_drop_count);
+        } else if (prediction_controls->input_drop_burst_completed_at) {
+            ImGui::TextColored({0.35F, 0.9F, 0.45F, 1.0F},
+                               "Last fault: dropped %zu input packets (complete)",
+                               kInjectedInputDropBurstSize);
+        }
+    }
+    if (ImGui::Button("Inject +1 X error")) {
+        prediction_controls->requested_prediction_error = Vector2{1.0F, 0.0F};
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Inject +1 Y error")) {
+        prediction_controls->requested_prediction_error = Vector2{0.0F, 1.0F};
+    }
+    auto relative_error = std::optional<Vector2>{};
+    if (session.last_nonzero_movement_input) {
+        relative_error = mycore::math::normalized_or_zero(*session.last_nonzero_movement_input);
+    }
+    ImGui::BeginDisabled(!relative_error.has_value());
+    if (ImGui::Button("Force +1 position drift along last movement") && relative_error) {
+        prediction_controls->requested_prediction_error = *relative_error;
+    }
+    ImGui::EndDisabled();
+    if (session.last_nonzero_movement_input) {
+        ImGui::Text("Last nonzero input: (%.3f, %.3f)",
+                    session.last_nonzero_movement_input->x,
+                    session.last_nonzero_movement_input->y);
+    } else {
+        ImGui::TextDisabled("Last nonzero input: none yet");
+    }
+    ImGui::BeginDisabled(prediction.pending_injected_input_drop_count > 0);
+    if (ImGui::Button("Drop next 3 input packets")) {
+        prediction_controls->drop_input_packets_requested = true;
+    }
+    ImGui::EndDisabled();
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Visual layers");
+    ImGui::Checkbox("Show prediction layers", &prediction_controls->show_prediction_layers);
+    ImGui::Checkbox("Show correction replay", &prediction_controls->show_replay_path);
+    if (ImGui::Button("Clear correction ghosts")) {
+        prediction_controls->clear_correction_visuals_requested = true;
+    }
+    ImGui::TextDisabled("White: predicted position");
+    ImGui::TextDisabled("Orange: latest authoritative sample");
+    ImGui::TextDisabled("Magenta: pre-correction; Purple: replay");
+    ImGui::TextDisabled("Fill: presentation position");
+}
+
 void draw_debug_overlay(const ClientConfig& config,
                         const DebugWorldStats& world,
                         const mycore::debug::FrameMetricsSnapshot& frame_metrics,
@@ -206,220 +519,25 @@ void draw_debug_overlay(const ClientConfig& config,
         ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoSavedSettings |
         ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
     if (ImGui::Begin("Dots observability", nullptr, kWindowFlags)) {
-        const auto input_mode = input_mode_name(config.controls.mode);
-        ImGui::TextUnformatted("Dots debug");
-        ImGui::Separator();
-        ImGui::Text("Input: %.*s", static_cast<int>(input_mode.size()), input_mode.data());
-        ImGui::Text("Presentation: %.*s",
-                    static_cast<int>(world.presentation.size()),
-                    world.presentation.data());
-        ImGui::Text("Tick: %llu", static_cast<unsigned long long>(world.tick));
-        ImGui::Text("Players: %zu", world.player_count);
-        ImGui::Text("Food: %zu", world.food_count);
-        if (world.occupied_grid_cells) {
-            ImGui::Text("Grid cells: %zu", *world.occupied_grid_cells);
+        if (ImGui::BeginTabBar("Dots observability tabs")) {
+            if (ImGui::BeginTabItem("Runtime")) {
+                draw_runtime_debug_tab(config, world, frame_metrics, simulation_metrics);
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Network")) {
+                draw_network_debug_tab(world);
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Prediction")) {
+                draw_prediction_debug_tab(world);
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Tools")) {
+                draw_prediction_tools_tab(world, prediction_controls);
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
         }
-        if (world.snapshot_id) {
-            ImGui::Text("Snapshot: %u", *world.snapshot_id);
-        }
-        if (world.replication) {
-            ImGui::Separator();
-            ImGui::TextUnformatted("Replication");
-            if (world.replication->latest_snapshot_age) {
-                ImGui::Text(
-                    "Snapshot age: %lld ms",
-                    static_cast<long long>(world.replication->latest_snapshot_age->count()));
-            } else {
-                ImGui::TextUnformatted("Snapshot age: unavailable");
-            }
-            ImGui::Text("Receive rate: %.1f snapshots/s",
-                        world.replication->accepted_snapshots_per_second);
-        }
-        if (world.network_session) {
-            const auto& session = *world.network_session;
-            const auto& prediction = session.prediction;
-            ImGui::Separator();
-            ImGui::TextUnformatted("Session");
-            const auto runtime_state = runtime_state_name(session.runtime_state);
-            ImGui::Text(
-                "Runtime: %.*s", static_cast<int>(runtime_state.size()), runtime_state.data());
-            if (world.transport) {
-                const auto connection_state = connection_state_name(world.transport->state);
-                ImGui::Text("Connection: %.*s",
-                            static_cast<int>(connection_state.size()),
-                            connection_state.data());
-            } else {
-                ImGui::TextUnformatted("Connection: unavailable");
-            }
-            ImGui::Text("Protocol: %u",
-                        static_cast<unsigned int>(dots::protocol::kProtocolVersion));
-            ImGui::Text("Client ID: %u", session.client_id.value());
-            ImGui::Text("Controlled entity: %u", session.controlled_entity_id.value());
-            ImGui::Text("Connection handle: %u", session.connection_handle.value());
-            ImGui::Text("Snapshot / server tick: %u / %u",
-                        world.snapshot_id.value_or(0),
-                        session.server_tick);
-            ImGui::Text("Local input tick (next): %u", session.local_input_tick);
-            ImGui::TextDisabled("Local and server ticks are not synchronized.");
-
-            ImGui::Separator();
-            ImGui::TextUnformatted("Prediction");
-            ImGui::Text("Redundancy: %s",
-                        prediction.input_redundancy_enabled ? "ENABLED" : "DISABLED");
-            draw_input_sequence("Last input sent", prediction.last_input_sent);
-            draw_input_sequence("Last input acknowledged", prediction.last_input_acknowledged);
-            ImGui::Text("Command lead: %zu", prediction.unacknowledged_input_count);
-            const auto history_percent =
-                prediction.history_capacity > 0
-                    ? (100.0F * static_cast<float>(prediction.history_count)) /
-                          static_cast<float>(prediction.history_capacity)
-                    : 0.0F;
-            ImGui::TextColored(history_utilization_color(history_percent),
-                               "History: %zu / %zu (%.1f%%), high %zu",
-                               prediction.history_count,
-                               prediction.history_capacity,
-                               history_percent,
-                               prediction.history_high_water_mark);
-            ImGui::Text("Server pending: %u, high %u",
-                        static_cast<unsigned int>(prediction.latest_server_pending_input_count),
-                        static_cast<unsigned int>(prediction.server_pending_input_high_water_mark));
-            draw_snapshot_sequence("Rollback snapshot", prediction.rollback_snapshot_id);
-            ImGui::Text("Rollback server tick: %u", prediction.rollback_server_tick);
-            draw_input_sequence("Rollback input ACK", prediction.rollback_input_acknowledgement);
-            ImGui::Text("Replay last / total / max: %zu / %llu / %zu",
-                        prediction.latest_replay_count,
-                        static_cast<unsigned long long>(prediction.total_replayed_input_count),
-                        prediction.maximum_replay_count);
-            ImGui::Text("Replay ms last / avg / max: %.3f / %.3f / %.3f",
-                        prediction.latest_replay_milliseconds,
-                        prediction.average_replay_milliseconds,
-                        prediction.maximum_replay_milliseconds);
-            ImGui::Text("Reconciliations / corrections: %llu / %llu",
-                        static_cast<unsigned long long>(prediction.reconciliation_count),
-                        static_cast<unsigned long long>(prediction.nonzero_correction_count));
-            ImGui::Text("Correction last / max: %.4f / %.4f units",
-                        prediction.latest_correction_distance,
-                        prediction.maximum_correction_distance);
-            ImGui::Text("Corrections/min: %.0f", prediction.corrections_per_minute);
-            ImGui::Text("Authority sample: (%.3f, %.3f)",
-                        session.latest_authoritative_sample.x,
-                        session.latest_authoritative_sample.y);
-            ImGui::Text("Predicted: (%.3f, %.3f)",
-                        session.predicted_position.x,
-                        session.predicted_position.y);
-            ImGui::Text("Presentation: (%.3f, %.3f)",
-                        session.presentation_position.x,
-                        session.presentation_position.y);
-            ImGui::Text("Smoothing offset: (%.3f, %.3f), |v| %.4f",
-                        session.smoothing_offset.x,
-                        session.smoothing_offset.y,
-                        mycore::math::length(session.smoothing_offset));
-            ImGui::Text("Replay over budget / hard resync: %llu / %llu",
-                        static_cast<unsigned long long>(prediction.replay_over_budget_count),
-                        static_cast<unsigned long long>(prediction.hard_resync_count));
-            ImGui::Text(
-                "Injected drops / errors: %llu / %llu",
-                static_cast<unsigned long long>(prediction.injected_input_drop_count),
-                static_cast<unsigned long long>(prediction.injected_prediction_error_count));
-
-            if (prediction.pending_injected_input_drop_count > 0) {
-                ImGui::TextColored({1.0F, 0.25F, 0.2F, 1.0F},
-                                   "FAULT ARMED: dropping next %zu input packet(s)",
-                                   prediction.pending_injected_input_drop_count);
-            }
-            if (prediction_controls != nullptr) {
-                ImGui::Checkbox("Show prediction layers",
-                                &prediction_controls->show_prediction_layers);
-                ImGui::Checkbox("Show correction replay", &prediction_controls->show_replay_path);
-                if (ImGui::Button("Inject +1 X error")) {
-                    prediction_controls->inject_prediction_error_requested = true;
-                }
-                if (ImGui::Button("Drop next 3 input packets")) {
-                    prediction_controls->drop_input_packets_requested = true;
-                }
-                if (ImGui::Button("Clear correction ghosts")) {
-                    prediction_controls->clear_correction_visuals_requested = true;
-                }
-            }
-            ImGui::TextDisabled("Layers: white predicted; orange latest authoritative sample;");
-            ImGui::TextDisabled("magenta pre-correction; purple replay; fill is presentation.");
-        }
-        if (world.transport) {
-            ImGui::Separator();
-            ImGui::TextUnformatted("Transport");
-            const auto state = connection_state_name(world.transport->state);
-            ImGui::Text("State: %.*s", static_cast<int>(state.size()), state.data());
-            if (world.transport->round_trip_time) {
-                ImGui::Text("RTT: %lld ms",
-                            static_cast<long long>(world.transport->round_trip_time->count()));
-            } else {
-                ImGui::TextUnformatted("RTT: unavailable");
-            }
-            if (world.transport->packet_loss_percent) {
-                ImGui::Text("Packet loss: %.2f%%", *world.transport->packet_loss_percent);
-            } else {
-                ImGui::TextUnformatted("Packet loss: unavailable");
-            }
-            if (world.transport->inbound_bytes_per_second &&
-                world.transport->outbound_bytes_per_second &&
-                world.transport->inbound_packets_per_second &&
-                world.transport->outbound_packets_per_second) {
-                ImGui::Text("Bytes/s in / out: %.0f / %.0f",
-                            *world.transport->inbound_bytes_per_second,
-                            *world.transport->outbound_bytes_per_second);
-                ImGui::Text("Packets/s in / out: %.1f / %.1f",
-                            *world.transport->inbound_packets_per_second,
-                            *world.transport->outbound_packets_per_second);
-            } else {
-                ImGui::TextUnformatted("Rates: unavailable");
-            }
-            if (world.transport->pending_reliable_bytes &&
-                world.transport->pending_unreliable_bytes) {
-                ImGui::Text("Queued reliable / unreliable: %zu / %zu bytes",
-                            *world.transport->pending_reliable_bytes,
-                            *world.transport->pending_unreliable_bytes);
-            } else {
-                ImGui::TextUnformatted("Queues: unavailable");
-            }
-            if (world.transport->sent_unacknowledged_reliable_bytes) {
-                ImGui::Text("Reliable sent unacked: %zu bytes",
-                            *world.transport->sent_unacknowledged_reliable_bytes);
-            }
-            if (world.transport->outbound_queue_delay) {
-                const auto delay = std::chrono::duration<double, std::milli>{
-                    *world.transport->outbound_queue_delay};
-                ImGui::Text("Queue delay: %.2f ms", delay.count());
-            }
-        }
-        ImGui::Separator();
-        ImGui::Text("Frame: %.2f ms", frame_metrics.latest_milliseconds);
-        ImGui::Text("Average: %.2f ms", frame_metrics.average_milliseconds);
-        ImGui::Text("FPS: %.1f", frame_metrics.frames_per_second);
-        ImGui::Separator();
-        const auto unhealthy = simulation_metrics.latest_step_limit_reached ||
-                               simulation_metrics.latest_deadline_missed ||
-                               simulation_metrics.latest_discarded_milliseconds > 0.0;
-        if (unhealthy) {
-            ImGui::TextColored({1.0F, 0.55F, 0.2F, 1.0F}, "Simulation health: OVERLOAD");
-        } else {
-            ImGui::TextColored({0.35F, 0.9F, 0.45F, 1.0F}, "Simulation health: OK");
-        }
-        ImGui::Text("Tick rate: %.1f / %.1f Hz",
-                    simulation_metrics.actual_steps_per_second,
-                    simulation_metrics.target_steps_per_second);
-        ImGui::Text("Steps: %zu (excess: %zu)",
-                    simulation_metrics.latest_steps,
-                    simulation_metrics.latest_pending_steps);
-        ImGui::Text("Simulation: %.2f ms (%.2f ms/step)",
-                    simulation_metrics.latest_simulation_milliseconds,
-                    simulation_metrics.latest_step_milliseconds);
-        ImGui::Text("Backlog: %.2f ms", simulation_metrics.backlog_milliseconds);
-        ImGui::Text("Catch-up / cap hits: %llu / %llu",
-                    static_cast<unsigned long long>(simulation_metrics.catch_up_frame_count),
-                    static_cast<unsigned long long>(simulation_metrics.step_limit_hit_count));
-        ImGui::Text("Deadline misses: %llu",
-                    static_cast<unsigned long long>(simulation_metrics.deadline_miss_count));
-        ImGui::Text("Discarded time: %.2f ms", simulation_metrics.total_discarded_milliseconds);
     }
     ImGui::End();
 }
@@ -546,6 +664,7 @@ int run_networked_game(const ClientConfig& config,
     SimulationHealthReporter simulation_health_reporter;
     dots::presentation::LocalPredictionPresentation local_prediction_presentation;
     PredictionDebugControls prediction_debug_controls;
+    std::optional<Vector2> last_nonzero_movement_input;
 
     while (true) {
         MYCORE_PROFILE_FRAME();
@@ -614,6 +733,9 @@ int run_networked_game(const ClientConfig& config,
                 }
                 const auto movement =
                     movement_from_input(input, config.controls, viewport, mouse_input_available);
+                if (mycore::math::length_squared(movement) > 0.0F) {
+                    last_nonzero_movement_input = movement;
+                }
                 if (client.send_input(client_tick++, movement) !=
                     dots::client_runtime::InputSendResult::Sent) {
                     throw StartupError{"The networked client could not send input"};
@@ -649,6 +771,7 @@ int run_networked_game(const ClientConfig& config,
         simulation_health_reporter.update(simulation_snapshot, std::chrono::steady_clock::now());
 
         auto prediction_statistics = client.prediction_statistics(now);
+        prediction_debug_controls.observe_input_drop_burst(prediction_statistics, now);
         const auto update_local_prediction_presentation = [&] {
             const auto predicted_position = client.predicted_position();
             if (!predicted_position) {
@@ -694,24 +817,28 @@ int run_networked_game(const ClientConfig& config,
                         .presentation_position =
                             local_prediction_presentation.presentation_position(),
                         .smoothing_offset = local_prediction_presentation.smoothing_offset(),
+                        .last_nonzero_movement_input = last_nonzero_movement_input,
                     },
             },
             frame_metrics.snapshot(),
             simulation_snapshot,
             &prediction_debug_controls);
 
-        if (prediction_debug_controls.inject_prediction_error_requested) {
-            if (!client.debug_inject_prediction_error({1.0F, 0.0F})) {
+        if (prediction_debug_controls.requested_prediction_error) {
+            if (!client.debug_inject_prediction_error(
+                    *prediction_debug_controls.requested_prediction_error)) {
                 throw StartupError{"Could not inject the requested prediction error"};
             }
             prediction_statistics = client.prediction_statistics(now);
             update_local_prediction_presentation();
-            prediction_debug_controls.inject_prediction_error_requested = false;
+            prediction_debug_controls.requested_prediction_error.reset();
         }
         if (prediction_debug_controls.drop_input_packets_requested) {
-            if (!client.debug_drop_next_input_packets(3)) {
+            if (!client.debug_drop_next_input_packets(kInjectedInputDropBurstSize)) {
                 throw StartupError{"Could not arm the requested input packet drops"};
             }
+            prediction_debug_controls.begin_input_drop_burst(
+                prediction_statistics.injected_input_drop_count);
             prediction_debug_controls.drop_input_packets_requested = false;
         }
         if (prediction_debug_controls.clear_correction_visuals_requested) {

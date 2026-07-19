@@ -80,6 +80,11 @@ target delay = 6 server ticks = 200 ms
 
 Use server ticks, not arrival timestamps, as interpolation coordinates.
 
+Name this coordinate **remote presentation tick/time** in code, metrics, and documentation. It is
+neither estimated live server time nor a general world clock: it intentionally describes the
+delayed remote scene on one client. Snapshot ID remains an ordering value and must never be used
+as elapsed time.
+
 Startup behavior:
 
 1. Store the first sample and hold its remote presentation.
@@ -174,6 +179,11 @@ Do not describe interpolated positions as replicated or authoritative state.
 Feature 12 uses a fixed 200 ms target delay. Measured jitter and hold behavior determine whether
 a later change should adapt the target between two and four snapshot intervals.
 
+RTT and jitter do not feed the target-delay formula in this feature. Network changes affect which
+samples are available, the cursor's error relative to `newest_server_tick - 6`, and whether the
+sampler holds or hard-rebases. The bounded 95–105% cursor rate corrects buffer position; it is not
+an estimated-live-server clock and does not look ahead of received authority.
+
 Deferred work includes:
 
 - Adaptive target-delay policy.
@@ -234,4 +244,3 @@ Deferred work includes:
 - The debugger exposes both known endpoints and the actual interpolated representation.
 - The controlled player remains responsive through Feature 11 prediction and is never routed
   through the remote buffer.
-

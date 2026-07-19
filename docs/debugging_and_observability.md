@@ -39,11 +39,57 @@ Networking debug output is useful only when the state being measured is named pr
 A native client cannot observe the server's live current position. A client debug ghost labeled
 **authoritative** must mean **latest received authoritative sample** and show its snapshot age.
 
+## Clock and Timeline Vocabulary
+
+The full clock model and a two-client example live in the
+[networking guide](server_authoritative_networking_guide.md#clock-and-timeline-vocabulary). Use
+these labels consistently in overlays, logs, and non-debug UI:
+
+| Label | Meaning | Comparable between clients? |
+|---|---|---|
+| `World simulation time` | Latest authoritative server tick divided by 30 Hz. On a client this must be qualified as latest-known unless it is explicitly estimated. | Yes, when referring to the same server tick. |
+| `Client session time` | Local steady-clock duration since this client became ready. | No; clients join at different times and own different clocks. |
+| `Latest-known world time` | Time encoded by the newest snapshot this client has accepted. Exact but historical. | Server ticks are comparable; freshness is per-client. |
+| `Estimated live server time` | Latest server-tick anchor advanced by local elapsed time, optionally with a filtered one-way-delay estimate. | Approximate; clients can disagree. |
+| `Remote presentation time` | Feature 12 fractional server-tick cursor used to render remotes about 200 ms behind newest known authority. | Comparable as a server-tick coordinate, but independently buffered per client. |
+| `Snapshot ID` | Per-client snapshot ordering ID. | No; never interpret it as elapsed time. |
+| `Owned prediction extent` | Rollback snapshot/server tick and ACK plus the replayed unacknowledged input range. | Not a single time value. |
+
+Avoid the ambiguous label `estimated world time`; use `estimated live server time` when estimating
+server “now,” or `remote presentation time` when describing the delayed scene. A non-debug timer
+aligned with the scene should use remote presentation time. A match timer may display an estimated
+server deadline locally, but only the server decides whether the deadline has passed.
+
+Reconciliation never rewinds client session time or the server timeline. It rebuilds only owned
+predicted state from a newer authoritative base and then smooths the visible correction. Feature
+12 presentation-cursor recovery is likewise not authoritative gameplay rollback.
+
+### Compensation clock status
+
+`Estimated live server time` is not currently implemented and does not drive Feature 11. Owned
+prediction uses local input steps and server ACKs; reconciliation replays the retained input
+suffix; correction smoothing decays a spatial offset over a fixed 100 ms of local steady time.
+Network conditions can change correction frequency and magnitude, but not that duration.
+
+Feature 12 also does not estimate or render server “now.” Its planned remote presentation cursor
+uses server ticks and targets `newest received tick - 6`. It advances at 100% speed within a
+`±0.25`-tick deadband and otherwise uses
+`clamp(1 + 0.02 * tick_error, 0.95, 1.05)`. The target remains 200 ms; RTT and jitter metrics are
+observations, not inputs to an adaptive delay policy in Feature 12.
+
+Do not label either mechanism `lookahead smoothing`: owned prediction advances known local intent,
+while remote interpolation intentionally renders older known authority. The networking guide's
+[compensation section](server_authoritative_networking_guide.md#which-compensation-uses-which-clock)
+contains the formulas, network-change behavior, and the explicitly deferred live-clock estimator.
+
 ## Current Dots Overlay
 
-The Dots-owned Dear ImGui panel is anchored in the lower-right corner. It can collapse and its
-content can scroll. `MyCore::DebugUI` owns ImGui integration, but the fields and their meanings
-remain Dots-owned.
+The Dots-owned Dear ImGui panel is anchored in the lower-right corner. It can collapse and splits
+its output into **Runtime**, **Network**, **Prediction**, and **Tools** tabs so unrelated
+diagnostics do not create one tall scrolling view. Fault injection and visual-layer controls live
+under Tools rather than extending the Prediction metrics view. A tab can still scroll when the
+available window height is small. `MyCore::DebugUI` owns ImGui integration, but the fields and
+their meanings remain Dots-owned.
 
 ### World and presentation fields — Current
 
@@ -165,7 +211,7 @@ The runtime exposes `predicted_position()`, `pre_correction_position()`,
 correction. Presentation copies them for two seconds of visual retention. A history-capacity hard
 resync clears prediction history, smoothing, and retained correction visuals.
 
-The **Session** overlay section shows:
+The **Network** tab's Session section shows:
 
 - Runtime/connection state and protocol version.
 - Server-assigned client ID.
@@ -175,7 +221,7 @@ The **Session** overlay section shows:
 The server and client tick values are shown separately. Until a future tick-synchronization
 feature defines their mapping, subtracting them does not produce a meaningful latency value.
 
-The **Prediction** overlay rows are:
+The **Prediction** tab rows are:
 
 | Field | Current meaning and lifetime |
 |---|---|
@@ -217,15 +263,24 @@ coincident outlines visible.
 
 ### Current prediction fault controls
 
-- Inject `+1` world unit of client-only X prediction error.
+The **Tools** tab owns these controls:
+
+- Inject `+1` world unit of client-only X or Y prediction error.
+- Force `+1` world unit of client-only position drift along the last non-zero movement direction.
+  This directly corrupts predicted position; it does not submit an extra movement input. The
+  overlay shows the direction, and the control is disabled until the client has sent non-zero
+  movement. Retaining the last direction makes the control usable while ImGui temporarily
+  captures mouse steering.
 - Drop the next three input packets while continuing local prediction.
 - Show/hide state layers and replay markers.
 - Clear retained correction visuals.
 
-The layer and replay toggles default on. An armed injected-drop burst displays an explicit red
-warning until all three sends have been suppressed. Suppressed sends still record and predict
-their input exactly as deliberate network loss would. Injected drops have a separate counter and
-are never added to transport packet-loss measurements.
+The layer and replay toggles default on. During an injected-drop burst, the Prediction tab shows
+completed and remaining drop counts and disables starting an overlapping burst. Completion is
+retained as a green receipt for two seconds, even when catch-up consumes all three drops between
+rendered frames. Suppressed sends still record and predict their input exactly as deliberate
+network loss would. Injected drops have a separate counter and are never added to transport
+packet-loss measurements.
 
 ## Remote Interpolation Output — Feature 12 Planned
 

@@ -406,6 +406,166 @@ acknowledgements for delta baselines.
 The word *frame* is overloaded. Rendering, simulation, replication, transport polling, and the
 physical display do not have to advance together.
 
+### Clock and timeline vocabulary
+
+Use one name per concept. In particular, do not use **estimated world time** as a second name for
+**estimated live server time**; the current server owns one authoritative world, so those phrases
+would describe the same estimate and invite accidental comparison with presentation time.
+
+| Term | Definition | Scope and authority |
+|---|---|---|
+| Authoritative server tick | Count of successfully completed `World::step()` calls. It starts at zero with the current server world and advances at the nominal 30 Hz simulation rate. | Shared truth for every client connected to that server run. |
+| World simulation time | `authoritative_server_tick / 30 Hz`. This measures simulated world progression, not necessarily server-process wall uptime when the server stalls or catches up. | Authoritative, discrete, and shared. |
+| Snapshot ID | Per-client sequence number for snapshots sent to that session. It starts when the client joins and exists to reject stale or reordered snapshots. | Not a clock and not comparable between clients. |
+| Latest-known world time | `latest_received_snapshot.server_tick / 30 Hz`. This is exact for the received sample but historical by the time it is drawn. | Per-client knowledge of shared authority. |
+| Client session time | Local steady-clock duration since that client became ready. It advances smoothly regardless of packet delivery. | Per-client and never authoritative gameplay time. |
+| Estimated live server time | A client's estimate anchored by a received server tick and advanced with local steady-clock elapsed time. Optional one-way-delay estimation can move the estimate closer to server “now.” | Per-client estimate; clients can disagree because their latency and samples differ. |
+| Remote presentation time | Feature 12's fractional server-tick cursor used to sample remote entities. It intentionally trails the newest known tick by about six ticks/200 ms. | Per-client presentation state, not live authority. |
+| Owned prediction extent | The latest authoritative controlled-player base plus a particular sequence of locally replayed, unacknowledged inputs. | Describe with snapshot/server tick, ACK, and replayed input range; it is not one trustworthy server tick. |
+| Correction smoothing age | Local wall time within the 100 ms visual correction decay. | Presentation-only; it does not advance or rewind simulation. |
+
+Client session time is deliberately independent of packet arrival. Tying it directly to snapshots
+would make it pause during loss and jump during jitter. Instead, local steady time makes a server
+clock estimate continuous between authoritative anchors:
+
+```text
+anchor_server_time = received_server_tick / 30 Hz
+anchor_local_time  = local steady-clock time when that snapshot arrived
+
+estimated_live_server_time(now) =
+    anchor_server_time + (now - anchor_local_time)
+```
+
+This basic estimate remains behind the server by the snapshot's production, transit, and polling
+delay. Adding roughly half the RTT is a simple symmetric-path approximation, not proof of actual
+one-way delay. Gameplay deadlines must therefore remain server decisions expressed as ticks; a
+client estimate is suitable only for presentation.
+
+#### Which compensation uses which clock
+
+**Estimated live server time is vocabulary and a possible future UI/time-synchronization
+facility; Dots does not currently calculate or consume it.** It must not be mistaken for a hidden
+input-prediction or smoothing clock.
+
+| Mechanism | Status | Timeline/input it actually uses | Uses estimated live server time? |
+|---|---|---|---|
+| Owned-player prediction | Current, Feature 11 | Local 30 Hz input steps, input sequence IDs, and the last server ACK. | No. |
+| Reconciliation | Current, Feature 11 | Authoritative controlled-player sample plus replay of the unacknowledged input suffix. Server tick labels the rollback base but does not choose how far to replay. | No. |
+| Local correction smoothing | Current, Feature 11 | Local steady-clock age of a fixed 100 ms visual offset. | No. |
+| Remote presentation | Current baseline | Newest replicated sample with no interpolation. | No. |
+| Remote interpolation | Planned, Feature 12 | Fractional cursor in historical server-tick coordinates, targeting six ticks behind the newest known snapshot. | No. |
+| Smooth world-time UI or deadline display | Deferred | A filtered mapping from local steady time to estimated server tick. | Potentially. |
+| Server-side rewind/lag compensation | Deferred | Server history plus a validated, bounded mapping of client action time into server ticks. | It would need a clock-mapping policy, but never trust the client's claim directly. |
+
+Calling prediction “lookahead” can obscure this distinction. Owned prediction advances known
+local input beyond the latest acknowledged authority; it does not ask where the server clock is
+and extrapolate the whole world. Planned remote interpolation does the opposite of lookahead: it
+intentionally samples older known server states.
+
+Current local correction smoothing is spatial and fixed-duration:
+
+```text
+correction = prediction_before_reconcile - prediction_after_replay
+new_offset = residual_offset_from_any_prior_correction + correction
+presentation_position = corrected_prediction + decaying_offset
+
+decaying_offset(age) = new_offset * clamp(1 - age / 100 ms, 0, 1)
+```
+
+Changing RTT or jitter can change how often corrections arrive and how large they are, but it does
+not change the 100 ms decay. Overlapping corrections add to the residual that has not finished
+decaying.
+
+Feature 12 instead disciplines a deliberately delayed remote cursor:
+
+```text
+desired_cursor = newest_received_server_tick - 6
+tick_error      = desired_cursor - remote_presentation_cursor
+
+cursor_rate = 1.0                                      inside ±0.25 tick
+cursor_rate = clamp(1 + 0.02 * tick_error, 0.95, 1.05) outside the deadband
+```
+
+A newer snapshot moves `newest_received_server_tick` and therefore the target. Jitter changes
+arrival spacing but not the server-tick coordinates stored in the buffer. During loss, the cursor
+can exhaust its newer bracket and hold; recovery resumes from accepted samples or performs the
+documented hard rebase. The six-tick target remains fixed in Feature 12—RTT and measured jitter do
+not automatically enlarge or shrink it.
+
+#### If estimated live server time is implemented later
+
+Treat each accepted snapshot as a noisy clock observation, not a command to reset the clock. For
+snapshot `i`:
+
+```text
+t_i = local steady-clock arrival time
+s_i = authoritative server tick carried by the snapshot
+d_i = estimated snapshot production-to-arrival delay
+
+observed_server_tick_at_arrival = s_i + (30 Hz * d_i)
+phase_error = observed_server_tick_at_arrival - estimate(t_i)
+```
+
+Using `d_i = 0` produces the conservative historical anchor already described. Using
+`d_i ≈ RTT/2` estimates server “now” under a symmetric path, but includes error from asymmetric
+routing, snapshot cadence, and polling. A robust estimator would:
+
+1. Reject stale samples before clock processing.
+2. Filter delay/phase observations and reject large transient outliers.
+3. Slew phase gradually and adjust rate only for sustained clock drift.
+4. Keep the exposed estimate monotonic; do not jump a visible clock backward for ordinary jitter.
+5. Increase uncertainty while snapshots are missing and correct when accepted samples resume.
+6. Hard-rebase only at startup or after a separately specified large-error/recovery threshold.
+
+Higher stable RTT would move a delay-compensated estimate forward gradually. Jitter would widen
+observation noise rather than directly shake the displayed clock. Packet loss would leave the
+estimate advancing from local steady time with growing uncertainty. No concrete filter, delay
+sample selection rule, slew limit, or rebase threshold is implemented or approved yet, so this
+model must not be presented as current behavior.
+
+If a UI should match the delayed remote scene rather than estimate server “now,” derive its time
+from the Feature 12 remote presentation cursor instead. The owned predicted player and delayed
+remote entities intentionally occupy different presentation timelines, so a rendered frame does
+not have one exact authoritative tick.
+
+#### Two clients observing one server
+
+This illustrative instant assumes the live server has completed tick 300:
+
+| Value | Server | Client 1 | Client 2 |
+|---|---:|---:|---:|
+| Shared authoritative tick/world time | `300` / `10.000 s` | Same server truth, not directly visible live | Same server truth, not directly visible live |
+| Client joined near server tick | — | `240` | `285` |
+| Client session time | — | About `2.000 s` | About `0.500 s` |
+| Latest received snapshot | — | ID `29`, server tick `298` | ID `7`, server tick `296` |
+| Latest-known world time | — | `9.933 s` | `9.867 s` |
+| Time since that snapshot arrived | — | `40 ms` | `20 ms` |
+| Basic estimated live server time | — | `9.973 s` | `9.887 s` |
+| Feature 12 target remote cursor | — | About tick `292` / `9.733 s` | About tick `290` / `9.667 s` |
+
+Snapshot IDs `29` and `7` do not conflict: each belongs to its own client session. Server ticks
+`298` and `296` share one server timeline and reveal that Client 2 currently has older knowledge.
+Both estimates can legitimately differ from each other and from live tick 300.
+
+Client 1's owned predicted position may already include inputs newer than the ACK in snapshot 29.
+Name that state with its rollback base and replay range—for example, “snapshot 29/server tick 298,
+ACK 42, replayed inputs 43–44”—rather than assigning it an invented server tick.
+
+#### What reconciliation rewinds
+
+When a newer snapshot arrives, reconciliation rolls the owned predicted state back to that
+authoritative controlled-player sample and replays the remaining unacknowledged input. The word
+*rollback* applies to that state reconstruction, not to every clock:
+
+| Value | Effect of reconciliation |
+|---|---|
+| Authoritative server tick/world time | Never rewound by the client. |
+| Client session time | Never rewound. |
+| Accepted snapshot ID/latest-known server tick | Advance to the newer accepted sample. |
+| Owned predicted state | Rebuilt from the new authoritative base plus the retained input suffix. |
+| Local presentation position | Preserves continuity with a visual-only offset that decays over 100 ms. |
+| Feature 12 remote presentation cursor | Continues monotonically during normal sampling; a documented hard rebase is presentation recovery, not gameplay rollback. |
+
 | Clock or event | Current cadence | Approximate spacing | What happens |
 |---|---:|---:|---|
 | Client loop/render frame | Variable; commonly limited by vsync | 16.67 ms on a 60 Hz display | Poll input, run zero or more due fixed steps, extract presentation, submit rendering. |

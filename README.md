@@ -167,13 +167,16 @@ following camera uses the same presentation position. Remote interpolation remai
 work, so other players still advance from their latest replicated snapshots. The transport
 remains unaware of Dots messages.
 
-The networked ImGui overlay reports the server-assigned client and controlled-entity IDs,
-connection/session state, input ACK and history pressure, rollback/replay timing, corrections,
-the latest authoritative sample, predicted position, presentation position, and smoothing
-offset. Its world-space legend uses white for corrected prediction, orange for the latest
-received authoritative sample, magenta for pre-correction prediction, and purple for replay.
-Controls can inject a `+1` X prediction error or suppress the next three input packets while
-continuing local prediction; injected drops are counted separately from transport loss.
+The networked ImGui overlay separates Runtime, Network, Prediction, and interactive Tools output
+into tabs. It reports the server-assigned client and controlled-entity IDs, connection/session
+state, input ACK and history pressure, rollback/replay timing, corrections, the latest
+authoritative sample, predicted position, presentation position, and smoothing offset. Its
+world-space legend uses white for corrected prediction, orange for the latest received
+authoritative sample, magenta for pre-correction prediction, and purple for replay. Tools can
+inject a `+1` prediction error on X or Y, force `+1` position drift along the last non-zero
+movement direction, or suppress the next three input packets while continuing local prediction.
+Drop progress and a two-second completion receipt prevent short bursts from appearing as a
+flickering warning; injected drops are counted separately from transport loss.
 
 Closing a networked client normally, including Escape or the window close control, requests a
 graceful transport disconnect. The server removes that client's authoritative player and both

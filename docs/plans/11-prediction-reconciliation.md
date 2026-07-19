@@ -188,17 +188,25 @@ Add interactive debug controls:
 
 - Show/hide prediction layers, enabled by default.
 - Show/hide the latest replay path, enabled by default.
-- Inject a client-only `+1` world-unit X prediction error.
+- Inject a client-only `+1` world-unit prediction error on X, on Y, or along the last non-zero
+  movement direction. Fixed axes make direction-independent behavior explicit; the relative mode
+  makes correction behavior easy to compare while steering with any control mode.
 - Drop the next three input packets while continuing prediction. Three packets exceed the
   two-command redundancy window.
 - Clear retained correction visualization.
 
-Show an explicit warning while fault injection is armed and keep injected drops separate from
-transport-reported loss.
+Show active drop progress followed by a two-second completion receipt, disable overlapping drop
+bursts, and keep injected drops separate from transport-reported loss. Organize the observability
+window into Runtime, Network, Prediction, and Tools tabs so prediction debugging does not force
+unrelated metrics or interactive controls into one scrolling column.
 
 ## Clock Drift and Buffer Sizing
 
 Feature 11 observes but does not actively discipline the local input clock.
+
+Feature 11 does not calculate estimated live server time. Prediction is driven by local input
+steps and server input ACKs; reconciliation replays by input sequence; its 100 ms visual
+correction decay uses local steady time and does not adapt to RTT or jitter.
 
 - Track sent-minus-ACK command lead, server pending-input depth, high-water marks, and rolling
   trends.
