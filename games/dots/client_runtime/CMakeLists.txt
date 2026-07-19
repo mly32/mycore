@@ -15,6 +15,7 @@ target_link_libraries(
         MyCore::Math
         MyCore::NetTransport
     PRIVATE
+        Dots::Simulation
         MyCore::Debug
 )
 mycore_configure_target(dots_client_runtime)

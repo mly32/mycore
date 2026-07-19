@@ -3,7 +3,8 @@
 This guide assumes you understand the basic idea of a client and server: the client collects
 input and draws the game, while the server runs shared gameplay. It explains the boundaries
 between Dots protocol messages, the game-neutral transport, authoritative simulation, replicated
-client state, and the prediction and interpolation planned for later features.
+client state, the current movement predictor, and presentation interpolation planned for later
+phases.
 
 ## The short version
 
@@ -20,9 +21,10 @@ transport -> authoritative server simulation -> FullSnapshot bytes -> replicated
                                                                rendering
 ```
 
-The server owns the only gameplay `World`. The client sends movement requests and renders the
-latest state received from the server. It does not currently simulate its player locally in
-networked mode.
+The server owns the only gameplay `World`. The client sends movement requests and currently
+renders the latest state received from the server. `Dots::ClientRuntime` also maintains a
+movement-only controlled-player prediction and reconciles it to validated snapshots, but the
+graphical presentation does not draw that prediction until Feature 11 Phase 11.3.
 
 `dots_client --in-memory` exercises this complete path without opening a socket. Its client and
 server live in one process and communicate through the same abstract transport interface used by
@@ -30,9 +32,10 @@ the native backend. `dots_client --connect 127.0.0.1:27020` instead connects to 
 `dots_server` process through GameNetworkingSockets. The in-memory backend remains FIFO and
 lossless, while the native backend supports realistic outgoing latency and loss simulation.
 
-The current mode has **no client-side prediction, reconciliation, or remote interpolation**.
-That is why its overlay says `NETWORKED FIXED` and why movement advances at the 15 Hz snapshot
-rate even though the server simulates at 30 Hz.
+The runtime now has **client-side movement prediction and reconciliation**, without owning or
+stepping a gameplay `World`. The current app still has no predicted presentation, correction
+smoothing, or remote interpolation. That is why its overlay says `NETWORKED FIXED` and why the
+visible movement advances at the 15 Hz snapshot rate even though the server simulates at 30 Hz.
 
 ## Three different responsibilities
 
@@ -44,7 +47,7 @@ Protocol, transport, and authority answer different questions:
 | Transport | How do byte payloads move between connected endpoints? | `MyCore::NetTransport` |
 | Server runtime and simulation | Which requests are accepted, and what is true now? | `Dots::Server` and `Dots::Simulation` |
 | Replication | Which authoritative state is sent and installed? | `Dots::Replication` |
-| Client runtime | What is this client's session and latest replicated view? | `Dots::ClientRuntime` |
+| Client runtime | What is this client's session, replicated view, and reconciled owned-player prediction? | `Dots::ClientRuntime` |
 | Presentation | How does received state become visible circles and a camera? | `Dots::Presentation` |
 
 Keeping these separate lets protocol tests run without sockets, transport tests run without Dots,
@@ -271,11 +274,12 @@ The current messages behave under impairment like this:
 | `FullSnapshot` at 15 Hz | Unreliable | The client holds its previous view until a newer complete snapshot arrives. |
 | Disconnect | Transport lifecycle | Graceful requests are reported promptly when delivered; abrupt loss is reported after failure detection. |
 
-Because the current networked client has neither prediction nor interpolation, these effects are
-visible directly. Lag postpones local input response. Inputs lost beyond the configured
-redundancy window can make movement briefly use an older desired direction, and lost snapshots
-can make the view hold and then jump when a newer snapshot arrives. This is expected for the
-present feature stage, not evidence that the authoritative simulation itself stopped.
+Because the current networked presentation still draws neither prediction nor interpolation,
+these effects remain visible directly even though the client runtime is predicting internally.
+Lag postpones visible local input response. Inputs lost beyond the configured redundancy window
+can make movement briefly use an older desired direction, and lost snapshots can make the view
+hold and then jump when a newer snapshot arrives. This is expected for the present feature stage,
+not evidence that the authoritative simulation itself stopped.
 
 Use modest impairment to study steady-state behavior and high impairment to study failure paths:
 
@@ -388,14 +392,15 @@ press key -> input travels to server -> later server tick -> snapshot travels ba
 
 The in-memory mode validates the architecture but largely hides that responsiveness problem
 because it has no simulated network delay. Native sessions make the delay visible and allow it
-to be amplified with the fake-lag and fake-loss options. Features 11 and 12 address how the game
-feels under latency and jitter.
+to be amplified with the fake-lag and fake-loss options. The remaining Feature 11 presentation
+work and Feature 12 remote interpolation address how the game feels under latency and jitter.
 
-Some groundwork is already present. Input samples have sequence IDs, protocol-v2 packets provide
-bounded redundancy, the server schedules at most one queued sample per client per tick, snapshots
-acknowledge `last_processed_input`, and inputs report the latest received snapshot. The current
-client does not retain the full prediction history or replay it, and the server does not yet use
-snapshot acknowledgements for delta baselines.
+Input samples have sequence IDs, protocol-v2 packets provide bounded redundancy, the server
+schedules at most one queued sample per client per tick, snapshots acknowledge
+`last_processed_input`, and inputs report the latest received snapshot. The client runtime now
+retains a fixed 256-entry input/result history and atomically replays the unacknowledged suffix
+from each validated authoritative controlled-player sample. The server does not yet use snapshot
+acknowledgements for delta baselines.
 
 ## There is no single “game frame”
 
@@ -692,14 +697,16 @@ rate. Native transport data includes connection state, RTT, packet loss, traffic
 queue depths, and queue delay. In-memory endpoints report connection state but leave measurements
 they cannot provide unavailable instead of implying zero latency or loss.
 
-Additional protocol-level values that may be useful in later work include:
+The client runtime now exposes these protocol/prediction values programmatically, although their
+ImGui rows arrive in the next Feature 11 phase:
 
 - Client session state.
 - Last input sequence sent and last input sequence acknowledged by a snapshot.
 - Number of currently unacknowledged inputs.
-- Applied, stale, and invalid snapshot counts.
+- Replay counts/durations, correction counts/distances, history pressure, server input depth,
+  over-budget replays, and hard resyncs.
 
-Those are replication/runtime statistics, not measurements of a real network.
+These are replication/runtime statistics, not measurements of a real network.
 
 The recommended staging is:
 

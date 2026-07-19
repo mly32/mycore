@@ -1,5 +1,6 @@
 add_library(
     dots_simulation STATIC
+    src/movement.cpp
     src/simulation.cpp
     src/spatial_grid.cpp
     src/world.cpp

@@ -233,14 +233,14 @@ Expose utilization rather than adding a runtime configuration that changes corre
 - [x] Redundancy configuration and schema.
 - [x] Server input queue and snapshot queue-depth telemetry.
 - [x] Protocol, queue, recovery, and overflow-isolation tests.
-- [ ] Checkpoint approved before continuing.
+- [x] Checkpoint approved before continuing.
 
 ### Phase 11.2: Prediction and atomic reconciliation
 
-- [ ] Shared movement functions and 256-entry history.
-- [ ] Immediate prediction and transactional ACK validation.
-- [ ] One-frame scratch replay, hard resync, metrics, and Tracy zone.
-- [ ] Matching, mismatch, stale, delayed, invalid-ACK, and capacity tests.
+- [x] Shared movement functions and 256-entry history.
+- [x] Immediate prediction and transactional ACK validation.
+- [x] One-frame scratch replay, hard resync, metrics, and Tracy zone.
+- [x] Matching, mismatch, stale, delayed, invalid-ACK, and capacity tests.
 - [ ] Checkpoint approved before continuing.
 
 ### Phase 11.3: Local presentation and visual debugging

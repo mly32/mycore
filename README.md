@@ -159,9 +159,13 @@ at 15 Hz. Input redundancy is enabled by default: each packet can repeat up to t
 unacknowledged samples, while the server deduplicates and queues at most 64 samples per client
 and consumes at most one before each authoritative tick. Set
 `[network].input_redundancy = false` to send only the current sample. Only the authoritative
-server—embedded or separate—advances the simulation. The client deliberately has no prediction
-or remote interpolation yet, so movement is less smooth than offline mode. Those behaviors
-arrive in the remaining networking phases. The transport remains unaware of Dots messages.
+server—embedded or separate—advances the gameplay simulation. `Dots::ClientRuntime` now keeps a
+bounded movement-only prediction, validates snapshot acknowledgements, and atomically replays
+unacknowledged input for the controlled player. The graphical client still renders the replicated
+snapshot position until Feature 11's presentation phase connects that predicted state to drawing
+and correction smoothing. Remote interpolation remains Feature 12 work, so the currently visible
+networked movement is still less responsive and smooth than offline mode. The transport remains
+unaware of Dots messages.
 
 Closing a networked client normally, including Escape or the window close control, requests a
 graceful transport disconnect. The server removes that client's authoritative player and both
@@ -272,8 +276,7 @@ frame reaches the screen, see the
 [SDL_GPU rendering and shaders guide](docs/sdl_gpu_rendering_guide.md).
 
 For the corresponding networking model, including protocol versus transport, server authority,
-the current uncompensated networked flow, and the later prediction/reconciliation/interpolation
-model, see the
+the staged prediction/reconciliation path, and the later presentation/interpolation model, see the
 [protocol, transport, and server-authoritative networking guide](docs/server_authoritative_networking_guide.md).
 
 For definitions and troubleshooting help for the Dots overlay, logs, prediction layers,
