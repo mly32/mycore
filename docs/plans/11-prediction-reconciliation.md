@@ -264,15 +264,36 @@ Expose utilization rather than adding a runtime configuration that changes corre
 - [x] Client/session identifiers and prediction overlay.
 - [x] Interactive fault injection and debug tests.
 - [x] Debugging guide updated from planned to implemented.
-- [ ] Checkpoint approved before continuing.
+- [x] Checkpoint approved before continuing.
 
 ### Phase 11.4: Integration and exit validation
 
-- [ ] Deterministic and native 100–200 ms impairment validation.
-- [ ] Redundancy enabled/disabled playability checks.
-- [ ] Full configure, build, and CTest run.
-- [ ] README and networking documentation finalized.
-- [ ] Feature 11 completion approved before Feature 12 implementation.
+- [x] Deterministic and native 100–200 ms impairment validation.
+- [x] Redundancy enabled/disabled playability checks.
+- [x] Full configure, build, and CTest run.
+- [x] README and networking documentation finalized.
+- [x] Feature 11 completion approved before Feature 12 implementation.
+
+### Exit Validation Record
+
+Validated on macOS on 2026-07-19:
+
+- A deterministic test holds six 30 Hz inputs across a 200 ms authority delay, then verifies
+  immediate prediction, suffix replay, bounded history, and zero correction for a matching
+  authoritative result.
+- Two native clients passed visual and metric checks with 50 ms outgoing lag on every endpoint,
+  approximately 100 ms RTT, and redundancy enabled.
+- Two native clients passed the same checks with 100 ms outgoing lag on every endpoint,
+  approximately 200 ms RTT, and redundancy enabled.
+- At approximately 100 ms RTT and 5% outgoing packet loss, two native clients remained playable
+  with redundancy enabled and with redundancy disabled. Both modes kept ACKs and history moving,
+  avoided hard resync, and reconciled without persistent divergence.
+- The final `macos-clang-debug` configure and build succeeded, and all 115 CTest tests passed.
+
+During two visual runs, a client logged one roughly 850 ms render-frame stall, bounded fixed-step
+catch-up, and immediate recovery. It did not stall server authority, grow prediction history
+without bound, cause a hard resync, or persist after the frame; retain the observation for future
+frame-pacing work rather than treating it as a networking failure.
 
 ## Exit Criteria
 

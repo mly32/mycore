@@ -12,9 +12,8 @@ but this guide must clearly distinguish implemented behavior from planned behavi
 This document uses three status labels:
 
 - **Current:** implemented on `feature/11-prediction-reconciliation`, including the approved
-  baseline and the Phase 11.1 through 11.3 protocol, prediction, presentation, and debugging work.
-- **Feature 11 planned:** remaining impairment validation and final documentation work specified
-  in [`plans/11-prediction-reconciliation.md`](plans/11-prediction-reconciliation.md).
+  baseline and approved Phase 11.1 through 11.4 implementation, documentation, deterministic
+  validation, 100–200 ms native latency checks, and redundancy-enabled/disabled loss checks.
 - **Feature 12 planned:** specified in
   [`plans/12-remote-interpolation.md`](plans/12-remote-interpolation.md), but not yet
   implemented.

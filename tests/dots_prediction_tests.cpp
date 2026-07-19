@@ -226,6 +226,40 @@ TEST_CASE("Matching reconciliation discards acknowledged input and replays the r
     CHECK(statistics.maximum_replay_milliseconds >= statistics.latest_replay_milliseconds);
 }
 
+TEST_CASE("Prediction remains immediate across a deterministic 200 ms authority delay",
+          "[dots][prediction][reconciliation][impairment]") {
+    ManualEndpoint endpoint;
+    dots::client_runtime::Runtime client{endpoint};
+    const mycore::net_transport::ConnectionHandle connection{22};
+    const auto base = clock_time(10s);
+    complete_handshake(endpoint, client, connection);
+
+    // Six 30 Hz input ticks represent 200 ms without a newer authoritative snapshot.
+    for (std::uint32_t tick = 0; tick < 6; ++tick) {
+        REQUIRE(client.send_input(tick, {1.0F, 0.0F}) ==
+                dots::client_runtime::InputSendResult::Sent);
+    }
+    check_position(client.predicted_position(), 1.2F, 0.0F);
+    const auto* stale_authority = client.world().find(kControlledEntity);
+    REQUIRE(stale_authority != nullptr);
+    CHECK(stale_authority->position_x == Catch::Approx(0.0F));
+
+    // Authority has consumed the first three samples. Replaying the remaining suffix must
+    // reproduce the already-visible prediction without generating a correction.
+    push_snapshot(
+        endpoint, connection, snapshot(1, 3, dots::protocol::InputSequenceId{2}, {0.6F, 0.0F}));
+    REQUIRE_FALSE(client.process_events(base + 200ms).has_value());
+
+    check_position(client.predicted_position(), 1.2F, 0.0F);
+    const auto statistics = client.prediction_statistics(base + 200ms);
+    CHECK(statistics.last_input_acknowledged == dots::protocol::InputSequenceId{2});
+    CHECK(statistics.unacknowledged_input_count == 3);
+    CHECK(statistics.history_count == 3);
+    CHECK(statistics.latest_replay_count == 3);
+    CHECK(statistics.nonzero_correction_count == 0);
+    CHECK(statistics.latest_correction_distance == Catch::Approx(0.0F));
+}
+
 TEST_CASE("Misprediction corrects simulation immediately and records its replay path",
           "[dots][prediction][reconciliation]") {
     ManualEndpoint endpoint;
