@@ -97,7 +97,7 @@ const std::string& NetworkAddress::value() const noexcept {
     return value_;
 }
 
-std::uint16_t NetworkAddress::port() const noexcept {
+std::uint16_t NetworkAddress::port() const {
     const auto native = parse_native_address(value_);
     return native ? native->m_port : 0;
 }

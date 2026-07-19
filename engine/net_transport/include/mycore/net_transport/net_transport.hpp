@@ -70,7 +70,7 @@ public:
     [[nodiscard]] static std::optional<NetworkAddress> parse(std::string_view value);
 
     [[nodiscard]] const std::string& value() const noexcept;
-    [[nodiscard]] std::uint16_t port() const noexcept;
+    [[nodiscard]] std::uint16_t port() const;
 
 private:
     explicit NetworkAddress(std::string value);

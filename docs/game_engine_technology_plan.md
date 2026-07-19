@@ -202,15 +202,16 @@ Reference:
 ### Suggested initial presets
 
 ```text
-windows-msvc-debug
-windows-msvc-release
-windows-clangcl-asan
+windows-msvc-x64-debug
+windows-msvc-x64-release
+windows-clangcl-x64-asan
 linux-clang-debug
+linux-clang-release
 linux-clang-asan
 linux-clang-tsan
-linux-gcc-release
 linux-server-release
 macos-clang-debug
+macos-clang-release
 ```
 
 Use Ninja in CI and for command-line development. IDEs can consume the CMake project and presets directly.

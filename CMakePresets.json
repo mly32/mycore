@@ -32,6 +32,20 @@
       }
     },
     {
+      "name": "macos-clang-release",
+      "displayName": "macOS Clang Release",
+      "inherits": "base",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_COMPILER": "clang++"
+      }
+    },
+    {
       "name": "linux-clang-debug",
       "displayName": "Linux Clang Debug",
       "inherits": "base",
@@ -46,8 +60,8 @@
       }
     },
     {
-      "name": "linux-gcc-release",
-      "displayName": "Linux GCC Release",
+      "name": "linux-clang-release",
+      "displayName": "Linux Clang Release",
       "inherits": "base",
       "condition": {
         "type": "equals",
@@ -55,14 +69,13 @@
         "rhs": "Linux"
       },
       "cacheVariables": {
-        "BUILD_TESTING": "OFF",
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_CXX_COMPILER": "g++"
+        "CMAKE_CXX_COMPILER": "clang++"
       }
     },
     {
-      "name": "windows-msvc-debug",
-      "displayName": "Windows MSVC Debug",
+      "name": "windows-msvc-x64-debug",
+      "displayName": "Windows MSVC x64 Debug",
       "inherits": "base",
       "condition": {
         "type": "equals",
@@ -74,6 +87,21 @@
         "CMAKE_CXX_COMPILER": "cl",
         "VCPKG_TARGET_TRIPLET": "x64-windows-static-md"
       }
+    },
+    {
+      "name": "windows-msvc-x64-release",
+      "displayName": "Windows MSVC x64 Release",
+      "inherits": "base",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_COMPILER": "cl",
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static-md"
+      }
     }
   ],
   "buildPresets": [
@@ -82,22 +110,37 @@
       "configurePreset": "macos-clang-debug"
     },
     {
+      "name": "macos-clang-release",
+      "configurePreset": "macos-clang-release"
+    },
+    {
       "name": "linux-clang-debug",
       "configurePreset": "linux-clang-debug"
     },
     {
-      "name": "linux-gcc-release",
-      "configurePreset": "linux-gcc-release"
+      "name": "linux-clang-release",
+      "configurePreset": "linux-clang-release"
     },
     {
-      "name": "windows-msvc-debug",
-      "configurePreset": "windows-msvc-debug"
+      "name": "windows-msvc-x64-debug",
+      "configurePreset": "windows-msvc-x64-debug"
+    },
+    {
+      "name": "windows-msvc-x64-release",
+      "configurePreset": "windows-msvc-x64-release"
     }
   ],
   "testPresets": [
     {
       "name": "macos-clang-debug",
       "configurePreset": "macos-clang-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "macos-clang-release",
+      "configurePreset": "macos-clang-release",
       "output": {
         "outputOnFailure": true
       }
@@ -110,8 +153,22 @@
       }
     },
     {
-      "name": "windows-msvc-debug",
-      "configurePreset": "windows-msvc-debug",
+      "name": "linux-clang-release",
+      "configurePreset": "linux-clang-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-msvc-x64-debug",
+      "configurePreset": "windows-msvc-x64-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-msvc-x64-release",
+      "configurePreset": "windows-msvc-x64-release",
       "output": {
         "outputOnFailure": true
       }

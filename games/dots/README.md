@@ -1,13 +1,15 @@
 # Dots
 
-Dots is MyCore's first complete game vertical slice: an Agar.io-like game used to drive the
-engine through concrete simulation, rendering, input, networking, observability, and packaging
-requirements.
+Dots is MyCore's first complete game vertical slice: an Agar.io-like game that drives concrete
+requirements for deterministic simulation, rendering, input, networking, replication,
+observability, and packaging.
 
-## Build and play
+Commands below run from the repository root and use the macOS preset as an example. See the
+[build guide](../../docs/building.md) for other platforms.
 
-Configure and build MyCore with the preset for your host platform, as described in the
-[repository README](../../README.md):
+## Run modes
+
+Build the client and start a local offline simulation:
 
 ```bash
 cmake --preset macos-clang-debug
@@ -15,51 +17,80 @@ cmake --build --preset macos-clang-debug --target dots_client
 ./build/macos-clang-debug/bin/dots_client
 ```
 
-The default client runs a local offline simulation. Pass `--in-memory` to run an embedded
-authoritative server and present replicated snapshots through the deterministic in-memory
-transport:
+Run an embedded authoritative server through the deterministic in-memory transport:
 
 ```bash
 ./build/macos-clang-debug/bin/dots_client --in-memory
 ```
 
-The current `main` branch does not connect separate client and server processes. The standalone
-`dots_server` exercises the headless authoritative loop, while native transport is developed as
-the next networking slice.
+Run a native server and connect a separate client through GameNetworkingSockets:
+
+```bash
+./build/macos-clang-debug/bin/dots_server --listen 127.0.0.1:27020
+./build/macos-clang-debug/bin/dots_client --connect 127.0.0.1:27020
+```
+
+Launch one server and multiple clients for local testing:
+
+```bash
+python3 games/dots/tools/dots_session.py \
+    --build-dir build/macos-clang-debug \
+    --clients 2 \
+    --client-config games/dots/config/dots-client.toml
+```
+
+The launcher waits for server readiness, prefixes child output, propagates failures, and cleans
+up every process. Add `--fake-lag-ms` or `--fake-loss-percent` to a native executable or the
+launcher to exercise impaired connections. Run an executable with `--help` for its complete CLI.
 
 | Executable | Purpose |
 |---|---|
-| `dots_client` | Playable SDL_GPU client with offline and embedded-authority modes |
-| `dots_server` | Headless authoritative 30 Hz simulation process |
+| `dots_client` | SDL_GPU client with offline, embedded-authority, and native modes |
+| `dots_server` | Headless authoritative 30 Hz native server |
 | `dots_bot` | Foundation executable for future load-testing clients |
+
+Networked clients send input at 30 Hz and render authoritative snapshots at 15 Hz. Prediction
+and remote interpolation are intentionally deferred, so networked movement is less smooth than
+offline play. The [networking guide](../../docs/server_authoritative_networking_guide.md) covers
+authority, reliability, connection lifecycle, impairment, and the planned compensation model.
 
 ## Controls and configuration
 
-The default hybrid input mode uses WASD or the arrow keys while they are held and otherwise
-moves toward the mouse cursor. Press Escape to quit. Input, window, rendering, simulation, debug,
-and color settings are documented in [`config/dots-client.toml`](config/dots-client.toml) and its
-checked-in JSON schema.
+The default hybrid mode uses WASD or the arrow keys while held and otherwise moves toward the
+mouse cursor. Press Escape to quit. Mouse steering pauses while the debug panel owns the mouse.
 
-Load a configuration explicitly with:
+[`config/dots-client.toml`](config/dots-client.toml) documents window, network, input, simulation,
+view, debug, and color settings. Its `#:schema` header connects the checked-in JSON schema for
+editor completion and early validation.
+
+Configuration precedence is built-in defaults, then `dots-client.toml` in the working directory
+when present. `--config <path>` replaces that automatic path. CLI mode flags such as `--offline`,
+`--in-memory`, and `--connect` override the configured network mode.
 
 ```bash
 ./build/macos-clang-debug/bin/dots_client \
     --config games/dots/config/dots-client.toml
 ```
 
-Run `dots_client --help` or `dots_server --help` for the complete command-line interface.
+## Runtime visibility
+
+The in-game debug panel reports simulation, frame, replication, and transport health. Native
+connections expose RTT, loss, rates, and queues; unavailable in-memory measurements are labeled
+rather than displayed as zero. Logs use owner-qualified categories such as `dots.client.session`
+and `dots.server.session`, and on-demand Tracy zones cover the main client frame stages.
+
+The [rendering guide](../../docs/sdl_gpu_rendering_guide.md) explains how Dots presentation data
+reaches SDL_GPU through MyCore's renderer.
 
 ## Code ownership
 
-- `simulation/` owns deterministic game rules and stays independent of SDL, rendering,
-  transport, and presentation.
+- `simulation/` owns deterministic rules and remains independent of SDL, rendering, transport,
+  and presentation.
 - `protocol/` owns Dots wire messages and binary encoding.
-- `replication/`, `server/`, and `client_runtime/` own authoritative session behavior and
-  replicated client state.
+- `replication/`, `server/`, and `client_runtime/` own authoritative sessions and replicated
+  client state.
 - `presentation/` maps Dots state into game-neutral rendering data.
-- `apps/` contains the Dots executable composition roots.
+- `apps/` contains the executable composition roots.
 - `config/` contains the sample client configuration and editor schema.
 
 Reusable facilities live under [`engine/`](../../engine/); Dots-specific behavior remains here.
-See the [server-authoritative networking guide](../../docs/server_authoritative_networking_guide.md)
-and [SDL_GPU rendering guide](../../docs/sdl_gpu_rendering_guide.md) for deeper design context.
