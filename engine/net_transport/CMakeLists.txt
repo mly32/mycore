@@ -16,6 +16,6 @@ target_include_directories(
 target_link_libraries(
     mycore_net_transport
     PUBLIC MyCore::Core
-    PRIVATE GameNetworkingSockets::GameNetworkingSockets
+    PRIVATE GameNetworkingSockets::static
 )
 mycore_configure_target(mycore_net_transport)
