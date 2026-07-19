@@ -85,7 +85,9 @@ ctest --preset macos-clang-debug
 ```
 
 Linux and Windows use the corresponding host presets from `CMakePresets.json`, such as
-`linux-clang-debug` or `windows-msvc-debug`.
+`linux-clang-debug` or `windows-msvc-debug`. The Windows preset targets x64 and uses vcpkg's
+`x64-windows-static-md` triplet so third-party libraries are linked statically while the MSVC
+runtime remains dynamically linked.
 
 Build one target instead of the entire project:
 
