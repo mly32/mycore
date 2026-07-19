@@ -100,6 +100,9 @@ cmake --build --preset macos-clang-debug
 
 ### Run Dots
 
+See the [Dots game README](games/dots/README.md) for its modes, controls, configuration, and code
+ownership.
+
 All runnable targets are placed under `build/<preset>/bin`. `dots_client` runs a playable
 offline SDL_GPU client by default and can also embed the authoritative server through the
 in-memory transport. `dots_server` runs the headless authoritative heartbeat; the bot remains a
@@ -254,3 +257,13 @@ preset overrides in the ignored `CMakeUserPresets.json`.
 - [Feature 07 debug observability plan](docs/plans/07-debug-observability.md)
 - [Feature 08 protocol binary codec plan](docs/plans/08-protocol-binary-codec.md)
 - [Feature 09 in-memory transport integration plan](docs/plans/09-inmemory-transport-integration.md)
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow
+and project boundaries. Please report security issues according to [SECURITY.md](SECURITY.md).
+
+## License
+
+MyCore is available under the [MIT License](LICENSE). Third-party dependencies retain their
+respective licenses.
