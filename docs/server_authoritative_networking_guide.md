@@ -454,6 +454,8 @@ input-prediction or smoothing clock.
 | Local correction smoothing | Current, Feature 11 | Local steady-clock age of a fixed 100 ms visual offset. | No. |
 | Remote presentation | Current baseline | Newest replicated sample with no interpolation. | No. |
 | Remote interpolation | Planned, Feature 12 | Fractional cursor in historical server-tick coordinates, targeting six ticks behind the newest known snapshot. | No. |
+| Complete-World rollback | Planned, Feature 14 | Authoritative checkpoint plus retained command replay and recorded remote assumptions. | No. |
+| Adaptive command buffer | Planned, Feature 14 | Reported server input-queue depth controls a bounded client command cadence. | No. |
 | Smooth world-time UI or deadline display | Deferred | A filtered mapping from local steady time to estimated server tick. | Potentially. |
 | Server-side rewind/lag compensation | Deferred | Server history plus a validated, bounded mapping of client action time into server ticks. | It would need a clock-mapping policy, but never trust the client's claim directly. |
 
@@ -795,14 +797,14 @@ The critical rule is:
 Gradually moving gameplay state toward the server result would make later predictions start
 from knowingly false state and compound the error.
 
-Initial prediction should cover only owned-player movement. Eating, mass changes, spawning,
-death, and collisions involving other players remain visibly confirmed by snapshots until there
-is a demonstrated need for more speculation.
+Feature 11 prediction covers only owned-player movement. Eating, mass changes, spawning, death,
+and collisions involving other players remain visibly confirmed by snapshots until Feature 14
+tests those mechanics against a deterministic authoritative baseline.
 
 ### Remote players: buffer and interpolate
 
-The client cannot predict another human's future input. Remote players therefore use a
-different strategy: render slightly in the past between two known snapshots.
+The client cannot know another human's future input. Feature 12 therefore uses a different
+strategy: render slightly in the past between two known snapshots.
 
 ```text
 received snapshots:        S10 -------- S11 -------- S12
@@ -814,9 +816,11 @@ This adds a small intentional presentation delay but provides two known endpoint
 motion. A later adaptive buffer can grow or shrink based on measured jitter. Remote gameplay
 state is never invented by running guessed remote input.
 
-The owned player is therefore usually rendered from current predicted state, while remote
+Through Feature 12, the owned player is rendered from current predicted state while remote
 players are rendered from delayed interpolated state. Both are corrected from the same stream of
-authoritative snapshots.
+authoritative snapshots. Feature 14 later makes this policy selectable: it may advance remote
+players using their last known level-triggered movement, records that assumption, never invents
+remote edge actions, and retains interpolation as the correctness baseline and fallback.
 
 ### What “latency compensation” means here
 
@@ -826,11 +830,30 @@ The phrase is broad. For this project, the immediate roadmap means:
 - **Reconciliation** against server acknowledgements and authoritative snapshots.
 - **Presentation smoothing** for visible local corrections.
 - **Remote interpolation** for other players under snapshot delay and jitter.
+- **Selectable complete-World rollback** after the authoritative mechanics baseline exists.
 
 In some action games, “lag compensation” specifically means the server rewinds past world state
 when evaluating a shot. Dots currently has no such mechanic planned. Prediction and
 interpolation solve client responsiveness and smoothness; any future server rewind would be a
 separate, gameplay-specific authority policy.
+
+### Complete-World rollback direction — Features 13 and 14
+
+Feature 13 first adds deterministic authoritative absorption, defeat, spectating, and respawn.
+Those results remain unpredicted so the project has a trustworthy baseline for contested
+outcomes and session transitions.
+
+Feature 14 then restores a complete Dots World from an authoritative checkpoint and atomically
+replays retained commands. The selectable set defaults to every replicated entity, but
+owner-and-interaction-closure and owner-only modes provide cost and comparison controls. Reversible
+World state may be predicted; durable consequences such as entering spectator mode, respawn,
+score, and achievements remain confirmed-only. The kernel completes replay in the frame that
+accepts the snapshot unless measured workloads justify a separately reviewed multi-frame design.
+
+The canonical checkpoint, replay, predicted-entity, cue, adaptive-buffer, and recovery contracts
+are in [`rollback_prediction_design.md`](rollback_prediction_design.md). The phased implementation
+is in [`plans/13-authoritative-interactions-spectating.md`](plans/13-authoritative-interactions-spectating.md)
+and [`plans/14-selectable-world-rollback.md`](plans/14-selectable-world-rollback.md).
 
 ## How later replication work fits
 
@@ -842,8 +865,10 @@ change what is sent without changing who owns truth:
 | 10: native transport | Cross-process connections and network impairment testing | Same messages and authority over a real network. |
 | 11: prediction/reconciliation | Input history, replay, and local correction smoothing | Owned movement responds immediately. |
 | 12: remote interpolation | Buffered presentation snapshots | Other players move smoothly under jitter. |
-| 13: interest management | Per-client area-of-interest filtering | Clients receive only relevant authoritative entities. |
-| 14: delta snapshots | Baselines, field masks, quantization, and byte budgets | Snapshots describe changes rather than replacing everything on the wire. |
+| 13: authoritative interactions | Absorption, defeat, spectating, and optional respawn | Contested and durable outcomes gain a server-owned baseline. |
+| 14: selectable World rollback | Complete checkpoints, structural replay, predicted lifecycle, and adaptive command timing | Reversible gameplay can respond immediately without making session consequences speculative. |
+| 15: interest management | Per-client area-of-interest filtering | Clients receive only relevant authoritative entities; prediction membership follows coherent AOI entry/exit. |
+| 16: delta snapshots | Baselines, field masks, quantization, and byte budgets | Snapshots describe changes rather than replacing everything on the wire. |
 
 A delta snapshot is still authoritative. The client reconstructs a newer replicated view from a
 known baseline and validated changes. Missing or reordered data must cause recovery from a newer
@@ -876,6 +901,8 @@ The recommended staging is:
 | 10: native transport | Snapshot age/rate plus connection state, RTT, packet loss, traffic rates, outbound queues, and queue delay. |
 | 11: prediction/reconciliation | Unacknowledged input count, replay count, correction distance, correction frequency, and presentation smoothing offset. |
 | 12: remote interpolation | Snapshot-buffer fill, interpolation delay, measured jitter, late snapshots, and extrapolation/hold events. |
+| 13: authoritative interactions | Session mode, owned pieces, confirmed killer, defeat/respawn ticks, and authoritative absorption/respawn results. |
+| 14: selectable World rollback | Prediction mode, complete replay range/cost, structural divergence, spawn/cue lifecycle, command-buffer control, and state-layer overlays. |
 
 Genuine **network transport stats come from GameNetworkingSockets**. They remain labeled
 separately from replication health. One-way latency should not be inferred by simply halving RTT
@@ -892,7 +919,8 @@ because clocks and routes can differ.
 - Malformed peer data cannot corrupt trusted state or stop unrelated sessions.
 - Prediction may speculate locally, but reconciliation always accepts server truth.
 - Gameplay correction is immediate; visual correction may be smoothed.
-- Remote players are interpolated from known samples, not predicted from guessed input.
+- Feature 12 remotes are interpolated from known samples. Feature 14 may predict recorded held
+  movement, but never guesses remote edge actions and always exposes the assumption.
 - Presentation and replicated state are client views and never become server authority.
 
 ## Where to read the implementation

@@ -10,6 +10,12 @@ Feature 11 also adds bounded input redundancy, correction/replay observability, 
 fault injection so prediction behavior can be explained instead of inferred from motion alone.
 Remote-entity interpolation remains Feature 12 work.
 
+This feature intentionally remains the position-only baseline. The planned complete-World
+replacement and its invariants live in
+[`../rollback_prediction_design.md`](../rollback_prediction_design.md) and
+[`14-selectable-world-rollback.md`](14-selectable-world-rollback.md); they do not expand this
+feature's acceptance criteria.
+
 ## State and Ownership Model
 
 Keep these client-side values distinct:

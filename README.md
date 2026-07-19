@@ -154,6 +154,11 @@ startup deadline; high loss can therefore make individual clients fail to join. 
 [`docs/server_authoritative_networking_guide.md`](docs/server_authoritative_networking_guide.md)
 for the detailed lag, loss, reliability, and lifecycle mental model.
 
+The durable contracts for complete checkpoints, selectable prediction sets, structural replay,
+speculative consequences, adaptive command timing, and same-frame recovery are documented in
+[`docs/rollback_prediction_design.md`](docs/rollback_prediction_design.md). These are planned
+Feature 14 contracts, not a description of the current Feature 11 runtime.
+
 Networked clients send protocol-v2 input packets at 30 Hz and render full replicated snapshots
 at 15 Hz. Input redundancy is enabled by default: each packet can repeat up to two prior
 unacknowledged samples, while the server deduplicates and queues at most 64 samples per client
@@ -322,3 +327,6 @@ preset overrides in the ignored `CMakeUserPresets.json`.
 - [Feature 10 GameNetworkingSockets transport plan](docs/plans/10-gamenetworkingsockets-transport.md)
 - [Feature 11 prediction and reconciliation plan](docs/plans/11-prediction-reconciliation.md)
 - [Feature 12 remote interpolation plan](docs/plans/12-remote-interpolation.md)
+- [Feature 13 authoritative interactions and spectating plan](docs/plans/13-authoritative-interactions-spectating.md)
+- [Feature 14 selectable World rollback plan](docs/plans/14-selectable-world-rollback.md)
+- [Rollback prediction design contract](docs/rollback_prediction_design.md)

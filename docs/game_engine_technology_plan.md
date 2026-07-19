@@ -844,11 +844,18 @@ Later, add:
 
 ## 10.3 Remote entities
 
-Do not predict remote players.
+For the initial responsive client, do not predict remote players.
 
 Buffer snapshots and interpolate them with a delay of roughly two or three snapshot intervals.
 
 Make this buffer adaptive later using measured jitter.
+
+After that known-endpoint baseline is working, Feature 14 deliberately tests selectable
+complete-World rollback. Its default predicts every replicated entity using recorded held
+movement and no invented edge actions, while owner-only mode retains interpolation. The
+Dots-owned contracts and consequence matrix are canonical in
+[`rollback_prediction_design.md`](rollback_prediction_design.md); do not extract them to an
+engine library until another game demonstrates the same abstraction.
 
 ## 10.4 Numerical model
 
@@ -1535,7 +1542,7 @@ These systems align directly with the learning goals:
 | Dots snapshot format | Central networking research |
 | Delta and baseline system | Central replication research |
 | Interest management | Required for 1,000 clients |
-| Prediction and reconciliation | Primary gameplay networking goal |
+| Dots prediction and reconciliation | Primary gameplay networking goal; complete rollback stays Dots-owned until a second game proves an engine contract |
 | Interpolation | Client presentation architecture |
 | Entity/component storage | Useful controlled design experiment |
 | Replay format | Debugging and regression infrastructure |

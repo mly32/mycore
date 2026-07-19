@@ -10,6 +10,12 @@ Feature 12 owns the historical presentation buffer and its delayed render timeli
 change server authority, local prediction, the local input-send clock, or replicated gameplay
 state.
 
+Feature 14 may later predict remote entities from explicitly recorded held-input assumptions.
+This feature still establishes the known-endpoint interpolation fallback, comparison view, and
+correctness baseline described by
+[`../rollback_prediction_design.md`](../rollback_prediction_design.md); it never silently guesses
+remote actions.
+
 ## Feature 11 Boundary
 
 Feature 11 provides:

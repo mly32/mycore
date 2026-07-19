@@ -18,6 +18,11 @@ This document uses three status labels:
 - **Feature 12 planned:** specified in
   [`plans/12-remote-interpolation.md`](plans/12-remote-interpolation.md), but not yet
   implemented.
+- **Feature 13 planned:** authoritative interactions, spectating, and Gameplay output specified
+  in [`plans/13-authoritative-interactions-spectating.md`](plans/13-authoritative-interactions-spectating.md).
+- **Feature 14 planned:** complete selectable rollback and Rollback output specified in
+  [`plans/14-selectable-world-rollback.md`](plans/14-selectable-world-rollback.md) and
+  [`rollback_prediction_design.md`](rollback_prediction_design.md).
 
 When a feature phase is approved, change its entries to **Current** as part of that phase's
 documentation update.
@@ -31,10 +36,12 @@ Networking debug output is useful only when the state being measured is named pr
 | Authoritative world | The complete gameplay `simulation::World` stepped by the server. | Server only |
 | Authoritative sample | State copied from the server into a snapshot. It is historical when the client receives it. | Protocol/replication |
 | Replicated world | The newest validated authoritative sample installed by a client. | Client runtime |
-| Predicted state | Controlled-player state advanced locally from owned input. | Client runtime |
+| Predicted state | Feature 11 controlled-player state advanced locally from owned input. | Client runtime |
+| Predicted World | Feature 14 complete gameplay state restored from a checkpoint and replayed through selected entities and recorded assumptions. | Planned client rollback kernel |
 | Pre-correction state | Prediction immediately before a nonzero reconciliation correction. | Client runtime debug history |
 | Presentation state | The transient positions and geometry submitted for drawing. | Dots presentation/client app |
 | Interpolated remote state | Presentation sampled between two known remote snapshot states. | Feature 12 presentation |
+| Confirmed consequence | A durable session/gameplay result shown only after authority reports it, even if related reversible World state was predicted. | Server decision/client display |
 
 A native client cannot observe the server's live current position. A client debug ghost labeled
 **authoritative** must mean **latest received authoritative sample** and show its snapshot age.
@@ -52,6 +59,7 @@ these labels consistently in overlays, logs, and non-debug UI:
 | `Latest-known world time` | Time encoded by the newest snapshot this client has accepted. Exact but historical. | Server ticks are comparable; freshness is per-client. |
 | `Estimated live server time` | Latest server-tick anchor advanced by local elapsed time, optionally with a filtered one-way-delay estimate. | Approximate; clients can disagree. |
 | `Remote presentation time` | Feature 12 fractional server-tick cursor used to render remotes about 200 ms behind newest known authority. | Comparable as a server-tick coordinate, but independently buffered per client. |
+| `Predicted World tick` | Feature 14 authoritative checkpoint tick plus the count of replayed unacknowledged commands. It labels speculative simulation state, not server “now.” | Comparable only with its stated authoritative base and replay range. |
 | `Snapshot ID` | Per-client snapshot ordering ID. | No; never interpret it as elapsed time. |
 | `Owned prediction extent` | Rollback snapshot/server tick and ACK plus the replayed unacknowledged input range. | Not a single time value. |
 
@@ -76,6 +84,17 @@ uses server ticks and targets `newest received tick - 6`. It advances at 100% sp
 `±0.25`-tick deadband and otherwise uses
 `clamp(1 + 0.02 * tick_error, 0.95, 1.05)`. The target remains 200 ms; RTT and jitter metrics are
 observations, not inputs to an adaptive delay policy in Feature 12.
+
+Feature 14's planned adaptive command buffer is also not a live-server-time estimator. It targets
+two queued server commands, filters reported queue depth with EWMA `alpha = 1/8`, leaves a
+`1.5..2.5` deadband, and applies only this bounded client cadence correction:
+
+```text
+rate scale = clamp(1 + 0.025 * (2 - smoothed depth), 0.95, 1.05)
+```
+
+The overlay must keep queue depth, cadence scale, predicted tick, estimated live server time, and
+remote presentation time as separate values. None changes the authoritative 30 Hz server tick.
 
 Do not label either mechanism `lookahead smoothing`: owned prediction advances known local intent,
 while remote interpolation intentionally renders older known authority. The networking guide's
@@ -320,6 +339,59 @@ different problems. Feature 12 keeps a delayed remote cursor centered in known s
 future tick-synchronization feature would map local input ticks to estimated server ticks and
 adjust command slack.
 
+## Authoritative Gameplay Output — Feature 13 Planned
+
+Feature 13 adds a separate **Gameplay** tab. It reports server-confirmed lifecycle rather than
+extending movement prediction metrics:
+
+| Field | Meaning |
+|---|---|
+| Client/session | Server-assigned client ID and confirmed `Playing` or `Spectating` mode. |
+| Owned pieces | Confirmed owned-piece count plus primary entity ID, if any. |
+| Killer/follow | Confirmed killer or current follow entity; absence must be explicit. |
+| Defeat tick | Server tick at which the last authoritative piece was absorbed. |
+| Respawn available | Server deadline tick and a presentation countdown. The countdown never decides eligibility. |
+| Latest absorption | Authoritative absorber, victim, transferred mass, and tick for an event involving this session. |
+| Respawn request | Latest request input sequence and confirmed accepted/rejected result. An input ACK alone is not success. |
+
+Spectator camera mode, free-camera position, zoom, and follow-target availability are presentation
+state. They do not imply control of an authoritative entity.
+
+## Complete Rollback Output — Feature 14 Planned
+
+Feature 14 adds a separate **Rollback** tab while retaining Feature 11 Prediction and Feature 12
+interpolation diagnostics for comparison.
+
+| Field | Meaning |
+|---|---|
+| Prediction mode | `AllReplicated`, `OwnerAndInteractionClosure`, or `OwnerOnly`, plus predicted/interpolated/confirmed entity counts. |
+| Replay coordinates | Authoritative snapshot/tick, predicted tick, input ACK, and exact replay sequence range. |
+| Prediction lead | Predicted tick minus its stated authoritative base tick. This replay extent is not RTT, snapshot age, or estimated live server time. |
+| History | Occupied frames out of 64, replay tick count, checkpoint bytes, and hard-resync reason. |
+| Replay duration | Latest, p50, p95, p99, and maximum same-frame replay time; 2 ms is a warning, not a partial-replay cutoff. |
+| Continuous divergence | Position, velocity, mass, radius, and deadline corrections that preserve topology. |
+| Structural divergence | Entity create/remove, ownership, component-set, split, merge, and elimination corrections. |
+| Predicted spawns | Pending, matched, rejected, authority-only, and ambiguous prediction-key counts. Ambiguity causes hard recovery. |
+| Cue lifecycle | Resimulated, deduplicated, canceled, and confirmed-only cue counts. |
+| Command buffer | Target/latest/EWMA server queue depth, cadence scale, low/high events, and accumulated phase correction. |
+| Remote assumption | Source snapshot and tick range over which last-known remote movement was held; remote edge actions remain zero. |
+
+The selected-entity world overlay draws five independently labeled layers: latest-known
+authoritative, predicted, Feature 12 interpolated, pre-correction, and smoothed presentation.
+Structural markers identify speculative spawns, removals, matches, and rejections. A layer is
+hidden or marked unavailable when its state source does not exist; zero is not used as a
+placeholder.
+
+Fault tools cover position or mass divergence, forced split rejection, spawn-classification
+mismatch, action-packet suppression, and remote held-input divergence. Each fault has a durable
+armed/triggered/completed receipt and remains separate from measured transport loss.
+
+Same-frame replay is the planned baseline. Phase 14.6 records entity count, replay ticks,
+checkpoint bytes, topology changes, RTT/jitter/loss grouping, client-frame impact, and replay
+duration. Multi-frame resimulation is not shown as an available mode unless a separate reviewed
+implementation exists; the decision thresholds and atomic-commit invariants live in
+[`rollback_prediction_design.md`](rollback_prediction_design.md#deferred-multi-frame-resimulation-research).
+
 ## Troubleshooting Patterns
 
 ### High RTT but fresh snapshots
@@ -368,6 +440,31 @@ The newest-snapshot distance is persistently outside its target. This may indica
 clock drift, bursty delivery, or insufficient fixed interpolation delay. Use measured data before
 adding adaptive delay.
 
+### Structural corrections repeat — Feature 14 planned
+
+Compare predicted-spawn classification, held remote assumptions, checkpoint configuration, and
+the first topology tick that differs. Position smoothing cannot repair an entity create/remove,
+ownership, split, merge, or deadline mismatch.
+
+### Hard resyncs rise — Feature 14 planned
+
+Group reasons by missing history, capacity exhaustion, incompatible checkpoint, and ambiguous
+prediction key. Then compare snapshot age, ACK progress, history occupancy, and configuration
+validation. A hard resync is correct recovery, but a repeated reason is a defect or an undersized
+bound that needs evidence.
+
+### Command cadence stays clamped — Feature 14 planned
+
+Compare latest and EWMA server queue depth with packet loss, input ACK progress, and empty/high
+events. A persistent clamp may reveal clock drift or delivery pressure; it does not mean client
+session time or the server tick rate changed.
+
+### Same-frame replay exceeds its budget — Feature 14 planned
+
+Correlate replay duration with replay ticks, predicted entity count, checkpoint bytes, and
+structural changes. A 2 ms warning does not permit partial state. Use the documented p99 and
+frame-overrun research thresholds before proposing a multi-frame scheduler.
+
 ## Impairment Testing
 
 Native clients and the session launcher accept outgoing fake lag and loss. Lag is one-way per
@@ -382,6 +479,8 @@ Use impairment to answer a specific question:
 - Redundancy: compare the same drop schedule with redundancy enabled and disabled.
 - Remote interpolation: vary loss/jitter schedules and inspect known endpoints, buffer coverage,
   cursor rate, and holds.
+- Complete rollback: after Feature 14 lands, compare prediction-set modes and inspect replay,
+  structural divergence, command-buffer, and state-layer output under identical impairment.
 
 Random transport loss is useful for play testing. Deterministic tests should use controlled
 arrival schedules so correction and buffer metrics have exact expected values.
