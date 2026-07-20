@@ -127,7 +127,7 @@ cause unbounded allocation or parsing work.
 
 Current full-world snapshots are allowed to exceed the 1,200-byte target while remaining under
 the hard limit. The in-memory transport does not model a network MTU. Interest management,
-delta encoding, quantization, prioritization, and per-client byte budgets in Features 13–14 will
+delta encoding, quantization, prioritization, and per-client byte budgets in Features 15–16 will
 make ordinary native-network snapshots fit the preferred budget.
 
 ### IDs belong to domains

@@ -11,6 +11,10 @@
 - [C++ style guide](cpp_style_guide.md): conventions, ownership boundaries, and API design.
 - [Server-authoritative networking](server_authoritative_networking_guide.md): protocol,
   transport, authority, replication, impairment, and the prediction/interpolation model.
+- [Debugging and observability](debugging_and_observability.md): overlay fields, metric meanings,
+  debug visuals, fault controls, and troubleshooting.
+- [Rollback prediction design](rollback_prediction_design.md): durable complete-checkpoint,
+  selectable-prediction, consequence, timing, and recovery contracts.
 - [SDL_GPU rendering](sdl_gpu_rendering_guide.md): shaders, resources, draw flow, and platform
   backends.
 
@@ -33,6 +37,10 @@
 - [Protocol binary codec](plans/08-protocol-binary-codec.md)
 - [In-memory transport integration](plans/09-inmemory-transport-integration.md)
 - [GameNetworkingSockets transport](plans/10-gamenetworkingsockets-transport.md)
+- [Prediction and reconciliation](plans/11-prediction-reconciliation.md)
+- [Remote interpolation](plans/12-remote-interpolation.md)
+- [Authoritative interactions and spectating](plans/13-authoritative-interactions-spectating.md)
+- [Selectable World rollback](plans/14-selectable-world-rollback.md)
 
 Plans record intended scope and acceptance criteria. Inspect the current code, tests, branch,
 and worktree before treating a plan as implemented behavior.
