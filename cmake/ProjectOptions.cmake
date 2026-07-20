@@ -34,3 +34,18 @@ function(mycore_configure_test_executable target_name)
     mycore_configure_executable("${target_name}")
     mycore_suppress_test_warnings("${target_name}")
 endfunction()
+
+function(mycore_stage_runtime_dependencies target_name)
+    if(WIN32)
+        add_custom_command(
+            TARGET "${target_name}"
+            POST_BUILD
+            COMMAND
+                "${CMAKE_COMMAND}" -E copy_if_different
+                $<TARGET_RUNTIME_DLLS:${target_name}>
+                $<TARGET_FILE_DIR:${target_name}>
+            COMMAND_EXPAND_LISTS
+            VERBATIM
+        )
+    endif()
+endfunction()

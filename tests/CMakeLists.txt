@@ -33,6 +33,7 @@ target_link_libraries(
         Catch2::Catch2WithMain
 )
 mycore_configure_test_executable(mycore_net_transport_tests)
+mycore_stage_runtime_dependencies(mycore_net_transport_tests)
 catch_discover_tests(mycore_net_transport_tests)
 
 add_executable(mycore_assets_tests mycore_assets_tests.cpp)
@@ -108,6 +109,7 @@ target_link_libraries(
         Catch2::Catch2WithMain
 )
 mycore_configure_test_executable(dots_session_tests)
+mycore_stage_runtime_dependencies(dots_session_tests)
 catch_discover_tests(dots_session_tests)
 
 add_executable(

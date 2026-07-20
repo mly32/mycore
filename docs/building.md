@@ -59,9 +59,9 @@ Each supported platform has native Debug and Release presets:
 Release presets enable the compiler's optimized `Release` configuration and define `NDEBUG`.
 Tests remain enabled so optimized builds can be validated with the matching test preset.
 
-The Windows preset explicitly targets x64 and uses vcpkg's `x64-windows-static-md` triplet:
-third-party libraries are static while the MSVC runtime remains dynamic. macOS and Linux allow
-vcpkg to infer the native architecture from the compiler configuration.
+The Windows presets expect an x64 MSVC environment and allow vcpkg to select its default dynamic
+library triplet. CMake stages the resulting runtime DLLs beside executables and includes them in
+the packaged client. macOS and Linux allow vcpkg to infer their native configuration as well.
 
 Build a focused target during iteration:
 

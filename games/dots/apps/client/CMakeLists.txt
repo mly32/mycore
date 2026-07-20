@@ -46,6 +46,7 @@ target_link_libraries(
         MyCore::Render2D
 )
 mycore_configure_executable(dots_client)
+mycore_stage_runtime_dependencies(dots_client)
 
 get_target_property(
     dots_client_shader_assets
@@ -79,11 +80,32 @@ if(APPLE)
     )
 endif()
 
-install(
-    TARGETS dots_client
-    RUNTIME DESTINATION "${dots_client_install_executable_directory}"
-    COMPONENT DotsClient
-)
+if(WIN32)
+    install(
+        TARGETS dots_client
+        RUNTIME_DEPENDENCIES
+            DIRECTORIES "$<TARGET_FILE_DIR:dots_client>"
+            # CMake's dumpbin parser includes Windows system delay-load entries. Some are
+            # virtual or protected DLLs that are not redistributable and cannot be resolved on
+            # GitHub-hosted runners, so exclude them before dependency lookup.
+            PRE_EXCLUDE_REGEXES
+                "^api-ms-.*"
+                "^ext-ms-.*"
+                "^HvsiFileTrust\\.dll$"
+                "^PdmUtilities\\.dll$"
+                "^wpaxholder\\.dll$"
+            POST_EXCLUDE_REGEXES
+                ".*[\\\\/][Ss][Yy][Ss][Tt][Ee][Mm]32[\\\\/].*"
+        RUNTIME DESTINATION "${dots_client_install_executable_directory}"
+        COMPONENT DotsClient
+    )
+else()
+    install(
+        TARGETS dots_client
+        RUNTIME DESTINATION "${dots_client_install_executable_directory}"
+        COMPONENT DotsClient
+    )
+endif()
 
 install(
     FILES ${dots_client_shader_assets}

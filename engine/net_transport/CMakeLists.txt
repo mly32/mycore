@@ -1,5 +1,13 @@
 find_package(GameNetworkingSockets CONFIG REQUIRED)
 
+if(TARGET GameNetworkingSockets::GameNetworkingSockets)
+    set(mycore_gamenetworkingsockets_target GameNetworkingSockets::GameNetworkingSockets)
+elseif(TARGET GameNetworkingSockets::static)
+    set(mycore_gamenetworkingsockets_target GameNetworkingSockets::static)
+else()
+    message(FATAL_ERROR "GameNetworkingSockets did not provide a supported CMake target")
+endif()
+
 add_library(
     mycore_net_transport STATIC
     src/gamenetworkingsockets_network.cpp
@@ -16,6 +24,6 @@ target_include_directories(
 target_link_libraries(
     mycore_net_transport
     PUBLIC MyCore::Core
-    PRIVATE GameNetworkingSockets::static
+    PRIVATE ${mycore_gamenetworkingsockets_target}
 )
 mycore_configure_target(mycore_net_transport)
