@@ -5,6 +5,35 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
+    "network": {
+      "description": "Authoritative networking mode and native server address.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "description": "Client runtime mode. Names are case-insensitive.",
+          "type": "string",
+          "default": "offline",
+          "anyOf": [
+            {
+              "enum": [
+                "offline",
+                "in_memory",
+                "native"
+              ]
+            },
+            {
+              "pattern": "^(?:[oO][fF][fF][lL][iI][nN][eE]|[iI][nN][_-][mM][eE][mM][oO][rR][yY]|[nN][aA][tT][iI][vV][eE])$"
+            }
+          ]
+        },
+        "server_address": {
+          "description": "Numeric IPv4 or bracketed IPv6 native server address with a nonzero port.",
+          "type": "string",
+          "default": "127.0.0.1:27020"
+        }
+      }
+    },
     "window": {
       "description": "Window creation and presentation settings.",
       "type": "object",
@@ -16,16 +45,16 @@
           "default": "Dots"
         },
         "width": {
-          "description": "Initial logical window width.",
+          "description": "Initial logical window width; interactive resizing uses the same minimum.",
           "type": "integer",
-          "minimum": 1,
+          "minimum": 500,
           "maximum": 16384,
           "default": 1280
         },
         "height": {
-          "description": "Initial logical window height.",
+          "description": "Initial logical window height; interactive resizing uses the same minimum.",
           "type": "integer",
-          "minimum": 1,
+          "minimum": 500,
           "maximum": 16384,
           "default": 720
         },

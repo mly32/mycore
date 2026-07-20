@@ -1,4 +1,18 @@
-add_library(mycore_net_transport STATIC src/in_memory_network.cpp)
+find_package(GameNetworkingSockets CONFIG REQUIRED)
+
+if(TARGET GameNetworkingSockets::GameNetworkingSockets)
+    set(mycore_gamenetworkingsockets_target GameNetworkingSockets::GameNetworkingSockets)
+elseif(TARGET GameNetworkingSockets::static)
+    set(mycore_gamenetworkingsockets_target GameNetworkingSockets::static)
+else()
+    message(FATAL_ERROR "GameNetworkingSockets did not provide a supported CMake target")
+endif()
+
+add_library(
+    mycore_net_transport STATIC
+    src/gamenetworkingsockets_network.cpp
+    src/in_memory_network.cpp
+)
 add_library(MyCore::NetTransport ALIAS mycore_net_transport)
 
 target_include_directories(
@@ -7,5 +21,9 @@ target_include_directories(
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
 )
 
-target_link_libraries(mycore_net_transport PUBLIC MyCore::Core)
+target_link_libraries(
+    mycore_net_transport
+    PUBLIC MyCore::Core
+    PRIVATE ${mycore_gamenetworkingsockets_target}
+)
 mycore_configure_target(mycore_net_transport)

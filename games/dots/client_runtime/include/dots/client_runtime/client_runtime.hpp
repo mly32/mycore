@@ -5,6 +5,7 @@
 #include "mycore/math/vector2.hpp"
 #include "mycore/net_transport/net_transport.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -37,6 +38,12 @@ enum class InputSendResult : std::uint8_t {
     TransportFailure,
 };
 
+struct ReplicationStatistics {
+    std::optional<std::chrono::milliseconds> latest_snapshot_age;
+    float accepted_snapshots_per_second{};
+    std::uint64_t accepted_snapshot_count{};
+};
+
 class Runtime {
 public:
     explicit Runtime(mycore::net_transport::Endpoint& endpoint);
@@ -47,7 +54,8 @@ public:
     Runtime(Runtime&&) noexcept;
     Runtime& operator=(Runtime&&) noexcept;
 
-    [[nodiscard]] std::optional<RuntimeError> process_events();
+    [[nodiscard]] std::optional<RuntimeError>
+    process_events(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
     [[nodiscard]] InputSendResult send_input(std::uint32_t client_tick,
                                              mycore::math::Vector2 movement);
     [[nodiscard]] bool disconnect();
@@ -56,6 +64,10 @@ public:
     [[nodiscard]] const replication::ReplicatedWorld& world() const noexcept;
     [[nodiscard]] protocol::ClientId client_id() const noexcept;
     [[nodiscard]] protocol::EntityId controlled_entity_id() const noexcept;
+    [[nodiscard]] mycore::net_transport::ConnectionHandle connection_handle() const noexcept;
+    [[nodiscard]] ReplicationStatistics
+    replication_statistics(std::chrono::steady_clock::time_point now =
+                               std::chrono::steady_clock::now()) const noexcept;
 
 private:
     class Impl;

@@ -1,5 +1,7 @@
 #include "dots/client/client_config.hpp"
 
+#include "mycore/net_transport/net_transport.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -109,6 +111,22 @@ std::string uppercase(std::string_view value) {
         result.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(character))));
     }
     return result;
+}
+
+NetworkMode parse_network_mode(std::string_view value,
+                               const std::filesystem::path& source,
+                               std::string_view field) {
+    const auto normalized = uppercase(value);
+    if (normalized == "OFFLINE") {
+        return NetworkMode::Offline;
+    }
+    if (normalized == "IN_MEMORY" || normalized == "IN-MEMORY") {
+        return NetworkMode::InMemory;
+    }
+    if (normalized == "NATIVE") {
+        return NetworkMode::Native;
+    }
+    fail(source, field, "expected 'offline', 'in_memory', or 'native'");
 }
 
 std::optional<Key> key_from_name(std::string_view name) {
@@ -310,15 +328,15 @@ void parse_window(const toml::table& table,
     }
     if (table.contains("width")) {
         const auto value = read_integer(table, "width", source, "window.width");
-        if (value < 1 || value > 16384) {
-            fail(source, "window.width", "must be in the range 1..16384");
+        if (value < kMinimumWindowWidth || value > 16384) {
+            fail(source, "window.width", "must be in the range 500..16384");
         }
         config.window.width = static_cast<int>(value);
     }
     if (table.contains("height")) {
         const auto value = read_integer(table, "height", source, "window.height");
-        if (value < 1 || value > 16384) {
-            fail(source, "window.height", "must be in the range 1..16384");
+        if (value < kMinimumWindowHeight || value > 16384) {
+            fail(source, "window.height", "must be in the range 500..16384");
         }
         config.window.height = static_cast<int>(value);
     }
@@ -333,6 +351,26 @@ void parse_window(const toml::table& table,
     }
     if (table.contains("vsync")) {
         config.window.vsync = read_bool(table, "vsync", source, "window.vsync");
+    }
+}
+
+void parse_network(const toml::table& table,
+                   ClientConfig& config,
+                   const std::filesystem::path& source) {
+    validate_keys(table, {"mode", "server_address"}, source, "network");
+    if (table.contains("mode")) {
+        config.network.mode = parse_network_mode(
+            read_string(table, "mode", source, "network.mode"), source, "network.mode");
+    }
+    if (table.contains("server_address")) {
+        const auto value = read_string(table, "server_address", source, "network.server_address");
+        const auto address = mycore::net_transport::NetworkAddress::parse(value);
+        if (!address || address->port() == 0) {
+            fail(source,
+                 "network.server_address",
+                 "expected a numeric IPv4 or bracketed IPv6 address with a nonzero port");
+        }
+        config.network.server_address = address->value();
     }
 }
 
@@ -502,10 +540,16 @@ ClientConfig parse_client_config(std::string_view toml_text, const std::filesyst
     }
 
     validate_keys(
-        root, {"window", "input", "bindings", "simulation", "view", "debug", "colors"}, source, "");
+        root,
+        {"window", "network", "input", "bindings", "simulation", "view", "debug", "colors"},
+        source,
+        "");
     auto config = default_client_config();
     if (const auto* table = optional_table(root, "window", source)) {
         parse_window(*table, config, source);
+    }
+    if (const auto* table = optional_table(root, "network", source)) {
+        parse_network(*table, config, source);
     }
     if (const auto* table = optional_table(root, "input", source)) {
         parse_input(*table, config, source);

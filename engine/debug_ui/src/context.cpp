@@ -76,6 +76,11 @@ void Context::begin_frame() {
     frame_active_ = true;
 }
 
+bool Context::wants_mouse_capture() const noexcept {
+    ImGui::SetCurrentContext(context_);
+    return ImGui::GetIO().WantCaptureMouse;
+}
+
 void Context::render(render::CommandList& commands, const render::SwapchainTarget& target) {
     ImGui::SetCurrentContext(context_);
     if (!frame_active_) {

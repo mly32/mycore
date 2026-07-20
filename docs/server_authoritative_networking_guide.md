@@ -25,10 +25,10 @@ latest state received from the server. It does not currently simulate its player
 networked mode.
 
 `dots_client --in-memory` exercises this complete path without opening a socket. Its client and
-server live in one process and communicate through the same abstract transport interface that a
-native network backend will implement. This proves the ownership and message flow, but the
-in-memory backend is FIFO and lossless and does not introduce real latency, jitter, or packet
-loss.
+server live in one process and communicate through the same abstract transport interface used by
+the native backend. `dots_client --connect 127.0.0.1:27020` instead connects to a separate
+`dots_server` process through GameNetworkingSockets. The in-memory backend remains FIFO and
+lossless, while the native backend supports realistic outgoing latency and loss simulation.
 
 The current mode has **no client-side prediction, reconciliation, or remote interpolation**.
 That is why its overlay says `NETWORKED FIXED` and why movement advances at the 15 Hz snapshot
@@ -82,15 +82,30 @@ wrong-direction messages disconnect only the offending peer.
 Handshake messages are reliable because they are infrequent state transitions that must arrive
 in order. Losing a welcome message cannot be fixed by receiving a newer welcome message.
 
+Reliable delivery means that the transport retransmits and preserves ordering while the
+connection remains usable. It does not mean that the application retries forever or that a
+connection is guaranteed to form. Dots submits each `ClientHello` and `ServerWelcome` once and
+lets GameNetworkingSockets perform any required retransmission. The transport can still declare
+the connection failed, and the client gives the complete connection-plus-handshake sequence a
+10-second startup deadline. Heavy loss can therefore make a reliable handshake fail to complete.
+
+Reliable and unreliable are message delivery modes on the same GameNetworkingSockets connection,
+not separate TCP and UDP application paths. Unreliable means no retransmission guarantee; it does
+not bypass connection security or Dots protocol decoding and validation.
+
+Retransmission also trades timeliness for delivery. Under loss, a reliable message can arrive
+much later and reliable data can wait behind earlier missing data. This is appropriate for the
+small ordered handshake, but not for a continuous stream of replaceable gameplay state.
+
 Input and snapshots are time-sensitive. A delayed old movement command or snapshot is usually
 less useful than the newest one, so they are sent unreliably and carry application sequence IDs.
-The receiver can ignore stale data without waiting for retransmission. Later input redundancy
-and self-healing snapshot deltas will tolerate loss without turning the real-time stream into a
-reliable queue of obsolete state.
+The receiver can ignore stale data without waiting for retransmission. The current server sends
+another full snapshot at 15 Hz, so a lost snapshot is replaced by a newer complete view. Later
+input redundancy and snapshot deltas will improve loss handling without turning the real-time
+stream into a reliable queue of obsolete state.
 
-The current in-memory implementation is lossless for both delivery modes. The mode still records
-the intended semantics so tests and runtimes do not need a different contract when the native
-transport arrives.
+The in-memory implementation is lossless for both delivery modes. It records the same intended
+semantics as the native implementation so tests and runtimes do not need a different contract.
 
 ### Packet size policy
 
@@ -139,7 +154,7 @@ queues copied payloads in FIFO order, delivers them when the receiving endpoint 
 clients, and reports disconnects exactly once to each side. This makes multiplayer session tests
 deterministic without pretending to be a real network.
 
-Feature 10 will put a GameNetworkingSockets implementation behind the same endpoint contract:
+Feature 10 puts a GameNetworkingSockets implementation behind the same endpoint contract:
 
 ```text
                  MyCore::NetTransport::Endpoint
@@ -149,9 +164,124 @@ Feature 10 will put a GameNetworkingSockets implementation behind the same endpo
           InMemoryNetwork        GameNetworkingSockets
 ```
 
-The protocol and Dots runtimes should not care which implementation carries their bytes. The
+The protocol and Dots runtimes do not care which implementation carries their bytes. The
 native backend adds cross-process connections, encryption, congestion behavior, and realistic
 latency/loss simulation; it does not add gameplay replication or prediction by itself.
+
+A normal client exit explicitly disconnects its transport connection. The server receives the
+disconnect event, removes the corresponding session and authoritative player, and logs the
+reason. Abrupt process loss follows the same cleanup path after the transport detects failure,
+but cannot provide a graceful local-request event.
+
+## Native session startup and lifecycle
+
+There are three related but separate layers during startup:
+
+1. The client process initializes its window, renderer, and other local systems.
+2. GameNetworkingSockets establishes a transport connection between processes.
+3. Dots performs its application handshake and installs the initial replicated world.
+
+This produces the following normal sequence:
+
+```text
+server process                         client process
+--------------                         --------------
+open listen socket                     initialize window and renderer
+print DOTS_SERVER_READY                begin transport connection
+receive Connected event       <------> receive Connected event
+create pending session                 send reliable ClientHello
+validate ClientHello
+spawn authoritative player
+assign client and entity IDs
+send reliable ServerWelcome    ------>
+send unreliable FullSnapshot   ------>
+log "Client ... joined"                install identity and snapshot
+                                        log "Session ready ..."
+```
+
+`DOTS_SERVER_READY` only means that the server is listening. A renderer log before a client
+transport log is also normal because local presentation is initialized first. The server can log
+that a client joined before the client logs that its session is ready: the server has accepted the
+hello at that point, while the client still needs both the welcome and a snapshot containing its
+controlled player. Those two messages may arrive in either order. If the first unreliable
+snapshot is lost, a later 15 Hz full snapshot can still complete the client handshake.
+
+The client starts one 10-second deadline when its networked runtime is created. That deadline
+includes transport connection establishment, the reliable hello/welcome exchange, and receipt
+of a usable snapshot. Reaching it is a failed startup even if the transport was still retrying.
+Dots currently does not reconnect or begin a second handshake automatically; the client exits
+with `Could not establish the authoritative session`.
+
+Connection handles, client IDs, and entity IDs belong to different domains. It is normal for a
+client to report transport connection `0`, Dots client `0`, and a much larger controlled entity
+ID. The server creates food entities before joining players, so the first player is not generally
+entity `0`.
+
+After startup, lifecycle events are handled as follows:
+
+| Event | Client behavior | Server behavior |
+| --- | --- | --- |
+| Escape or window close | Requests a graceful transport disconnect, logs it, and exits normally. | Receives the disconnect event and removes only that client's session and player. |
+| Server closes | Logs the transport close and stops the networked client. | The server process exits. |
+| Connection fails | Logs the transport failure and stops the networked client. | Removes the session and player when it observes the failure. |
+| Malformed or wrong-direction packet | The offending client is disconnected. | Rejects and removes only the offending session; the server and other clients continue. |
+| Client process is killed or loses connectivity | Cannot send a graceful request. | Detects the transport failure later, then removes the session and player. |
+
+The local `dots_session.py` launcher treats an unexpected nonzero client exit or any server exit
+as failure of the development session and terminates the remaining child processes. That cleanup
+may be abrupt, so terminating the launcher is not a good test of every client's graceful-leave
+log path. Close one client window while leaving the launcher running to observe that path.
+
+## Reasoning about simulated lag and packet loss
+
+The native impairment options configure outgoing traffic in each process, and they are active
+before transport connection establishment. They therefore affect connection negotiation,
+application handshake messages, and gameplay traffic rather than only the post-join session.
+
+The launcher passes the same `--fake-lag-ms` and `--fake-loss-percent` values to the server and
+every client. Lag is a one-way delay at each sender. With 50 ms configured by the launcher, a
+request pays about 50 ms on the client-to-server path and its response pays about 50 ms on the
+server-to-client path, producing roughly 100 ms of transport round-trip time before tick,
+snapshot, rendering, or retransmission delays. To test only one direction, run the server and
+clients manually and put the impairment option only on the desired sender.
+
+Packet loss is random per outgoing low-level packet, not a promise to discard exactly that
+percentage of application messages in a short run. Loss at each process is independent. With
+50% loss applied at both endpoints, one simple request-and-response attempt has only a
+`0.5 * 0.5 = 25%` chance that both packets survive that attempt. Reliable transport retries can
+improve the eventual odds while the connection remains alive, but every retry is exposed to loss
+again and may arrive only after transport backoff. This is why two clients started with identical
+settings can have different outcomes, and why one can join while another exceeds 10 seconds.
+
+The current messages behave under impairment like this:
+
+| Message or phase | Delivery | Expected behavior under loss |
+| --- | --- | --- |
+| Transport connection establishment | Transport-managed | May retry, take much longer, or fail before the Dots handshake starts. |
+| `ClientHello` and `ServerWelcome` | Reliable | Transport retransmits while viable; delay increases, but Dots does not repeatedly call `send`. |
+| `InputCommand` at 30 Hz | Unreliable | A lost command is skipped. Newer sequence IDs continue; input redundancy is a later feature. |
+| `FullSnapshot` at 15 Hz | Unreliable | The client holds its previous view until a newer complete snapshot arrives. |
+| Disconnect | Transport lifecycle | Graceful requests are reported promptly when delivered; abrupt loss is reported after failure detection. |
+
+Because the current networked client has neither prediction nor interpolation, these effects are
+visible directly. Lag postpones local input response. Lost inputs can make movement briefly stop,
+and lost snapshots can make the view hold and then jump when a newer snapshot arrives. This is
+expected for the present feature stage, not evidence that the authoritative simulation itself
+stopped.
+
+Use modest impairment to study steady-state behavior and high impairment to study failure paths:
+
+- Start with no impairment to establish a baseline.
+- Use 50--100 ms of lag to make latency visible while keeping startup predictable.
+- Use roughly 5--20% loss to observe recovery during a joined session.
+- Treat 50% loss at both endpoints as a destructive test where startup failure is expected.
+
+The transport debug data and lifecycle logs answer different questions. Transport RTT, loss, and
+queue statistics describe network health; snapshot rate and age describe what replication is
+actually reaching the client. A loss statistic may be unavailable early in a connection while
+the transport gathers enough samples. For startup diagnosis, follow the logs in order: server
+ready, transport open on both peers, server join, then client ready. The missing transition
+identifies which layer did not complete.
 
 ## What server authoritative means
 
@@ -245,8 +375,9 @@ press key -> input travels to server -> later server tick -> snapshot travels ba
 ```
 
 The in-memory mode validates the architecture but largely hides that responsiveness problem
-because it has no simulated network delay. Feature 10 makes separate processes possible;
-Features 11 and 12 address how the game feels under latency and jitter.
+because it has no simulated network delay. Native sessions make the delay visible and allow it
+to be amplified with the fake-lag and fake-loss options. Features 11 and 12 address how the game
+feels under latency and jitter.
 
 Some groundwork is already present. Input commands have sequence IDs, snapshots acknowledge
 `last_processed_input`, and inputs report the latest received snapshot. The current client does
@@ -262,9 +393,9 @@ physical display do not have to advance together.
 |---|---:|---:|---|
 | Client loop/render frame | Variable; commonly limited by vsync | 16.67 ms on a 60 Hz display | Poll input, run zero or more due fixed steps, extract presentation, submit rendering. |
 | Authoritative simulation tick | Fixed 30 Hz | 33.33 ms | Apply current movement, move entities, resolve food collisions, increment server tick. |
-| Client input command | At each due fixed step in current in-memory mode | 33.33 ms | Encode and send the newest sampled movement with a new sequence ID. |
+| Client input command | At each due client fixed step | 33.33 ms | Encode and send the newest sampled movement with a new sequence ID. |
 | Full snapshot | Every two server ticks, fixed 15 Hz | 66.67 ms | Send the latest authoritative entity state and input acknowledgement. |
-| Transport poll | No independent frequency in Feature 09 | Called at explicit loop points | Deliver queued connection and payload events to a runtime. |
+| Transport poll | Once or more at explicit loop points | Render-loop or server-tick dependent | Deliver queued connection and payload events to a runtime. |
 | Display refresh | Monitor-dependent | 16.67 ms at 60 Hz | Make a completed GPU image physically visible. |
 
 The 60 Hz render rate in examples below is illustrative, not guaranteed. The default client uses
@@ -320,11 +451,11 @@ sends no input command and advances no server tick. A catch-up render frame may 
 fixed steps using the same most-recent input sample. Catch-up is capped so one slow frame cannot
 make the client unresponsive indefinitely.
 
-The embedded server is called directly inside this loop only for `--in-memory`. Once Feature 10
-runs client and server in separate processes, each owns its own clock. The server loop polls its
-transport, advances one 30 Hz tick, emits any due snapshots, and sleeps until its next tick. The
-client cannot call or synchronize that loop; it only sends messages and processes messages that
-have arrived.
+The embedded server is called directly inside this loop only for `--in-memory`. In native mode,
+the client and server processes each own their clock. The server loop polls its transport,
+advances one 30 Hz tick, emits any due snapshots, and sleeps until its next tick. The client
+cannot call or synchronize that loop; it only sends messages and processes messages that have
+arrived.
 
 ### Concrete current timeline: when one input becomes visible
 
@@ -541,35 +672,33 @@ self-contained baseline, never partial mutation into an uncertain world.
 
 ## Networking observability roadmap
 
-The current overlay already shows useful Feature 09 replication evidence: presentation mode,
-server tick, snapshot ID, entity counts, fixed-step rate, and simulation health. It would also be
-reasonable to expose semantic values that the current protocol genuinely knows, such as:
+The current overlay separates replication health from transport health. Replication data
+includes server tick, snapshot ID, entity counts, latest snapshot age, and accepted snapshot
+rate. Native transport data includes connection state, RTT, packet loss, traffic rates, outbound
+queue depths, and queue delay. In-memory endpoints report connection state but leave measurements
+they cannot provide unavailable instead of implying zero latency or loss.
+
+Additional protocol-level values that may be useful in later work include:
 
 - Client session state.
 - Last input sequence sent and last input sequence acknowledged by a snapshot.
 - Number of currently unacknowledged inputs.
-- Age of the latest installed snapshot.
 - Applied, stale, and invalid snapshot counts.
 
-Those are replication/runtime statistics, not measurements of a real network. The FIFO,
-lossless in-memory transport cannot provide meaningful ping, RTT, jitter, packet loss,
-congestion, or socket-queue values. Displaying zeros for those fields would imply a realism the
-backend does not have.
+Those are replication/runtime statistics, not measurements of a real network.
 
 The recommended staging is:
 
 | Feature | Debug information to add |
 |---|---|
-| 09: in-memory replication | Existing tick/snapshot/entity data; optionally session, input ACK gap, and snapshot age. |
-| 10: native transport | Connection state, RTT, packet loss, bytes/packets per second, reliable queue depth, and transport diagnostics. |
+| 09: in-memory replication | Tick, snapshot, entity, session, and fixed-step data. |
+| 10: native transport | Snapshot age/rate plus connection state, RTT, packet loss, traffic rates, outbound queues, and queue delay. |
 | 11: prediction/reconciliation | Unacknowledged input count, replay count, correction distance, correction frequency, and presentation smoothing offset. |
 | 12: remote interpolation | Snapshot-buffer fill, interpolation delay, measured jitter, late snapshots, and extrapolation/hold events. |
 
-Therefore, genuine **network transport stats belong in Feature 10**, when GameNetworkingSockets
-can supply real measurements and simulated impairment. Replication acknowledgements and snapshot
-age may be added earlier if they help inspect Feature 09, but they should be labeled separately
-from transport health. One-way latency should not be inferred by simply halving RTT once clocks
-and routes can differ.
+Genuine **network transport stats come from GameNetworkingSockets**. They remain labeled
+separately from replication health. One-way latency should not be inferred by simply halving RTT
+because clocks and routes can differ.
 
 ## Useful invariants when changing networking code
 
@@ -588,8 +717,8 @@ and routes can differ.
 ## Where to read the implementation
 
 - `games/dots/protocol/`: message value types, strong wire IDs, framing, encoding, and decoding.
-- `engine/net_transport/`: the game-neutral endpoint contract and deterministic in-memory
-  implementation.
+- `engine/net_transport/`: the game-neutral endpoint contract plus deterministic in-memory and
+  native GameNetworkingSockets implementations.
 - `games/dots/server/`: connection sessions, handshake validation, input ownership, stepping,
   snapshots, and peer rejection.
 - `games/dots/replication/`: simulation/protocol ID mapping, snapshot construction, and the
@@ -599,12 +728,13 @@ and routes can differ.
 - `games/dots/simulation/`: authoritative Dots rules and fixed-step world, independent of
   transport and rendering.
 - `games/dots/presentation/`: extraction of replicated entities into client-only draw data.
-- `games/dots/apps/client/src/client_app.cpp`: composition of the current offline and in-memory
+- `games/dots/apps/client/src/client_app.cpp`: composition of the offline, in-memory, and native
   runtime modes.
 - `docs/plans/08-protocol-binary-codec.md`: the implemented wire-format slice.
 - `docs/plans/09-inmemory-transport-integration.md`: the implemented authoritative in-memory
   slice.
-- `docs/development_branch_plan.md`: Features 10–14 and their exit criteria.
+- `docs/plans/10-gamenetworkingsockets-transport.md`: the implemented native transport slice.
+- `docs/development_branch_plan.md`: Features 11–14 and their exit criteria.
 
 ## Glossary
 

@@ -19,6 +19,10 @@
     },
     "fmt",
     {
+      "name": "gamenetworkingsockets",
+      "default-features": false
+    },
+    {
       "name": "imgui",
       "features": [
         "sdlgpu3-binding"

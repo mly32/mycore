@@ -6,8 +6,10 @@
 #include <array>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <chrono>
 #include <cstddef>
 #include <span>
+#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -38,6 +40,11 @@ public:
 
     [[nodiscard]] bool disconnect(mycore::net_transport::ConnectionHandle) override {
         return true;
+    }
+
+    [[nodiscard]] std::optional<mycore::net_transport::TransportStatistics>
+    statistics(mycore::net_transport::ConnectionHandle) const override {
+        return std::nullopt;
     }
 
     std::vector<mycore::net_transport::Event> events;
@@ -118,6 +125,7 @@ TEST_CASE("Disconnect cleanup removes only the owned authoritative player", "[do
     REQUIRE_FALSE(second.process_events().has_value());
 
     REQUIRE(first.disconnect());
+    CHECK(first.state() == dots::client_runtime::State::Disconnected);
     REQUIRE_FALSE(server.process_events().has_value());
     CHECK(server.client_count() == 1);
     CHECK(server.world().player_count() == 1);
@@ -180,4 +188,117 @@ TEST_CASE("Client accepts an initial snapshot before its welcome", "[dots][sessi
     });
     REQUIRE_FALSE(client.process_events().has_value());
     REQUIRE(client.state() == dots::client_runtime::State::Ready);
+}
+
+TEST_CASE("Client reports accepted snapshot age and rolling receive rate",
+          "[dots][session][statistics]") {
+    using namespace std::chrono_literals;
+    ManualEndpoint endpoint;
+    const mycore::net_transport::ConnectionHandle connection{5};
+    const auto base = std::chrono::steady_clock::time_point{10s};
+    endpoint.events.push_back(mycore::net_transport::Connected{.connection = connection});
+    dots::client_runtime::Runtime client{endpoint};
+    REQUIRE_FALSE(client.process_events(base).has_value());
+
+    endpoint.events.push_back(mycore::net_transport::PayloadReceived{
+        .connection = connection,
+        .delivery = mycore::net_transport::DeliveryMode::Unreliable,
+        .payload = encode_bytes(dots::protocol::FullSnapshot{
+            .snapshot_id = dots::protocol::SnapshotId{0},
+        }),
+    });
+    REQUIRE_FALSE(client.process_events(base + 100ms).has_value());
+
+    const auto recent = client.replication_statistics(base + 350ms);
+    REQUIRE(recent.latest_snapshot_age == 250ms);
+    CHECK(recent.accepted_snapshots_per_second == 1.0F);
+    CHECK(recent.accepted_snapshot_count == 1);
+
+    const auto old = client.replication_statistics(base + 2s);
+    CHECK(old.accepted_snapshots_per_second == 0.0F);
+    CHECK(old.accepted_snapshot_count == 1);
+}
+
+TEST_CASE("Dots handshake and snapshots work over native loopback", "[dots][session][native]") {
+    using namespace std::chrono_literals;
+    const auto bind = mycore::net_transport::NetworkAddress::parse("127.0.0.1:0");
+    REQUIRE(bind.has_value());
+    mycore::net_transport::GameNetworkingSocketsNetwork network;
+    const auto listening = network.listen(*bind);
+    auto& endpoint = network.connect(listening.address);
+    dots::server::Runtime server{*listening.endpoint};
+    dots::client_runtime::Runtime client{endpoint};
+
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (client.state() != dots::client_runtime::State::Ready &&
+           std::chrono::steady_clock::now() < deadline) {
+        REQUIRE_FALSE(client.process_events().has_value());
+        REQUIRE_FALSE(server.process_events().has_value());
+        REQUIRE_FALSE(client.process_events().has_value());
+        std::this_thread::sleep_for(1ms);
+    }
+    REQUIRE(client.state() == dots::client_runtime::State::Ready);
+    REQUIRE(server.client_count() == 1);
+
+    REQUIRE(client.send_input(0, {1.0F, 0.0F}) == dots::client_runtime::InputSendResult::Sent);
+    const auto input_deadline = std::chrono::steady_clock::now() + 100ms;
+    while (std::chrono::steady_clock::now() < input_deadline) {
+        REQUIRE_FALSE(server.process_events().has_value());
+        std::this_thread::sleep_for(1ms);
+    }
+    REQUIRE_FALSE(server.step().has_value());
+    REQUIRE_FALSE(server.step().has_value());
+    const auto snapshot_deadline = std::chrono::steady_clock::now() + 5s;
+    while (client.world().server_tick() < 2 &&
+           std::chrono::steady_clock::now() < snapshot_deadline) {
+        REQUIRE_FALSE(client.process_events().has_value());
+        std::this_thread::sleep_for(1ms);
+    }
+    CHECK(client.world().server_tick() == 2);
+    CHECK(client.world().last_processed_input_id() == dots::protocol::InputSequenceId{0});
+
+    REQUIRE(client.disconnect());
+    CHECK(client.state() == dots::client_runtime::State::Disconnected);
+    const auto disconnect_deadline = std::chrono::steady_clock::now() + 5s;
+    while (server.client_count() != 0 && std::chrono::steady_clock::now() < disconnect_deadline) {
+        REQUIRE_FALSE(server.process_events().has_value());
+        std::this_thread::sleep_for(1ms);
+    }
+    CHECK(server.client_count() == 0);
+}
+
+TEST_CASE("Native Dots server rejects malformed handshake data", "[dots][session][native]") {
+    using namespace std::chrono_literals;
+    const auto bind = mycore::net_transport::NetworkAddress::parse("127.0.0.1:0");
+    REQUIRE(bind.has_value());
+    mycore::net_transport::GameNetworkingSocketsNetwork network;
+    const auto listening = network.listen(*bind);
+    auto& endpoint = network.connect(listening.address);
+    dots::server::Runtime server{*listening.endpoint};
+
+    mycore::net_transport::ConnectionHandle connection;
+    const auto connection_deadline = std::chrono::steady_clock::now() + 5s;
+    while (!connection.is_valid() && std::chrono::steady_clock::now() < connection_deadline) {
+        REQUIRE_FALSE(server.process_events().has_value());
+        for (const auto& event : endpoint.poll()) {
+            if (const auto* connected = std::get_if<mycore::net_transport::Connected>(&event)) {
+                connection = connected->connection;
+            }
+        }
+        std::this_thread::sleep_for(1ms);
+    }
+    REQUIRE(connection.is_valid());
+
+    const std::array malformed{std::byte{0xFF}};
+    REQUIRE(endpoint.send(connection, malformed, mycore::net_transport::DeliveryMode::Reliable) ==
+            mycore::net_transport::SendStatus::Sent);
+    const auto rejection_deadline = std::chrono::steady_clock::now() + 5s;
+    while (server.rejected_packet_count() == 0 &&
+           std::chrono::steady_clock::now() < rejection_deadline) {
+        REQUIRE_FALSE(server.process_events().has_value());
+        static_cast<void>(endpoint.poll());
+        std::this_thread::sleep_for(1ms);
+    }
+    CHECK(server.rejected_packet_count() == 1);
+    CHECK(server.client_count() == 0);
 }

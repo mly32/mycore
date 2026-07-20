@@ -29,6 +29,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 namespace dots::client {
@@ -89,24 +90,49 @@ struct DebugWorldStats {
     std::size_t food_count{};
     std::optional<std::size_t> occupied_grid_cells;
     std::optional<std::uint32_t> snapshot_id;
+    std::optional<mycore::net_transport::TransportStatistics> transport;
+    std::optional<dots::client_runtime::ReplicationStatistics> replication;
 };
+
+[[nodiscard]] constexpr std::string_view
+connection_state_name(mycore::net_transport::ConnectionState state) noexcept {
+    using mycore::net_transport::ConnectionState;
+    switch (state) {
+    case ConnectionState::Connecting:
+        return "CONNECTING";
+    case ConnectionState::Connected:
+        return "CONNECTED";
+    case ConnectionState::Closing:
+        return "CLOSING";
+    case ConnectionState::Disconnected:
+        return "DISCONNECTED";
+    case ConnectionState::Failed:
+        return "FAILED";
+    }
+    return "UNKNOWN";
+}
 
 void draw_debug_overlay(const ClientConfig& config,
                         const DebugWorldStats& world,
                         const mycore::debug::FrameMetricsSnapshot& frame_metrics,
                         const mycore::debug::FixedStepMetricsSnapshot& simulation_metrics) {
     constexpr float kMargin = 12.0F;
+    constexpr float kPreferredOverlayWidth = 360.0F;
     const auto* viewport = ImGui::GetMainViewport();
+    const auto available_width = std::max(viewport->WorkSize.x - (2.0F * kMargin), 1.0F);
+    const auto available_height = std::max(viewport->WorkSize.y - (2.0F * kMargin), 1.0F);
+    const auto overlay_width = std::min(kPreferredOverlayWidth, available_width);
     ImGui::SetNextWindowPos({viewport->WorkPos.x + viewport->WorkSize.x - kMargin,
                              viewport->WorkPos.y + viewport->WorkSize.y - kMargin},
                             ImGuiCond_Always,
                             {1.0F, 1.0F});
+    ImGui::SetNextWindowSizeConstraints({overlay_width, 0.0F}, {overlay_width, available_height});
     ImGui::SetNextWindowBgAlpha(0.82F);
 
     constexpr auto kWindowFlags =
-        ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
-        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
-        ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs;
+        ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
+        ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
     if (ImGui::Begin("Dots observability", nullptr, kWindowFlags)) {
         const auto input_mode = input_mode_name(config.controls.mode);
         ImGui::TextUnformatted("Dots debug");
@@ -123,6 +149,66 @@ void draw_debug_overlay(const ClientConfig& config,
         }
         if (world.snapshot_id) {
             ImGui::Text("Snapshot: %u", *world.snapshot_id);
+        }
+        if (world.replication) {
+            ImGui::Separator();
+            ImGui::TextUnformatted("Replication");
+            if (world.replication->latest_snapshot_age) {
+                ImGui::Text(
+                    "Snapshot age: %lld ms",
+                    static_cast<long long>(world.replication->latest_snapshot_age->count()));
+            } else {
+                ImGui::TextUnformatted("Snapshot age: unavailable");
+            }
+            ImGui::Text("Receive rate: %.1f snapshots/s",
+                        world.replication->accepted_snapshots_per_second);
+        }
+        if (world.transport) {
+            ImGui::Separator();
+            ImGui::TextUnformatted("Transport");
+            const auto state = connection_state_name(world.transport->state);
+            ImGui::Text("State: %.*s", static_cast<int>(state.size()), state.data());
+            if (world.transport->round_trip_time) {
+                ImGui::Text("RTT: %lld ms",
+                            static_cast<long long>(world.transport->round_trip_time->count()));
+            } else {
+                ImGui::TextUnformatted("RTT: unavailable");
+            }
+            if (world.transport->packet_loss_percent) {
+                ImGui::Text("Packet loss: %.2f%%", *world.transport->packet_loss_percent);
+            } else {
+                ImGui::TextUnformatted("Packet loss: unavailable");
+            }
+            if (world.transport->inbound_bytes_per_second &&
+                world.transport->outbound_bytes_per_second &&
+                world.transport->inbound_packets_per_second &&
+                world.transport->outbound_packets_per_second) {
+                ImGui::Text("Bytes/s in / out: %.0f / %.0f",
+                            *world.transport->inbound_bytes_per_second,
+                            *world.transport->outbound_bytes_per_second);
+                ImGui::Text("Packets/s in / out: %.1f / %.1f",
+                            *world.transport->inbound_packets_per_second,
+                            *world.transport->outbound_packets_per_second);
+            } else {
+                ImGui::TextUnformatted("Rates: unavailable");
+            }
+            if (world.transport->pending_reliable_bytes &&
+                world.transport->pending_unreliable_bytes) {
+                ImGui::Text("Queued reliable / unreliable: %zu / %zu bytes",
+                            *world.transport->pending_reliable_bytes,
+                            *world.transport->pending_unreliable_bytes);
+            } else {
+                ImGui::TextUnformatted("Queues: unavailable");
+            }
+            if (world.transport->sent_unacknowledged_reliable_bytes) {
+                ImGui::Text("Reliable sent unacked: %zu bytes",
+                            *world.transport->sent_unacknowledged_reliable_bytes);
+            }
+            if (world.transport->outbound_queue_delay) {
+                const auto delay = std::chrono::duration<double, std::milli>{
+                    *world.transport->outbound_queue_delay};
+                ImGui::Text("Queue delay: %.2f ms", delay.count());
+            }
         }
         ImGui::Separator();
         ImGui::Text("Frame: %.2f ms", frame_metrics.latest_milliseconds);
@@ -238,21 +324,32 @@ void validate_render_assets(const mycore::assets::DirectorySource& assets) {
     }
 }
 
-int run_in_memory_game(const ClientConfig& config,
+int run_networked_game(const ClientConfig& config,
                        mycore::platform_sdl::Window& window,
                        mycore::render_2d::Renderer& renderer,
                        mycore::debug_ui::Context& debug_ui,
-                       const dots::presentation::Settings& render_settings) {
-    dots::simulation::World authoritative_world;
-    if (!dots::simulation::spawn_default_food_field(authoritative_world)) {
-        throw StartupError{"Could not spawn the authoritative food field"};
-    }
-    mycore::net_transport::InMemoryNetwork network;
-    dots::server::Runtime server{network.server_endpoint(), std::move(authoritative_world)};
-    dots::client_runtime::Runtime client{network.connect_client()};
-    if (client.process_events() || server.process_events() || client.process_events() ||
-        client.state() != dots::client_runtime::State::Ready) {
-        throw StartupError{"Could not establish the in-memory authoritative session"};
+                       const dots::presentation::Settings& render_settings,
+                       mycore::net_transport::Endpoint& endpoint,
+                       dots::server::Runtime* embedded_server) {
+    using namespace std::chrono_literals;
+    dots::client_runtime::Runtime client{endpoint};
+    const auto handshake_deadline = std::chrono::steady_clock::now() + 10s;
+    while (client.state() != dots::client_runtime::State::Ready) {
+        if (client.process_events()) {
+            throw StartupError{"The networked client handshake failed"};
+        }
+        if (embedded_server != nullptr && embedded_server->process_events()) {
+            throw StartupError{"The embedded authoritative server handshake failed"};
+        }
+        if (client.process_events()) {
+            throw StartupError{"The networked client handshake failed"};
+        }
+        if (client.state() == dots::client_runtime::State::Disconnected ||
+            client.state() == dots::client_runtime::State::Failed ||
+            std::chrono::steady_clock::now() >= handshake_deadline) {
+            throw StartupError{"Could not establish the authoritative session"};
+        }
+        std::this_thread::sleep_for(1ms);
     }
 
     mycore::time::FixedStepAccumulator accumulator{dots::simulation::kTickDuration};
@@ -266,9 +363,15 @@ int run_in_memory_game(const ClientConfig& config,
 
     while (true) {
         MYCORE_PROFILE_FRAME();
-        MYCORE_PROFILE_ZONE("Dots in-memory client frame");
+        MYCORE_PROFILE_ZONE("Dots networked client frame");
         const auto input = mycore::platform_sdl::poll_input(window, &debug_ui);
         if (quit_requested(input, config.controls)) {
+            if (!client.disconnect()) {
+                mycore::debug::log_warning(
+                    "dots.client.session",
+                    "Could not request a graceful disconnect for connection {}",
+                    client.connection_handle().value());
+            }
             return 0;
         }
 
@@ -281,6 +384,14 @@ int run_in_memory_game(const ClientConfig& config,
         }
 
         const auto now = std::chrono::steady_clock::now();
+        if (client.process_events(now)) {
+            throw StartupError{"The networked authoritative session failed"};
+        }
+        if (client.state() != dots::client_runtime::State::Ready) {
+            throw StartupError{"The networked authoritative session disconnected"};
+        }
+        debug_ui.begin_frame();
+        const auto mouse_input_available = !debug_ui.wants_mouse_capture();
         const auto frame_duration =
             std::chrono::duration_cast<mycore::time::Duration>(now - previous_time);
         frame_metrics.add_sample(frame_duration);
@@ -310,18 +421,23 @@ int run_in_memory_game(const ClientConfig& config,
 
         const auto simulation_start = std::chrono::steady_clock::now();
         {
-            MYCORE_PROFILE_ZONE("Dots authoritative in-memory steps");
+            MYCORE_PROFILE_ZONE("Dots network input steps");
             for (std::size_t step = 0; step < step_result.steps; ++step) {
                 if (client_tick == std::numeric_limits<std::uint32_t>::max()) {
-                    throw StartupError{"In-memory client ticks are exhausted"};
+                    throw StartupError{"Networked client ticks are exhausted"};
                 }
-                const auto movement = movement_from_input(input, config.controls, viewport);
+                const auto movement =
+                    movement_from_input(input, config.controls, viewport, mouse_input_available);
                 if (client.send_input(client_tick++, movement) !=
                     dots::client_runtime::InputSendResult::Sent) {
-                    throw StartupError{"The in-memory client could not send input"};
+                    throw StartupError{"The networked client could not send input"};
                 }
-                if (server.process_events() || server.step() || client.process_events()) {
-                    throw StartupError{"The in-memory authoritative session failed"};
+                if (embedded_server != nullptr &&
+                    (embedded_server->process_events() || embedded_server->step())) {
+                    throw StartupError{"The embedded authoritative session failed"};
+                }
+                if (client.process_events(now)) {
+                    throw StartupError{"The networked authoritative session failed"};
                 }
                 controlled = client.world().find(client.controlled_entity_id());
                 if (controlled == nullptr) {
@@ -348,14 +464,16 @@ int run_in_memory_game(const ClientConfig& config,
 
         const auto frame = dots::presentation::extract_replicated_frame(
             client.world(), client.controlled_entity_id());
-        debug_ui.begin_frame();
         draw_debug_overlay(config,
                            {
                                .presentation = "NETWORKED FIXED",
                                .tick = client.world().server_tick(),
                                .player_count = client.world().player_count(),
                                .food_count = client.world().food_count(),
+                               .occupied_grid_cells = std::nullopt,
                                .snapshot_id = client.world().snapshot_id().value(),
+                               .transport = endpoint.statistics(client.connection_handle()),
+                               .replication = client.replication_statistics(now),
                            },
                            frame_metrics.snapshot(),
                            simulation_snapshot);
@@ -371,14 +489,49 @@ int run_in_memory_game(const ClientConfig& config,
     }
 }
 
+int run_in_memory_game(const ClientConfig& config,
+                       mycore::platform_sdl::Window& window,
+                       mycore::render_2d::Renderer& renderer,
+                       mycore::debug_ui::Context& debug_ui,
+                       const dots::presentation::Settings& render_settings) {
+    dots::simulation::World authoritative_world;
+    if (!dots::simulation::spawn_default_food_field(authoritative_world)) {
+        throw StartupError{"Could not spawn the authoritative food field"};
+    }
+    mycore::net_transport::InMemoryNetwork network;
+    dots::server::Runtime server{network.server_endpoint(), std::move(authoritative_world)};
+    auto& endpoint = network.connect_client();
+    return run_networked_game(
+        config, window, renderer, debug_ui, render_settings, endpoint, &server);
+}
+
+int run_native_game(const ClientConfig& config,
+                    mycore::platform_sdl::Window& window,
+                    mycore::render_2d::Renderer& renderer,
+                    mycore::debug_ui::Context& debug_ui,
+                    const dots::presentation::Settings& render_settings,
+                    const ClientRunOptions& options) {
+    const auto address = mycore::net_transport::NetworkAddress::parse(options.server_address);
+    if (!address || address->port() == 0) {
+        throw StartupError{"Native mode requires a numeric server address with a nonzero port"};
+    }
+    mycore::net_transport::GameNetworkingSocketsNetwork network{options.impairment};
+    auto& endpoint = network.connect(*address);
+    return run_networked_game(
+        config, window, renderer, debug_ui, render_settings, endpoint, nullptr);
+}
+
 } // namespace
 
-int run_client(const ClientConfig& config, ClientRunMode mode) {
+int run_client(const ClientConfig& config, const ClientRunOptions& options) {
+    const auto mode = options.mode;
     mycore::platform_sdl::Runtime runtime;
     mycore::platform_sdl::Window window{{
         .title = config.window.title,
         .width = config.window.width,
         .height = config.window.height,
+        .minimum_width = kMinimumWindowWidth,
+        .minimum_height = kMinimumWindowHeight,
         .flags = window_flags(config.window),
         .visible = false,
     }};
@@ -408,9 +561,10 @@ int run_client(const ClientConfig& config, ClientRunMode mode) {
     mycore::render_2d::Renderer renderer{device, assets};
     mycore::debug_ui::Context debug_ui{window, device};
     const auto render_settings = presentation_settings(config);
-    const auto presentation_label = mode == ClientRunMode::InMemoryGame
-                                        ? std::string_view{"NETWORKED FIXED"}
-                                        : presentation_mode_name(config.debug.presentation_mode);
+    const auto presentation_label =
+        mode == ClientRunMode::InMemoryGame || mode == ClientRunMode::NativeGame
+            ? std::string_view{"NETWORKED FIXED"}
+            : presentation_mode_name(config.debug.presentation_mode);
     mycore::debug::log_info("dots.client",
                             "Started SDL_GPU renderer '{}' with {}, {} presentation, and {} input",
                             device.driver_name(),
@@ -421,6 +575,9 @@ int run_client(const ClientConfig& config, ClientRunMode mode) {
 
     if (mode == ClientRunMode::InMemoryGame) {
         return run_in_memory_game(config, window, renderer, debug_ui, render_settings);
+    }
+    if (mode == ClientRunMode::NativeGame) {
+        return run_native_game(config, window, renderer, debug_ui, render_settings, options);
     }
 
     dots::simulation::World world;
@@ -464,6 +621,8 @@ int run_client(const ClientConfig& config, ClientRunMode mode) {
             continue;
         }
 
+        debug_ui.begin_frame();
+        const auto mouse_input_available = !debug_ui.wants_mouse_capture();
         const auto now = std::chrono::steady_clock::now();
         const auto frame_duration =
             std::chrono::duration_cast<mycore::time::Duration>(now - previous_time);
@@ -502,7 +661,8 @@ int run_client(const ClientConfig& config, ClientRunMode mode) {
                                        config.controls,
                                        *player,
                                        dots::simulation::InputCommandId{next_command_id},
-                                       viewport);
+                                       viewport,
+                                       mouse_input_available);
                 ++next_command_id;
                 if (!world.apply_input(command)) {
                     throw dots::client::StartupError{"The local world rejected an input command"};
@@ -557,7 +717,6 @@ int run_client(const ClientConfig& config, ClientRunMode mode) {
                 });
         }
 
-        debug_ui.begin_frame();
         draw_debug_overlay(
             config,
             {
@@ -566,6 +725,9 @@ int run_client(const ClientConfig& config, ClientRunMode mode) {
                 .player_count = world.player_count(),
                 .food_count = world.food_count(),
                 .occupied_grid_cells = world.occupied_spatial_cell_count(),
+                .snapshot_id = std::nullopt,
+                .transport = std::nullopt,
+                .replication = std::nullopt,
             },
             frame_metrics.snapshot(),
             simulation_snapshot);

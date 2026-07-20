@@ -44,13 +44,15 @@ struct InputViewport {
 [[nodiscard]] mycore::math::Vector2
 movement_from_input(const mycore::platform_sdl::InputSnapshot& input,
                     const ClientControls& controls,
-                    InputViewport viewport) noexcept;
+                    InputViewport viewport,
+                    bool mouse_input_available = true) noexcept;
 
 [[nodiscard]] dots::simulation::InputCommand
 make_input_command(const mycore::platform_sdl::InputSnapshot& input,
                    const ClientControls& controls,
                    dots::simulation::EntityId entity_id,
                    dots::simulation::InputCommandId command_id,
-                   InputViewport viewport) noexcept;
+                   InputViewport viewport,
+                   bool mouse_input_available = true) noexcept;
 
 } // namespace dots::client

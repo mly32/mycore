@@ -2,10 +2,14 @@
 
 #include "mycore/core/strong_id.hpp"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
+#include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
@@ -29,6 +33,49 @@ enum class SendStatus : std::uint8_t {
     Sent,
     UnknownConnection,
     Disconnected,
+    PayloadTooLarge,
+    QueueFull,
+    TransportFailure,
+};
+
+enum class ConnectionState : std::uint8_t {
+    Connecting,
+    Connected,
+    Closing,
+    Disconnected,
+    Failed,
+};
+
+struct TransportStatistics {
+    ConnectionState state{};
+    std::optional<std::chrono::milliseconds> round_trip_time;
+    std::optional<float> packet_loss_percent;
+    std::optional<float> outbound_packets_per_second;
+    std::optional<float> outbound_bytes_per_second;
+    std::optional<float> inbound_packets_per_second;
+    std::optional<float> inbound_bytes_per_second;
+    std::optional<std::size_t> pending_unreliable_bytes;
+    std::optional<std::size_t> pending_reliable_bytes;
+    std::optional<std::size_t> sent_unacknowledged_reliable_bytes;
+    std::optional<std::chrono::microseconds> outbound_queue_delay;
+};
+
+struct NetworkImpairment {
+    std::uint32_t outgoing_lag_milliseconds{};
+    float outgoing_loss_percent{};
+};
+
+class NetworkAddress {
+public:
+    [[nodiscard]] static std::optional<NetworkAddress> parse(std::string_view value);
+
+    [[nodiscard]] const std::string& value() const noexcept;
+    [[nodiscard]] std::uint16_t port() const;
+
+private:
+    explicit NetworkAddress(std::string value);
+
+    std::string value_;
 };
 
 struct Connected {
@@ -57,6 +104,8 @@ public:
                                           std::span<const std::byte> payload,
                                           DeliveryMode delivery) = 0;
     [[nodiscard]] virtual bool disconnect(ConnectionHandle connection) = 0;
+    [[nodiscard]] virtual std::optional<TransportStatistics>
+    statistics(ConnectionHandle connection) const = 0;
 };
 
 class InMemoryNetwork {
@@ -71,6 +120,29 @@ public:
 
     [[nodiscard]] Endpoint& server_endpoint() noexcept;
     [[nodiscard]] Endpoint& connect_client();
+
+private:
+    class Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+struct ListeningEndpoint {
+    Endpoint* endpoint{};
+    NetworkAddress address;
+};
+
+class GameNetworkingSocketsNetwork {
+public:
+    explicit GameNetworkingSocketsNetwork(NetworkImpairment impairment = {});
+    ~GameNetworkingSocketsNetwork();
+
+    GameNetworkingSocketsNetwork(const GameNetworkingSocketsNetwork&) = delete;
+    GameNetworkingSocketsNetwork& operator=(const GameNetworkingSocketsNetwork&) = delete;
+    GameNetworkingSocketsNetwork(GameNetworkingSocketsNetwork&&) = delete;
+    GameNetworkingSocketsNetwork& operator=(GameNetworkingSocketsNetwork&&) = delete;
+
+    [[nodiscard]] ListeningEndpoint listen(const NetworkAddress& address);
+    [[nodiscard]] Endpoint& connect(const NetworkAddress& address);
 
 private:
     class Impl;

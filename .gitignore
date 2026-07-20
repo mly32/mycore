@@ -33,6 +33,22 @@ install_manifest.txt
 *.profdata
 *.profraw
 
+# Python caches, environments, and test artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+__pypackages__/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.nox/
+.pytest_cache/
+.ruff_cache/
+.tox/
+.venv/
+venv/
+
 # Editors and operating systems
 .DS_Store
 Thumbs.db

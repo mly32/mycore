@@ -1,4 +1,5 @@
 find_package(Catch2 3 CONFIG REQUIRED)
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
 add_executable(mycore_core_smoke_tests mycore_core_smoke_tests.cpp)
 target_link_libraries(
@@ -32,6 +33,7 @@ target_link_libraries(
         Catch2::Catch2WithMain
 )
 mycore_configure_test_executable(mycore_net_transport_tests)
+mycore_stage_runtime_dependencies(mycore_net_transport_tests)
 catch_discover_tests(mycore_net_transport_tests)
 
 add_executable(mycore_assets_tests mycore_assets_tests.cpp)
@@ -107,6 +109,7 @@ target_link_libraries(
         Catch2::Catch2WithMain
 )
 mycore_configure_test_executable(dots_session_tests)
+mycore_stage_runtime_dependencies(dots_session_tests)
 catch_discover_tests(dots_session_tests)
 
 add_executable(
@@ -152,7 +155,7 @@ add_test(NAME dots_client_help COMMAND dots_client --help)
 set_tests_properties(
     dots_client_help
     PROPERTIES
-        PASS_REGULAR_EXPRESSION "offline and embedded-authority modes"
+        PASS_REGULAR_EXPRESSION "offline, embedded-authority, and native-network modes"
 )
 
 add_test(NAME dots_client_headless_smoke COMMAND dots_client --headless-smoke)
@@ -172,4 +175,14 @@ set_tests_properties(
 add_test(NAME dots_server_help COMMAND dots_server --help)
 set_tests_properties(dots_server_help PROPERTIES PASS_REGULAR_EXPRESSION "authoritative Dots")
 
-add_test(NAME dots_server_ticks_smoke COMMAND dots_server --ticks 2)
+add_test(NAME dots_server_ticks_smoke COMMAND dots_server --listen 127.0.0.1:0 --ticks 2)
+
+add_test(
+    NAME dots_session_launcher_tests
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/dots_session_launcher_test.py"
+)
+set_tests_properties(
+    dots_session_launcher_tests
+    PROPERTIES
+        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
+)

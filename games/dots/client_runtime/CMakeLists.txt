@@ -14,5 +14,7 @@ target_link_libraries(
         Dots::Replication
         MyCore::Math
         MyCore::NetTransport
+    PRIVATE
+        MyCore::Debug
 )
 mycore_configure_target(dots_client_runtime)

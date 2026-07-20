@@ -55,10 +55,14 @@ TEST_CASE("Client configuration defaults match the playable client", "[dots][cli
     REQUIRE(config.window.title == "Dots");
     REQUIRE(config.window.width == 1280);
     REQUIRE(config.window.height == 720);
+    REQUIRE(dots::client::kMinimumWindowWidth == 500);
+    REQUIRE(dots::client::kMinimumWindowHeight == 500);
     REQUIRE(config.window.resizable);
     REQUIRE_FALSE(config.window.fullscreen);
     REQUIRE(config.window.high_dpi);
     REQUIRE(config.window.vsync);
+    REQUIRE(config.network.mode == dots::client::NetworkMode::Offline);
+    REQUIRE(config.network.server_address == "127.0.0.1:27020");
     REQUIRE(config.controls.mode == dots::client::InputMode::Hybrid);
     REQUIRE(config.controls.mouse_dead_zone_pixels == 12.0F);
     REQUIRE(config.controls.bindings.up ==
@@ -72,6 +76,15 @@ TEST_CASE("Client configuration defaults match the playable client", "[dots][cli
     REQUIRE(config.colors.player == dots::client::RgbColor{0x4C, 0xC9, 0xF0});
     REQUIRE(config.colors.player_growth == dots::client::RgbColor{0xFF, 0xD1, 0x66});
     REQUIRE(config.colors.food == dots::client::RgbColor{0xF7, 0x25, 0x85});
+}
+
+TEST_CASE("Client configuration accepts the minimum logical window size",
+          "[dots][client][config]") {
+    const auto config = dots::client::parse_client_config("[window]\nwidth = 500\nheight = 500\n",
+                                                          "minimum-window.toml");
+
+    CHECK(config.window.width == 500);
+    CHECK(config.window.height == 500);
 }
 
 TEST_CASE("Presentation modes have display labels", "[dots][client][config]") {
@@ -92,6 +105,10 @@ resizable = false
 fullscreen = true
 high_dpi = false
 vsync = false
+
+[network]
+mode = "native"
+server_address = "[::1]:28020"
 
 [input]
 mode = "keyboard"
@@ -132,6 +149,8 @@ food = "#FEDCBA"
     REQUIRE(config.window.fullscreen);
     REQUIRE_FALSE(config.window.high_dpi);
     REQUIRE_FALSE(config.window.vsync);
+    REQUIRE(config.network.mode == dots::client::NetworkMode::Native);
+    REQUIRE(config.network.server_address == "[::1]:28020");
     REQUIRE(config.controls.mode == dots::client::InputMode::Keyboard);
     REQUIRE(config.controls.mouse_dead_zone_pixels == 4.5F);
     REQUIRE(config.controls.bindings.up == std::vector{mycore::platform_sdl::Key::I});
@@ -237,11 +256,16 @@ TEST_CASE("Invalid client TOML reports the source and field", "[dots][client][co
     };
     const std::vector invalid_documents{
         InvalidDocument{"[window", "<document>"},
+        InvalidDocument{"[network]\nmode = \"remote\"", "network.mode"},
+        InvalidDocument{"[network]\nserver_address = \"localhost:27020\"",
+                        "network.server_address"},
+        InvalidDocument{"[network]\nserver_address = \"127.0.0.1:0\"", "network.server_address"},
         InvalidDocument{"mystery = true", "mystery"},
         InvalidDocument{"[window]\nwidht = 10", "window.widht"},
         InvalidDocument{"window = 10", "window"},
         InvalidDocument{"[window]\nwidth = \"wide\"", "window.width"},
-        InvalidDocument{"[window]\nwidth = 0", "window.width"},
+        InvalidDocument{"[window]\nwidth = 499", "window.width"},
+        InvalidDocument{"[window]\nheight = 499", "window.height"},
         InvalidDocument{"[window]\nheight = 16385", "window.height"},
         InvalidDocument{"[input]\nmode = \"controller\"", "input.mode"},
         InvalidDocument{"[input]\nmouse_dead_zone_pixels = -1", "input.mouse_dead_zone_pixels"},

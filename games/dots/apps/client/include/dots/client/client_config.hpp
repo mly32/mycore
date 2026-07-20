@@ -18,6 +18,24 @@ enum class PresentationMode : std::uint8_t {
     Comparison,
 };
 
+enum class NetworkMode : std::uint8_t {
+    Offline,
+    InMemory,
+    Native,
+};
+
+[[nodiscard]] constexpr std::string_view network_mode_name(NetworkMode mode) noexcept {
+    switch (mode) {
+    case NetworkMode::Offline:
+        return "OFFLINE";
+    case NetworkMode::InMemory:
+        return "IN MEMORY";
+    case NetworkMode::Native:
+        return "NATIVE";
+    }
+    return "UNKNOWN";
+}
+
 [[nodiscard]] constexpr std::string_view presentation_mode_name(PresentationMode mode) noexcept {
     switch (mode) {
     case PresentationMode::Interpolated:
@@ -38,6 +56,9 @@ public:
 
 // Keep games/dots/config/dots-client.schema.json synchronized with these settings and with
 // client_config.cpp whenever accepted fields, types, defaults, or validation rules change.
+inline constexpr int kMinimumWindowWidth = 500;
+inline constexpr int kMinimumWindowHeight = 500;
+
 struct WindowSettings {
     std::string title{"Dots"};
     int width{1280};
@@ -46,6 +67,11 @@ struct WindowSettings {
     bool fullscreen{};
     bool high_dpi{true};
     bool vsync{true};
+};
+
+struct NetworkSettings {
+    NetworkMode mode{NetworkMode::Offline};
+    std::string server_address{"127.0.0.1:27020"};
 };
 
 struct SimulationSettings {
@@ -81,6 +107,7 @@ struct ColorSettings {
 
 struct ClientConfig {
     WindowSettings window;
+    NetworkSettings network;
     ClientControls controls;
     SimulationSettings simulation;
     ViewSettings view;
