@@ -24,7 +24,7 @@ jobs:
       run_expensive: ${{ steps.filter.outputs.run_expensive }}
     steps:
       - name: Check out MyCore
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.0
 
       - name: Detect changes requiring full CI
         id: filter
@@ -44,7 +44,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Check out MyCore
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.0
 
       - name: Install clang-format
         run: |
@@ -84,13 +84,13 @@ jobs:
 
     steps:
       - name: Check out MyCore
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.0
 
       - name: Prepare vcpkg binary cache
         run: cmake -E make_directory "${{ env.VCPKG_DEFAULT_BINARY_CACHE }}"
 
       - name: Restore vcpkg binary cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
           key: vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
@@ -98,7 +98,7 @@ jobs:
             vcpkg-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Check out pinned vcpkg
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.0
         with:
           repository: microsoft/vcpkg
           ref: ec62869cdd9f80413abb5e4c1d8b68688df932f4
@@ -157,7 +157,7 @@ jobs:
         run: cmake --build --preset ${{ matrix.preset }} --target dots_client_package
 
       - name: Upload Dots client package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dots-client-${{ matrix.preset }}
           path: build/${{ matrix.preset }}/packages/dots-client-*
@@ -166,7 +166,7 @@ jobs:
 
       - name: Upload diagnostic logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ci-logs-${{ matrix.platform }}-attempt-${{ github.run_attempt }}
           path: |
