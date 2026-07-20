@@ -49,7 +49,7 @@ jobs:
             preset: macos-clang-debug
           - platform: Windows
             runner: windows-2022
-            preset: windows-msvc-x64-debug
+            preset: windows-msvc-debug
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     env:

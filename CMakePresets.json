@@ -74,8 +74,8 @@
       }
     },
     {
-      "name": "windows-msvc-x64-debug",
-      "displayName": "Windows MSVC x64 Debug",
+      "name": "windows-msvc-debug",
+      "displayName": "Windows MSVC Debug",
       "inherits": "base",
       "condition": {
         "type": "equals",
@@ -88,8 +88,8 @@
       }
     },
     {
-      "name": "windows-msvc-x64-release",
-      "displayName": "Windows MSVC x64 Release",
+      "name": "windows-msvc-release",
+      "displayName": "Windows MSVC Release",
       "inherits": "base",
       "condition": {
         "type": "equals",
@@ -120,12 +120,12 @@
       "configurePreset": "linux-clang-release"
     },
     {
-      "name": "windows-msvc-x64-debug",
-      "configurePreset": "windows-msvc-x64-debug"
+      "name": "windows-msvc-debug",
+      "configurePreset": "windows-msvc-debug"
     },
     {
-      "name": "windows-msvc-x64-release",
-      "configurePreset": "windows-msvc-x64-release"
+      "name": "windows-msvc-release",
+      "configurePreset": "windows-msvc-release"
     }
   ],
   "testPresets": [
@@ -158,15 +158,15 @@
       }
     },
     {
-      "name": "windows-msvc-x64-debug",
-      "configurePreset": "windows-msvc-x64-debug",
+      "name": "windows-msvc-debug",
+      "configurePreset": "windows-msvc-debug",
       "output": {
         "outputOnFailure": true
       }
     },
     {
-      "name": "windows-msvc-x64-release",
-      "configurePreset": "windows-msvc-x64-release",
+      "name": "windows-msvc-release",
+      "configurePreset": "windows-msvc-release",
       "output": {
         "outputOnFailure": true
       }

@@ -77,8 +77,8 @@ These can become later experiments after a working reference implementation exis
 | Logging | **spdlog + fmt** |
 | Profiling | **Tracy**, plus GPU capture tools |
 | Static analysis | **clang-tidy + clang-format** |
-| Client platforms | Windows x64 and Linux x64 first; macOS arm64 compile-tested early |
-| Server platform | Linux x64 headless |
+| Client platforms | Windows and Linux first; macOS compile-tested early |
+| Server platform | Linux headless |
 | World representation | Explicit structures-of-arrays and a uniform spatial hash |
 | CI | GitHub Actions |
 | Server deployment | A simple Linux container; no orchestration platform initially |
@@ -202,9 +202,9 @@ Reference:
 ### Suggested initial presets
 
 ```text
-windows-msvc-x64-debug
-windows-msvc-x64-release
-windows-clangcl-x64-asan
+windows-msvc-debug
+windows-msvc-release
+windows-clangcl-asan
 linux-clang-debug
 linux-clang-release
 linux-clang-asan
@@ -432,16 +432,16 @@ The most valuable tests should exercise:
 
 ### Tier 1 client platforms
 
-- Windows x64.
-- Linux x64.
+- Windows.
+- Linux.
 
 ### Tier 1 server platform
 
-- Linux x64 headless.
+- Linux headless.
 
 ### Tier 2 client platform
 
-- macOS arm64.
+- macOS.
 
 SDL3 supports Windows, Linux, and macOS.
 
@@ -1677,10 +1677,10 @@ GameNetworkingSockets
 Lua 5.5
 thin direct-C-API wrapper
 
-Windows x64 client
-Linux x64 client
-Linux x64 headless server
-macOS arm64 compile-tested from the beginning
+Windows client
+Linux client
+Linux headless server
+macOS compile-tested from the beginning
 
 30 Hz authoritative simulation
 30 Hz client input

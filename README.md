@@ -26,7 +26,7 @@ ctest --preset macos-clang-debug
 ```
 
 The corresponding Linux and Windows presets are `linux-clang-debug` and
-`windows-msvc-x64-debug`. See the [build guide](docs/building.md) for platform prerequisites,
+`windows-msvc-debug`. See the [build guide](docs/building.md) for platform prerequisites,
 focused builds, packaging, and IDE setup.
 
 Run Dots offline:
