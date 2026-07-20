@@ -20,6 +20,9 @@ Keep reusable, game-neutral code under `engine/` and Dots-specific code under `g
 Avoid speculative abstractions: extract an engine facility only when a game-neutral contract is
 clear from a concrete use case.
 
+CI classifies each change before allocating platform runners. Changes containing only Markdown
+files skip formatting, build, test, and package jobs; any other changed file runs the full matrix.
+
 ## Branch names
 
 Use lowercase kebab-case with a prefix that describes the work:
