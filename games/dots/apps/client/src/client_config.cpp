@@ -473,7 +473,10 @@ void parse_view(const toml::table& table,
 void parse_debug(const toml::table& table,
                  ClientConfig& config,
                  const std::filesystem::path& source) {
-    validate_keys(table, {"presentation_mode"}, source, "debug");
+    validate_keys(table, {"enabled", "presentation_mode"}, source, "debug");
+    if (table.contains("enabled")) {
+        config.debug.enabled = read_bool(table, "enabled", source, "debug.enabled");
+    }
     if (table.contains("presentation_mode")) {
         config.debug.presentation_mode = parse_presentation_mode(
             read_string(table, "presentation_mode", source, "debug.presentation_mode"),

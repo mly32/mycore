@@ -102,12 +102,14 @@ contains the formulas, network-change behavior, and the explicitly deferred live
 
 ## Current Dots Overlay
 
-The Dots-owned Dear ImGui panel is anchored in the lower-right corner. It can collapse and splits
-its output into **Runtime**, **Network**, **Prediction**, and **Tools** tabs so unrelated
-diagnostics do not create one tall scrolling view. Fault injection and visual-layer controls live
-under Tools rather than extending the Prediction metrics view. A tab can still scroll when the
-available window height is small. `MyCore::DebugUI` owns ImGui integration, but the fields and
-their meanings remain Dots-owned.
+The Dots-owned Dear ImGui panel is anchored in the lower-right corner. `[debug].enabled` defaults
+to `true`; set it to `false` to hide the panel, suppress world-space diagnostic layers, and
+prevent the panel from receiving input. Disabling debug does not change simulation or gameplay
+presentation. When enabled, the panel can collapse and splits its output into **Runtime**,
+**Network**, **Prediction**, and **Tools** tabs so unrelated diagnostics do not create one tall
+scrolling view. Fault injection and visual-layer controls live under Tools rather than extending
+the Prediction metrics view. A tab can still scroll when the available window height is small.
+`MyCore::DebugUI` owns ImGui integration, but the fields and their meanings remain Dots-owned.
 
 ### World and presentation fields — Current
 

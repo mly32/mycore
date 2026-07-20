@@ -235,6 +235,11 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "enabled": {
+          "description": "Show the in-game Dear ImGui observability panel and allow it to receive input.",
+          "type": "boolean",
+          "default": true
+        },
         "presentation_mode": {
           "description": "Player presentation: interpolated is smooth, fixed shows the latest completed tick, and comparison overlays a fixed-tick outline on the smooth player. Names are case-insensitive.",
           "type": "string",

@@ -73,6 +73,10 @@ when present. `--config <path>` replaces that automatic path. CLI mode flags suc
 Set `[network].input_redundancy = false` to send only the current input sample. This is useful for
 comparing recovery behavior under simulated loss; redundancy is enabled by default.
 
+Set `[debug].enabled = false` to hide the in-game observability panel, suppress world-space
+diagnostic layers, and prevent the panel from receiving input. It defaults to `true`; this does
+not change simulation or gameplay presentation.
+
 ```bash
 ./build/macos-clang-debug/bin/dots_client \
     --config games/dots/config/dots-client.toml
@@ -80,7 +84,8 @@ comparing recovery behavior under simulated loss; redundancy is enabled by defau
 
 ## Runtime visibility
 
-The in-game debug panel separates Runtime, Network, Prediction, and Tools output. It reports
+When `[debug].enabled` is true, the in-game debug panel separates Runtime, Network, Prediction,
+and Tools output. It reports
 server-assigned client/entity IDs, simulation and frame health, transport statistics, input ACK
 and history pressure, replay/correction metrics, and authoritative/predicted/presentation state.
 Tools can inject prediction errors or a three-packet drop burst without changing measured
