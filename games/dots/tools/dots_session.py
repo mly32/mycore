@@ -29,6 +29,7 @@ def _forward_output(
 
 
 def _stop_processes(processes: Sequence[subprocess.Popen[str]]) -> None:
+    print("dots_session: stopping all processes", file=sys.stderr)
     for process in processes:
         if process.poll() is None:
             process.terminate()
@@ -78,6 +79,10 @@ def run_session(
         deadline = time.monotonic() + readiness_timeout
         while not ready and time.monotonic() < deadline:
             if server.poll() is not None:
+                print(
+                    f"dots_session: server exited during startup with code {server.returncode}",
+                    file=sys.stderr,
+                )
                 return server.returncode or 1
             try:
                 label, line = messages.get(timeout=0.05)
@@ -100,13 +105,23 @@ def run_session(
                 pass
 
             if server.poll() is not None:
+                print(
+                    f"dots_session: server exited with code {server.returncode}",
+                    file=sys.stderr,
+                )
                 return server.returncode or 1
             for client in clients:
                 if client.poll() not in (None, 0):
+                    print(
+                        f"dots_session: client exited with code {client.returncode}",
+                        file=sys.stderr,
+                    )
                     return client.returncode or 1
             if clients and all(client.poll() == 0 for client in clients):
+                print("dots_session: all clients exited successfully", file=sys.stderr)
                 return 0
     except KeyboardInterrupt:
+        print("dots_session: interrupted by user", file=sys.stderr)
         return 130
     finally:
         _stop_processes(processes)
@@ -152,24 +167,24 @@ def _session_commands(arguments: argparse.Namespace) -> tuple[list[str], list[st
     build_directory = arguments.build_dir.resolve()
     server = _executable(build_directory, "dots_server")
     client = _executable(build_directory, "dots_client")
-    impairment = [
+    impairment: list[str] = [
         "--fake-lag-ms",
         str(arguments.fake_lag_ms),
         "--fake-loss-percent",
         str(arguments.fake_loss_percent),
     ]
-    server_command = [
+    server_command: list[str] = [
         str(server),
         "--listen",
         arguments.server_address,
         *impairment,
     ]
-    client_configuration = (
+    client_configuration: list[str] = (
         []
         if arguments.client_config is None
         else ["--config", str(arguments.client_config)]
     )
-    client_command = [
+    client_command: list[str] = [
         str(client),
         *client_configuration,
         "--connect",
