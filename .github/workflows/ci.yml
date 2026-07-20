@@ -79,19 +79,23 @@ jobs:
     timeout-minutes: 60
     env:
       VCPKG_ROOT: ${{ github.workspace }}/vcpkg
-      VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.cache/vcpkg/archives
       VCPKG_MAX_CONCURRENCY: 4
 
     steps:
       - name: Check out MyCore
         uses: actions/checkout@v6.0.2
 
-      - name: Export GitHub Actions cache environment
-        uses: actions/github-script@v7
+      - name: Prepare vcpkg binary cache
+        run: cmake -E make_directory "${{ env.VCPKG_DEFAULT_BINARY_CACHE }}"
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@v4
         with:
-          script: |
-            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Check out pinned vcpkg
         uses: actions/checkout@v6.0.2
