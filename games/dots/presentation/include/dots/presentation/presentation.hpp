@@ -1,5 +1,6 @@
 #pragma once
 
+#include "dots/presentation/remote_presentation.hpp"
 #include "dots/protocol/ids.hpp"
 #include "dots/replication/replication.hpp"
 #include "dots/simulation/ids.hpp"
@@ -23,6 +24,8 @@ enum class CircleKind : std::uint8_t {
     AuthoritativeSampleGhost,
     PreCorrectionGhost,
     ReplayMarker,
+    RemoteOlderEndpointGhost,
+    RemoteNewerEndpointGhost,
 };
 
 struct CircleInstance {
@@ -123,6 +126,8 @@ struct Settings {
     mycore::render::Color authoritative_sample_outline{1.0F, 0.55F, 0.12F, 0.95F};
     mycore::render::Color pre_correction_outline{1.0F, 0.1F, 0.75F, 0.95F};
     mycore::render::Color replay_marker{0.63F, 0.3F, 1.0F, 0.9F};
+    mycore::render::Color remote_older_endpoint_outline{0.0F, 0.9F, 0.95F, 0.95F};
+    mycore::render::Color remote_newer_endpoint_outline{0.2F, 0.45F, 1.0F, 0.95F};
     float comparison_ghost_outline_pixels{2.0F};
 };
 
@@ -143,6 +148,12 @@ extract_interpolated_follow_frame(const simulation::World& world,
 [[nodiscard]] FrameData
 extract_predicted_replicated_frame(const replication::ReplicatedWorld& world,
                                    const PredictedReplicatedPlayer& controlled_player);
+
+[[nodiscard]] FrameData
+extract_remote_interpolated_predicted_frame(const replication::ReplicatedWorld& world,
+                                            const RemotePresentationFrame& remotes,
+                                            std::span<const RemoteEntityEndpoints> remote_endpoints,
+                                            const PredictedReplicatedPlayer& controlled_player);
 
 [[nodiscard]] mycore::render_2d::DrawList build_draw_list(const FrameData& frame,
                                                           const Settings& settings);

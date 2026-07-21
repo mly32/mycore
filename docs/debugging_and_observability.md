@@ -1,5 +1,10 @@
 # Debugging and Observability Guide
 
+Use the state and clock names defined in
+[`networked_prediction_reference.md`](networked_prediction_reference.md). In particular, latest
+replicated authority, owned prediction, remote presentation, and composed presentation are
+separate sources and must never share an ambiguous "current world" label.
+
 This guide is the canonical reference for Dots runtime debugging output: what each value means,
 where it comes from, how often it changes, and which conclusions it can and cannot support.
 
@@ -11,12 +16,8 @@ but this guide must clearly distinguish implemented behavior from planned behavi
 
 This document uses three status labels:
 
-- **Current:** implemented on `feature/11-prediction-reconciliation`, including the approved
-  baseline and approved Phase 11.1 through 11.4 implementation, documentation, deterministic
-  validation, 100–200 ms native latency checks, and redundancy-enabled/disabled loss checks.
-- **Feature 12 planned:** specified in
-  [`plans/12-remote-interpolation.md`](plans/12-remote-interpolation.md), but not yet
-  implemented.
+- **Current:** Feature 11 owned prediction/reconciliation and Feature 12 remote
+  interpolation-and-hold are implemented on `feature/12-remote-interpolation`.
 - **Feature 13 planned:** authoritative interactions, spectating, and Gameplay output specified
   in [`plans/13-authoritative-interactions-spectating.md`](plans/13-authoritative-interactions-spectating.md).
 - **Feature 14 planned:** complete selectable rollback and Rollback output specified in
@@ -34,7 +35,7 @@ Networking debug output is useful only when the state being measured is named pr
 |---|---|---|
 | Authoritative world | The complete gameplay `simulation::World` stepped by the server. | Server only |
 | Authoritative sample | State copied from the server into a snapshot. It is historical when the client receives it. | Protocol/replication |
-| Replicated world | The newest validated authoritative sample installed by a client. | Client runtime |
+| Latest replicated snapshot | The newest validated authoritative sample installed by a client. | Client runtime |
 | Predicted state | Feature 11 controlled-player state advanced locally from owned input. | Client runtime |
 | Predicted World | Feature 14 complete gameplay state restored from a checkpoint and replayed through selected entities and recorded assumptions. | Planned client rollback kernel |
 | Pre-correction state | Prediction immediately before a nonzero reconciliation correction. | Client runtime debug history |
@@ -47,9 +48,9 @@ A native client cannot observe the server's live current position. A client debu
 
 ## Clock and Timeline Vocabulary
 
-The full clock model and a two-client example live in the
-[networking guide](server_authoritative_networking_guide.md#clock-and-timeline-vocabulary). Use
-these labels consistently in overlays, logs, and non-debug UI:
+The full clock model and state ownership table live in the
+[networked prediction reference](networked_prediction_reference.md). Use these labels
+consistently in overlays, logs, and non-debug UI:
 
 | Label | Meaning | Comparable between clients? |
 |---|---|---|
@@ -78,7 +79,7 @@ prediction uses local input steps and server ACKs; reconciliation replays the re
 suffix; correction smoothing decays a spatial offset over a fixed 100 ms of local steady time.
 Network conditions can change correction frequency and magnitude, but not that duration.
 
-Feature 12 also does not estimate or render server “now.” Its planned remote presentation cursor
+Feature 12 also does not estimate or render server “now.” Its remote presentation cursor
 uses server ticks and targets `newest received tick - 6`. It advances at 100% speed within a
 `±0.25`-tick deadband and otherwise uses
 `clamp(1 + 0.02 * tick_error, 0.95, 1.05)`. The target remains 200 ms; RTT and jitter metrics are
@@ -116,7 +117,7 @@ the Prediction metrics view. A tab can still scroll when the available window he
 | Label | Source and units | Meaning |
 |---|---|---|
 | `Input` | Client configuration | Active mouse, keyboard, or hybrid input mapping mode. |
-| `Presentation` | Client mode | Offline presentation mode, or `NETWORKED PREDICTED` when owned movement is predicted and corrections are smoothed. Remote entities still use their latest replicated sample. |
+| `Presentation` | Client mode | Offline presentation mode, or `NETWORKED PREDICTED` when owned movement is predicted and corrections are smoothed. Remote entities use Feature 12's delayed known-authority presentation frame. |
 | `Tick` | Offline world tick or latest replicated server tick | In offline play this is the local world tick. In networked play it is the tick stored in the latest accepted server snapshot. |
 | `Players` | Current offline or replicated entity collection | Number of player entities visible to this client state. It is not the server's total connected-client count. |
 | `Food` | Current offline or replicated entity collection | Number of food entities visible to this client state. |
@@ -223,7 +224,7 @@ history prefix is discarded, and at most 256 remaining inputs are replayed in th
 frame before replicated and predicted state commit together. The graphical client draws the
 controlled player and follows it with the camera from one presentation position: corrected
 prediction plus the current visual-only smoothing offset. Remote entities still draw from the
-latest replicated sample until Feature 12.
+delayed Feature 12 remote presentation frame.
 
 The runtime exposes `predicted_position()`, `pre_correction_position()`,
 `latest_replay_path()`, `latest_correction_replay_path()`, and `prediction_statistics()`.
@@ -302,12 +303,13 @@ rendered frames. Suppressed sends still record and predict their input exactly a
 network loss would. Injected drops have a separate counter and are never added to transport
 packet-loss measurements.
 
-## Remote Interpolation Output — Feature 12 Planned
+## Remote Interpolation Output — Current
 
-Feature 12 will add a 32-sample presentation buffer and a remote render cursor delayed by six
-server ticks, currently 200 ms.
+Feature 12 uses a 32-sample presentation buffer and a remote render cursor delayed by six server
+ticks, currently 200 ms. The client receives every accepted snapshot from a runtime poll, then
+adapts it into the renderer-free remote history.
 
-Planned metrics include:
+The **Interpolation** tab reports:
 
 | Field | Meaning |
 |---|---|
@@ -317,23 +319,24 @@ Planned metrics include:
 | Current delay | Actual newest-tick minus presentation-cursor distance. |
 | Presentation tick | Fractional server-tick coordinate used to draw remotes. |
 | Cursor rate | Current 0.95–1.05 presentation-clock adjustment. This does not change local input rate. |
-| Brackets | Older/newer snapshot IDs and server ticks enclosing the cursor. |
-| Alpha | Fraction between the selected bracket ticks. |
+| Brackets | Older/newer snapshot IDs and server ticks enclosing the cursor, plus alpha. |
 | Jitter | Latest and EWMA deviation between observed and server-implied snapshot spacing. |
 | Late snapshot | Snapshot arriving at or behind the current presentation cursor. |
 | Hold/underrun | Continuous period with no newer bracket; remotes hold rather than extrapolate. |
 | Hard rebase | Presentation cursor reset after recoverable bracketing is lost. |
 
-### Planned Feature 12 world-space legend
+### Feature 12 world-space legend
 
-For one selected remote entity:
+For the selected remote player (the lowest currently sampled player by default; select an ID in
+the Tools tab):
 
 - Filled circle: interpolated presentation.
 - Cyan outline: older known authoritative endpoint.
 - Blue outline: newer known authoritative endpoint.
 
-An ImGui toggle will optionally draw endpoint brackets for every remote entity. It defaults off
-to avoid clutter and unnecessary debug draw cost at scale.
+The **Draw brackets for all remotes** Tools toggle defaults off to avoid clutter and unnecessary
+debug draw cost at scale. The Interpolation tab also lists the selected endpoint values. Endpoint
+circles are debug-only and never feed presentation or gameplay state.
 
 Feature 12 presentation-clock correction and future local input-clock synchronization solve
 different problems. Feature 12 keeps a delayed remote cursor centered in known snapshots. A
@@ -398,8 +401,8 @@ implementation exists; the decision thresholds and atomic-commit invariants live
 ### High RTT but fresh snapshots
 
 The connection has network travel time, but snapshot delivery remains regular. Feature 11 local
-prediction should hide input response latency; Feature 12 will intentionally keep remotes behind
-the newest snapshot.
+prediction should hide input response latency; Feature 12 intentionally keeps remotes behind the
+newest snapshot.
 
 ### Snapshot age rises while transport remains connected
 
@@ -430,12 +433,12 @@ Snapshot acknowledgements have stalled for several seconds. Inspect snapshot age
 connection state, and server health. At full capacity the client performs a visible hard resync
 rather than retaining an unreplayable prediction.
 
-### Remote cursor repeatedly holds — Feature 12 planned
+### Remote cursor repeatedly holds
 
 The buffer lacks a newer endpoint. Compare buffer coverage, current delay, jitter, late samples,
 and packet loss. Holds are safer than inventing remote movement.
 
-### Remote cursor rate remains at 0.95 or 1.05 — Feature 12 planned
+### Remote cursor rate remains at 0.95 or 1.05
 
 The newest-snapshot distance is persistently outside its target. This may indicate sustained
 clock drift, bursty delivery, or insufficient fixed interpolation delay. Use measured data before

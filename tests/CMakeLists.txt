@@ -137,6 +137,16 @@ target_link_libraries(
 mycore_configure_test_executable(dots_presentation_tests)
 catch_discover_tests(dots_presentation_tests)
 
+add_executable(dots_remote_presentation_tests dots_remote_presentation_tests.cpp)
+target_link_libraries(
+    dots_remote_presentation_tests
+    PRIVATE
+        Dots::RemotePresentation
+        Catch2::Catch2WithMain
+)
+mycore_configure_test_executable(dots_remote_presentation_tests)
+catch_discover_tests(dots_remote_presentation_tests)
+
 add_executable(
     dots_client_support_tests
     dots_client_config_tests.cpp

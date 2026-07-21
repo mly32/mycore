@@ -328,6 +328,89 @@ FrameData extract_predicted_replicated_frame(const replication::ReplicatedWorld&
     return frame;
 }
 
+FrameData
+extract_remote_interpolated_predicted_frame(const replication::ReplicatedWorld& world,
+                                            const RemotePresentationFrame& remotes,
+                                            std::span<const RemoteEntityEndpoints> remote_endpoints,
+                                            const PredictedReplicatedPlayer& controlled_player) {
+    if (!finite(controlled_player.presentation_position) ||
+        !finite(controlled_player.predicted_position) ||
+        (controlled_player.pre_correction_position &&
+         !finite(*controlled_player.pre_correction_position))) {
+        throw std::runtime_error{"Dots remote presentation encountered invalid local geometry"};
+    }
+    const auto* controlled = world.find(controlled_player.entity_id);
+    if (controlled == nullptr || controlled->kind != protocol::EntityKind::Player) {
+        throw std::runtime_error{"Dots remote presentation could not find its player"};
+    }
+
+    FrameData frame{.camera = controlled_player.presentation_position, .circles = {}};
+    frame.circles.reserve(remotes.entities.size() + 6U +
+                          controlled_player.correction_replay_path.size());
+    for (const auto& entity : remotes.entities) {
+        if (!finite(entity.position) || !std::isfinite(entity.mass) || entity.mass <= 0.0F) {
+            throw std::runtime_error{
+                "Dots remote presentation encountered invalid remote geometry"};
+        }
+        frame.circles.push_back({
+            .position = entity.position,
+            .mass = entity.mass,
+            .radius = simulation::radius_for_mass(entity.mass),
+            .kind =
+                entity.kind == protocol::EntityKind::Food ? CircleKind::Food : CircleKind::Player,
+        });
+    }
+    frame.circles.push_back({
+        .position = controlled_player.presentation_position,
+        .mass = controlled->mass,
+        .radius = simulation::radius_for_mass(controlled->mass),
+        .kind = CircleKind::Player,
+    });
+    const auto append_remote_endpoint = [&frame](const RemoteEntitySample& entity,
+                                                 CircleKind kind) {
+        frame.circles.push_back({
+            .position = entity.position,
+            .mass = entity.mass,
+            .radius = simulation::radius_for_mass(entity.mass),
+            .kind = kind,
+        });
+    };
+    for (const auto& endpoints : remote_endpoints) {
+        if (endpoints.older) {
+            append_remote_endpoint(*endpoints.older, CircleKind::RemoteOlderEndpointGhost);
+        }
+        if (endpoints.newer) {
+            append_remote_endpoint(*endpoints.newer, CircleKind::RemoteNewerEndpointGhost);
+        }
+    }
+
+    const auto radius = simulation::radius_for_mass(controlled->mass);
+    const auto append_ghost = [&frame, controlled, radius](mycore::math::Vector2 position,
+                                                           CircleKind kind) {
+        frame.circles.push_back({
+            .position = position,
+            .mass = controlled->mass,
+            .radius = radius,
+            .kind = kind,
+        });
+    };
+    if (controlled_player.show_prediction_layers) {
+        append_ghost(controlled_player.predicted_position, CircleKind::PredictedPositionGhost);
+        append_ghost({controlled->position_x, controlled->position_y},
+                     CircleKind::AuthoritativeSampleGhost);
+        if (controlled_player.pre_correction_position) {
+            append_ghost(*controlled_player.pre_correction_position,
+                         CircleKind::PreCorrectionGhost);
+        }
+    }
+    if (controlled_player.show_replay_path) {
+        for (const auto position : controlled_player.correction_replay_path) {
+            append_ghost(position, CircleKind::ReplayMarker);
+        }
+    }
+    return frame;
+}
+
 mycore::render_2d::DrawList build_draw_list(const FrameData& frame, const Settings& settings) {
     mycore::render_2d::DrawList draw_list{
         .camera =
@@ -381,6 +464,22 @@ mycore::render_2d::DrawList build_draw_list(const FrameData& frame, const Settin
                 .outline_color = {},
                 .outline_width_pixels = 0.0F,
             });
+            continue;
+        }
+        if (circle.kind == CircleKind::RemoteOlderEndpointGhost) {
+            append_outline(draw_list,
+                           circle,
+                           settings.remote_older_endpoint_outline,
+                           kPreCorrectionOutlineRadiusOffsetPixels,
+                           settings);
+            continue;
+        }
+        if (circle.kind == CircleKind::RemoteNewerEndpointGhost) {
+            append_outline(draw_list,
+                           circle,
+                           settings.remote_newer_endpoint_outline,
+                           kPreCorrectionOutlineRadiusOffsetPixels + 1.0F,
+                           settings);
             continue;
         }
         draw_list.circles.push_back({

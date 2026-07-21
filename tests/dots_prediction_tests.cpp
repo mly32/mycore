@@ -167,6 +167,29 @@ TEST_CASE("Client prediction advances only successfully sent input", "[dots][pre
     CHECK(client.prediction_statistics(clock_time(10s)).history_count == 1);
 }
 
+TEST_CASE("Client returns every accepted snapshot from one poll in delivery order",
+          "[dots][prediction][replication]") {
+    ManualEndpoint endpoint;
+    dots::client_runtime::Runtime client{endpoint};
+    const mycore::net_transport::ConnectionHandle connection{10};
+    complete_handshake(endpoint, client, connection);
+
+    push_snapshot(endpoint,
+                  connection,
+                  snapshot(1, 2, dots::protocol::InputSequenceId::invalid(), {0.2F, 0.0F}));
+    push_snapshot(endpoint,
+                  connection,
+                  snapshot(2, 4, dots::protocol::InputSequenceId::invalid(), {0.4F, 0.0F}));
+
+    const auto result = client.process_events(clock_time(11s));
+    REQUIRE_FALSE(result.error.has_value());
+    REQUIRE(result.accepted_snapshots.size() == 2);
+    CHECK(result.accepted_snapshots[0].snapshot.snapshot_id == dots::protocol::SnapshotId{1});
+    CHECK(result.accepted_snapshots[1].snapshot.snapshot_id == dots::protocol::SnapshotId{2});
+    CHECK(result.accepted_snapshots[0].arrival_time == clock_time(11s));
+    CHECK(client.world().snapshot_id() == dots::protocol::SnapshotId{2});
+}
+
 TEST_CASE("Transport send failure does not advance prediction or history",
           "[dots][prediction][send]") {
     ManualEndpoint endpoint;
@@ -322,8 +345,8 @@ TEST_CASE("Acknowledgement beyond the last sent input is rejected atomically",
 
     push_snapshot(
         endpoint, connection, snapshot(1, 1, dots::protocol::InputSequenceId{1}, {9.0F, 0.0F}));
-    const auto error = client.process_events(clock_time(11s));
-    REQUIRE(error == dots::client_runtime::RuntimeError::InvalidInputAcknowledgement);
+    const auto result = client.process_events(clock_time(11s));
+    REQUIRE(result.error == dots::client_runtime::RuntimeError::InvalidInputAcknowledgement);
     REQUIRE(client.state() == dots::client_runtime::State::Failed);
     CHECK(client.world().snapshot_id() == dots::protocol::SnapshotId{0});
     check_position(client.predicted_position(), 0.2F, 0.0F);
@@ -348,7 +371,7 @@ TEST_CASE("Acknowledgement cannot regress or become invalid", "[dots][prediction
 
         push_snapshot(
             endpoint, connection, snapshot(2, 3, dots::protocol::InputSequenceId{0}, {9.0F, 0.0F}));
-        REQUIRE(client.process_events(clock_time(12s)) ==
+        REQUIRE(client.process_events(clock_time(12s)).error ==
                 dots::client_runtime::RuntimeError::InvalidInputAcknowledgement);
         CHECK(client.world().snapshot_id() == dots::protocol::SnapshotId{1});
         check_position(client.predicted_position(), 0.2F, 0.2F);
@@ -369,7 +392,7 @@ TEST_CASE("Acknowledgement cannot regress or become invalid", "[dots][prediction
         push_snapshot(endpoint,
                       connection,
                       snapshot(2, 2, dots::protocol::InputSequenceId::invalid(), {9.0F, 0.0F}));
-        REQUIRE(client.process_events(clock_time(12s)) ==
+        REQUIRE(client.process_events(clock_time(12s)).error ==
                 dots::client_runtime::RuntimeError::InvalidInputAcknowledgement);
         CHECK(client.world().snapshot_id() == dots::protocol::SnapshotId{1});
         check_position(client.predicted_position(), 0.2F, 0.0F);
@@ -387,7 +410,7 @@ TEST_CASE("Missing controlled entity is rejected before snapshot commit",
     missing.entities.clear();
     push_snapshot(endpoint, connection, missing);
 
-    REQUIRE(client.process_events(clock_time(11s)) ==
+    REQUIRE(client.process_events(clock_time(11s)).error ==
             dots::client_runtime::RuntimeError::MissingControlledEntity);
     CHECK(client.world().snapshot_id() == dots::protocol::SnapshotId{0});
     check_position(client.predicted_position(), 0.2F, 0.0F);

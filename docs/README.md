@@ -11,6 +11,8 @@
 - [C++ style guide](cpp_style_guide.md): conventions, ownership boundaries, and API design.
 - [Server-authoritative networking](server_authoritative_networking_guide.md): protocol,
   transport, authority, replication, impairment, and the prediction/interpolation model.
+- [Networked prediction and time reference](networked_prediction_reference.md): canonical state
+  ownership, clocks, compensation terminology, lag compensation, and scale vocabulary.
 - [Debugging and observability](debugging_and_observability.md): overlay fields, metric meanings,
   debug visuals, fault controls, and troubleshooting.
 - [Rollback prediction design](rollback_prediction_design.md): durable complete-checkpoint,

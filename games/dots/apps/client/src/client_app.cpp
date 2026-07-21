@@ -102,6 +102,9 @@ struct DebugWorldStats {
         std::uint32_t server_tick{};
         std::uint32_t local_input_tick{};
         dots::client_runtime::PredictionStatistics prediction;
+        dots::presentation::RemotePresentationStatistics remote_presentation;
+        std::optional<dots::protocol::EntityId> selected_remote_entity;
+        dots::presentation::RemoteEntityEndpoints selected_remote_endpoints;
         Vector2 latest_authoritative_sample;
         Vector2 predicted_position;
         Vector2 presentation_position;
@@ -117,6 +120,8 @@ constexpr auto kFaultCompletionReceiptDuration = std::chrono::seconds{2};
 struct PredictionDebugControls {
     bool show_prediction_layers{true};
     bool show_replay_path{true};
+    bool draw_all_remote_brackets{};
+    std::uint32_t requested_remote_entity_id{};
     std::optional<Vector2> requested_prediction_error;
     bool drop_input_packets_requested{};
     bool clear_correction_visuals_requested{};
@@ -422,6 +427,64 @@ void draw_prediction_debug_tab(const DebugWorldStats& world) {
                 static_cast<unsigned long long>(prediction.injected_prediction_error_count));
 }
 
+void draw_interpolation_debug_tab(const DebugWorldStats& world) {
+    if (!world.network_session) {
+        ImGui::TextDisabled("Interpolation diagnostics require a network session.");
+        return;
+    }
+    const auto& session = *world.network_session;
+    const auto& remote = session.remote_presentation;
+    ImGui::Text("Buffer: %zu / %zu", remote.sample_count, remote.sample_capacity);
+    ImGui::Text(
+        "Coverage: %u ticks / %.1f ms", remote.coverage_ticks, remote.coverage_milliseconds);
+    ImGui::Text("Delay target / current: %.2f / %.2f ticks",
+                remote.target_delay_ticks,
+                remote.current_delay_ticks);
+    ImGui::Text("Presentation tick: %.3f", remote.presentation_tick);
+    ImGui::Text("Cursor rate / error: %.3f / %.3f ticks", remote.cursor_rate, remote.cursor_error);
+    if (remote.bracket) {
+        ImGui::Text("Brackets: %u@%u -> %u@%u, alpha %.3f",
+                    remote.bracket->older_snapshot_id.value(),
+                    remote.bracket->older_server_tick,
+                    remote.bracket->newer_snapshot_id.value(),
+                    remote.bracket->newer_server_tick,
+                    remote.bracket->alpha);
+    } else {
+        ImGui::TextUnformatted("Brackets: unavailable (startup or hold)");
+    }
+    ImGui::Text("Jitter latest / EWMA: %.2f / %.2f ms",
+                remote.latest_jitter_milliseconds,
+                remote.ewma_jitter_milliseconds);
+    ImGui::Text("Late snapshots: %llu",
+                static_cast<unsigned long long>(remote.late_snapshot_count));
+    ImGui::Text("Hold episodes / current: %llu / %lld ms",
+                static_cast<unsigned long long>(remote.hold_episode_count),
+                static_cast<long long>(remote.current_hold_duration.count()));
+    ImGui::Text("Rate corrections / rebases: %llu / %llu",
+                static_cast<unsigned long long>(remote.rate_correction_count),
+                static_cast<unsigned long long>(remote.hard_rebase_count));
+    if (session.selected_remote_entity) {
+        ImGui::Text("Selected remote entity: %u", session.selected_remote_entity->value());
+        if (session.selected_remote_endpoints.older) {
+            const auto& older = *session.selected_remote_endpoints.older;
+            ImGui::Text("Older endpoint: (%.3f, %.3f), mass %.3f",
+                        older.position.x,
+                        older.position.y,
+                        older.mass);
+        }
+        if (session.selected_remote_endpoints.newer) {
+            const auto& newer = *session.selected_remote_endpoints.newer;
+            ImGui::Text("Newer endpoint: (%.3f, %.3f), mass %.3f",
+                        newer.position.x,
+                        newer.position.y,
+                        newer.mass);
+        }
+    } else {
+        ImGui::TextUnformatted("Selected remote entity: unavailable");
+    }
+    ImGui::TextDisabled("Remote fill: delayed known authority; no extrapolation.");
+}
+
 void draw_prediction_tools_tab(const DebugWorldStats& world,
                                PredictionDebugControls* prediction_controls) {
     if (!world.network_session) {
@@ -487,6 +550,11 @@ void draw_prediction_tools_tab(const DebugWorldStats& world,
     ImGui::TextUnformatted("Visual layers");
     ImGui::Checkbox("Show prediction layers", &prediction_controls->show_prediction_layers);
     ImGui::Checkbox("Show correction replay", &prediction_controls->show_replay_path);
+    ImGui::Checkbox("Draw brackets for all remotes",
+                    &prediction_controls->draw_all_remote_brackets);
+    ImGui::InputScalar("Selected remote entity (0 = automatic)",
+                       ImGuiDataType_U32,
+                       &prediction_controls->requested_remote_entity_id);
     if (ImGui::Button("Clear correction ghosts")) {
         prediction_controls->clear_correction_visuals_requested = true;
     }
@@ -530,6 +598,10 @@ void draw_debug_overlay(const ClientConfig& config,
             }
             if (ImGui::BeginTabItem("Prediction")) {
                 draw_prediction_debug_tab(world);
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Interpolation")) {
+                draw_interpolation_debug_tab(world);
                 ImGui::EndTabItem();
             }
             if (ImGui::BeginTabItem("Tools")) {
@@ -635,15 +707,28 @@ int run_networked_game(const ClientConfig& config,
         endpoint,
         {.input_redundancy = config.network.input_redundancy},
     };
+    dots::presentation::RemoteSnapshotBuffer remote_snapshot_buffer;
+    const auto process_client_events = [&](std::chrono::steady_clock::time_point now) {
+        auto result = client.process_events(now);
+        for (auto& accepted : result.accepted_snapshots) {
+            remote_snapshot_buffer.insert({
+                .snapshot_id = accepted.snapshot.snapshot_id,
+                .server_tick = accepted.snapshot.server_tick,
+                .entities = std::move(accepted.snapshot.entities),
+                .arrival_time = accepted.arrival_time,
+            });
+        }
+        return result.error.has_value();
+    };
     const auto handshake_deadline = std::chrono::steady_clock::now() + 10s;
     while (client.state() != dots::client_runtime::State::Ready) {
-        if (client.process_events()) {
+        if (process_client_events(std::chrono::steady_clock::now())) {
             throw StartupError{"The networked client handshake failed"};
         }
         if (embedded_server != nullptr && embedded_server->process_events()) {
             throw StartupError{"The embedded authoritative server handshake failed"};
         }
-        if (client.process_events()) {
+        if (process_client_events(std::chrono::steady_clock::now())) {
             throw StartupError{"The networked client handshake failed"};
         }
         if (client.state() == dots::client_runtime::State::Disconnected ||
@@ -665,12 +750,13 @@ int run_networked_game(const ClientConfig& config,
     dots::presentation::LocalPredictionPresentation local_prediction_presentation;
     PredictionDebugControls prediction_debug_controls;
     std::optional<Vector2> last_nonzero_movement_input;
+    std::optional<dots::protocol::EntityId> selected_remote_entity;
 
     while (true) {
         MYCORE_PROFILE_FRAME();
         MYCORE_PROFILE_ZONE("Dots networked client frame");
-        const auto input = mycore::platform_sdl::poll_input(
-            window, config.debug.enabled ? &debug_ui : nullptr);
+        const auto input =
+            mycore::platform_sdl::poll_input(window, config.debug.enabled ? &debug_ui : nullptr);
         if (quit_requested(input, config.controls)) {
             if (!client.disconnect()) {
                 mycore::debug::log_warning(
@@ -690,7 +776,7 @@ int run_networked_game(const ClientConfig& config,
         }
 
         const auto now = std::chrono::steady_clock::now();
-        if (client.process_events(now)) {
+        if (process_client_events(now)) {
             throw StartupError{"The networked authoritative session failed"};
         }
         if (client.state() != dots::client_runtime::State::Ready) {
@@ -699,8 +785,7 @@ int run_networked_game(const ClientConfig& config,
         if (config.debug.enabled) {
             debug_ui.begin_frame();
         }
-        const auto mouse_input_available =
-            !config.debug.enabled || !debug_ui.wants_mouse_capture();
+        const auto mouse_input_available = !config.debug.enabled || !debug_ui.wants_mouse_capture();
         const auto frame_duration =
             std::chrono::duration_cast<mycore::time::Duration>(now - previous_time);
         frame_metrics.add_sample(frame_duration);
@@ -748,7 +833,7 @@ int run_networked_game(const ClientConfig& config,
                     (embedded_server->process_events() || embedded_server->step())) {
                     throw StartupError{"The embedded authoritative session failed"};
                 }
-                if (client.process_events(now)) {
+                if (process_client_events(now)) {
                     throw StartupError{"The networked authoritative session failed"};
                 }
                 controlled = client.world().find(client.controlled_entity_id());
@@ -774,6 +859,8 @@ int run_networked_game(const ClientConfig& config,
         const auto simulation_snapshot = simulation_metrics.snapshot();
         simulation_health_reporter.update(simulation_snapshot, std::chrono::steady_clock::now());
 
+        remote_snapshot_buffer.advance(now);
+        const auto remote_presentation_statistics = remote_snapshot_buffer.statistics(now);
         auto prediction_statistics = client.prediction_statistics(now);
         prediction_debug_controls.observe_input_drop_burst(prediction_statistics, now);
         const auto update_local_prediction_presentation = [&] {
@@ -795,6 +882,39 @@ int run_networked_game(const ClientConfig& config,
                 now);
         };
         update_local_prediction_presentation();
+        const auto remote_frame = remote_snapshot_buffer.sample(client.controlled_entity_id());
+        const auto selected_remote_available =
+            selected_remote_entity &&
+            std::any_of(remote_frame.entities.begin(),
+                        remote_frame.entities.end(),
+                        [selected = *selected_remote_entity](const auto& entity) {
+                            return entity.entity_id == selected;
+                        });
+        const auto requested_remote =
+            prediction_debug_controls.requested_remote_entity_id == 0
+                ? std::optional<dots::protocol::EntityId>{}
+                : std::optional{dots::protocol::EntityId{
+                      prediction_debug_controls.requested_remote_entity_id}};
+        const auto requested_remote_available =
+            requested_remote && std::any_of(remote_frame.entities.begin(),
+                                            remote_frame.entities.end(),
+                                            [requested = *requested_remote](const auto& entity) {
+                                                return entity.entity_id == requested;
+                                            });
+        if (requested_remote_available) {
+            selected_remote_entity = requested_remote;
+        } else if (!selected_remote_available) {
+            const auto selected = std::find_if(
+                remote_frame.entities.begin(), remote_frame.entities.end(), [](const auto& entity) {
+                    return entity.kind == dots::protocol::EntityKind::Player;
+                });
+            selected_remote_entity = selected == remote_frame.entities.end()
+                                         ? std::nullopt
+                                         : std::optional{selected->entity_id};
+        }
+        const auto selected_remote_endpoints =
+            selected_remote_entity ? remote_snapshot_buffer.endpoints(*selected_remote_entity)
+                                   : dots::presentation::RemoteEntityEndpoints{};
         if (config.debug.enabled) {
             draw_debug_overlay(
                 config,
@@ -816,14 +936,16 @@ int run_networked_game(const ClientConfig& config,
                             .server_tick = client.world().server_tick(),
                             .local_input_tick = client_tick,
                             .prediction = prediction_statistics,
+                            .remote_presentation = remote_presentation_statistics,
+                            .selected_remote_entity = selected_remote_entity,
+                            .selected_remote_endpoints = selected_remote_endpoints,
                             .latest_authoritative_sample = {controlled->position_x,
                                                             controlled->position_y},
                             .predicted_position =
                                 local_prediction_presentation.predicted_position(),
                             .presentation_position =
                                 local_prediction_presentation.presentation_position(),
-                            .smoothing_offset =
-                                local_prediction_presentation.smoothing_offset(),
+                            .smoothing_offset = local_prediction_presentation.smoothing_offset(),
                             .last_nonzero_movement_input = last_nonzero_movement_input,
                         },
                 },
@@ -856,8 +978,20 @@ int run_networked_game(const ClientConfig& config,
 
         const auto correction_visual_active =
             local_prediction_presentation.correction_visual_active();
-        const auto frame = dots::presentation::extract_predicted_replicated_frame(
+        std::vector<dots::presentation::RemoteEntityEndpoints> remote_endpoint_layers;
+        if (config.debug.enabled && prediction_debug_controls.draw_all_remote_brackets) {
+            remote_endpoint_layers.reserve(remote_frame.entities.size());
+            for (const auto& entity : remote_frame.entities) {
+                remote_endpoint_layers.push_back(
+                    remote_snapshot_buffer.endpoints(entity.entity_id));
+            }
+        } else if (config.debug.enabled && selected_remote_entity) {
+            remote_endpoint_layers.push_back(selected_remote_endpoints);
+        }
+        const auto frame = dots::presentation::extract_remote_interpolated_predicted_frame(
             client.world(),
+            remote_frame,
+            remote_endpoint_layers,
             {
                 .entity_id = client.controlled_entity_id(),
                 .presentation_position = local_prediction_presentation.presentation_position(),
@@ -875,15 +1009,15 @@ int run_networked_game(const ClientConfig& config,
                 .show_replay_path =
                     config.debug.enabled && prediction_debug_controls.show_replay_path,
             });
-        const auto presented = renderer.render(
-            dots::presentation::build_draw_list(frame, render_settings),
-            [&debug_ui, debug_enabled = config.debug.enabled](
-                mycore::render::CommandList& commands,
-                const mycore::render::SwapchainTarget& target) {
-                if (debug_enabled) {
-                    debug_ui.render(commands, target);
-                }
-            });
+        const auto presented =
+            renderer.render(dots::presentation::build_draw_list(frame, render_settings),
+                            [&debug_ui, debug_enabled = config.debug.enabled](
+                                mycore::render::CommandList& commands,
+                                const mycore::render::SwapchainTarget& target) {
+                                if (debug_enabled) {
+                                    debug_ui.render(commands, target);
+                                }
+                            });
         if (!presented && config.debug.enabled) {
             debug_ui.cancel_frame();
         }
@@ -1009,8 +1143,8 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
     while (true) {
         MYCORE_PROFILE_FRAME();
         MYCORE_PROFILE_ZONE("Dots client frame");
-        const auto input = mycore::platform_sdl::poll_input(
-            window, config.debug.enabled ? &debug_ui : nullptr);
+        const auto input =
+            mycore::platform_sdl::poll_input(window, config.debug.enabled ? &debug_ui : nullptr);
         if (quit_requested(input, config.controls)) {
             return 0;
         }
@@ -1026,8 +1160,7 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
         if (config.debug.enabled) {
             debug_ui.begin_frame();
         }
-        const auto mouse_input_available =
-            !config.debug.enabled || !debug_ui.wants_mouse_capture();
+        const auto mouse_input_available = !config.debug.enabled || !debug_ui.wants_mouse_capture();
         const auto now = std::chrono::steady_clock::now();
         const auto frame_duration =
             std::chrono::duration_cast<mycore::time::Duration>(now - previous_time);
@@ -1143,15 +1276,14 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
         bool presented{};
         {
             MYCORE_PROFILE_ZONE("Dots render submission");
-            presented = renderer.render(
-                dots::presentation::build_draw_list(frame, render_settings),
-                [&debug_ui, debug_enabled = config.debug.enabled](
-                    mycore::render::CommandList& commands,
-                    const mycore::render::SwapchainTarget& target) {
-                    if (debug_enabled) {
-                        debug_ui.render(commands, target);
-                    }
-                });
+            presented = renderer.render(dots::presentation::build_draw_list(frame, render_settings),
+                                        [&debug_ui, debug_enabled = config.debug.enabled](
+                                            mycore::render::CommandList& commands,
+                                            const mycore::render::SwapchainTarget& target) {
+                                            if (debug_enabled) {
+                                                debug_ui.render(commands, target);
+                                            }
+                                        });
         }
         if (!presented && config.debug.enabled) {
             debug_ui.cancel_frame();

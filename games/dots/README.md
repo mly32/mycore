@@ -52,10 +52,14 @@ launcher to exercise impaired connections. Run an executable with `--help` for i
 Networked clients send protocol-v2 input packets at 30 Hz and receive authoritative snapshots at
 15 Hz. Each input packet can repeat up to two unacknowledged samples by default. The controlled
 player responds from bounded movement prediction immediately, reconciles against server ACKs,
-and smooths only visible corrections over 100 ms. Remote players still use their newest received
-snapshot until Feature 12 interpolation. The
+and smooths only visible corrections over 100 ms. Remote players use six-tick delayed
+interpolation from accepted snapshot history and hold the last known remote sample during an
+underrun. The
 [networking guide](../../docs/server_authoritative_networking_guide.md) covers authority,
-reliability, connection lifecycle, impairment, prediction, and the planned compensation model.
+reliability, connection lifecycle, impairment, prediction, and compensation model.
+The [networked prediction and time reference](../../docs/networked_prediction_reference.md)
+defines the distinct authoritative, predicted, remote-presentation, and screen-presentation
+states used by that model.
 
 ## Controls and configuration
 
