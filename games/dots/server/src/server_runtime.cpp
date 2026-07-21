@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <optional>
 #include <string_view>
 #include <unordered_map>
@@ -41,11 +42,18 @@ struct Session {
     protocol::ClientId client_id;
     simulation::EntityId player_id;
     protocol::InputSequenceId last_processed_input_id;
+    std::map<std::uint32_t, protocol::InputSample> pending_inputs;
     std::uint32_t next_snapshot_id{};
 
     [[nodiscard]] bool ready() const noexcept {
         return client_id.is_valid() && player_id.is_valid();
     }
+};
+
+enum class InputEnqueueResult : std::uint8_t {
+    Accepted,
+    ConflictingDuplicate,
+    Overflow,
 };
 
 } // namespace
@@ -66,6 +74,7 @@ public:
                                               .client_id = {},
                                               .player_id = {},
                                               .last_processed_input_id = {},
+                                              .pending_inputs = {},
                                               .next_snapshot_id = 0,
                                           });
                 static_cast<void>(unused);
@@ -107,32 +116,50 @@ public:
                 continue;
             }
 
-            const auto* input = std::get_if<protocol::InputCommand>(message);
+            const auto* input = std::get_if<protocol::InputPacket>(message);
             if (input == nullptr || received.delivery != DeliveryMode::Unreliable ||
                 !session_iterator->second.ready()) {
                 reject(received.connection);
                 continue;
             }
             auto& session = session_iterator->second;
-            if (session.last_processed_input_id.is_valid() &&
-                input->sequence_id <= session.last_processed_input_id) {
+            const auto enqueue_result = enqueue_input(session, *input);
+            if (enqueue_result == InputEnqueueResult::ConflictingDuplicate) {
+                reject(received.connection, "conflicting duplicate input sample");
                 continue;
             }
-            if (!world_.apply_input({
-                    .id = replication::to_simulation(input->sequence_id),
-                    .entity_id = session.player_id,
-                    .movement = {input->movement_x, input->movement_y},
-                })) {
-                return RuntimeError::SimulationInputRejected;
+            if (enqueue_result == InputEnqueueResult::Overflow) {
+                reject(received.connection, "pending input queue overflow");
             }
-            session.last_processed_input_id = input->sequence_id;
         }
         return std::nullopt;
     }
 
     [[nodiscard]] std::optional<RuntimeError> step() {
+        std::vector<std::pair<std::uint32_t, protocol::InputSequenceId>> applied_inputs;
+        applied_inputs.reserve(sessions_.size());
+        for (auto& [connection_value, session] : sessions_) {
+            if (!session.ready() || session.pending_inputs.empty()) {
+                continue;
+            }
+            const auto& sample = session.pending_inputs.begin()->second;
+            if (!world_.apply_input({
+                    .id = replication::to_simulation(sample.sequence_id),
+                    .entity_id = session.player_id,
+                    .movement = {sample.movement_x, sample.movement_y},
+                })) {
+                return RuntimeError::SimulationInputRejected;
+            }
+            applied_inputs.emplace_back(connection_value, sample.sequence_id);
+        }
+
         if (!world_.step()) {
             return RuntimeError::SimulationStepFailed;
+        }
+        for (const auto& [connection_value, sequence_id] : applied_inputs) {
+            auto& session = sessions_.at(connection_value);
+            session.last_processed_input_id = sequence_id;
+            session.pending_inputs.erase(sequence_id.value());
         }
         if ((world_.tick().value() % 2U) != 0U) {
             return std::nullopt;
@@ -172,6 +199,35 @@ public:
     }
 
 private:
+    [[nodiscard]] static InputEnqueueResult enqueue_input(Session& session,
+                                                          const protocol::InputPacket& packet) {
+        std::vector<protocol::InputSample> fresh_samples;
+        fresh_samples.reserve(packet.samples.size());
+        for (const auto& sample : packet.samples) {
+            if (session.last_processed_input_id.is_valid() &&
+                sample.sequence_id <= session.last_processed_input_id) {
+                continue;
+            }
+            const auto existing = session.pending_inputs.find(sample.sequence_id.value());
+            if (existing != session.pending_inputs.end()) {
+                if (existing->second != sample) {
+                    return InputEnqueueResult::ConflictingDuplicate;
+                }
+                continue;
+            }
+            fresh_samples.push_back(sample);
+        }
+
+        if (session.pending_inputs.size() + fresh_samples.size() >
+            protocol::kMaximumPendingInputCount) {
+            return InputEnqueueResult::Overflow;
+        }
+        for (const auto& sample : fresh_samples) {
+            session.pending_inputs.emplace(sample.sequence_id.value(), sample);
+        }
+        return InputEnqueueResult::Accepted;
+    }
+
     [[nodiscard]] std::optional<RuntimeError> accept(Session& session) {
         if (world_.tick().value() > std::numeric_limits<std::uint32_t>::max()) {
             return RuntimeError::TickOutOfRange;
@@ -218,10 +274,11 @@ private:
         if (session.next_snapshot_id == protocol::SnapshotId::kInvalidValue) {
             return RuntimeError::SnapshotIdExhausted;
         }
-        const auto snapshot =
-            replication::build_full_snapshot(world_,
-                                             protocol::SnapshotId{session.next_snapshot_id},
-                                             session.last_processed_input_id);
+        const auto snapshot = replication::build_full_snapshot(
+            world_,
+            protocol::SnapshotId{session.next_snapshot_id},
+            session.last_processed_input_id,
+            static_cast<std::uint8_t>(session.pending_inputs.size()));
         if (const auto* error = std::get_if<replication::SnapshotBuildError>(&snapshot)) {
             switch (*error) {
             case replication::SnapshotBuildError::InvalidSnapshotId:
@@ -256,10 +313,11 @@ private:
         return std::nullopt;
     }
 
-    void reject(ConnectionHandle connection) {
+    void reject(ConnectionHandle connection, std::string_view reason = "invalid packet") {
         ++rejected_packet_count_;
         mycore::debug::log_warning("dots.server.session",
-                                   "Rejected invalid packet on connection {}; disconnecting peer",
+                                   "Rejected {} on connection {}; disconnecting peer",
+                                   reason,
                                    connection.value());
         static_cast<void>(endpoint_.disconnect(connection));
         remove_session(connection);

@@ -72,6 +72,7 @@ struct WindowSettings {
 struct NetworkSettings {
     NetworkMode mode{NetworkMode::Offline};
     std::string server_address{"127.0.0.1:27020"};
+    bool input_redundancy{true};
 };
 
 struct SimulationSettings {

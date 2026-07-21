@@ -32,18 +32,24 @@ simulation::InputCommandId to_simulation(protocol::InputSequenceId id) noexcept 
 
 SnapshotBuildResult build_full_snapshot(const simulation::World& world,
                                         protocol::SnapshotId snapshot_id,
-                                        protocol::InputSequenceId last_processed) {
+                                        protocol::InputSequenceId last_processed,
+                                        std::uint8_t pending_input_count) {
     if (!snapshot_id.is_valid()) {
         return SnapshotBuildError::InvalidSnapshotId;
     }
     if (world.tick().value() > std::numeric_limits<std::uint32_t>::max()) {
         return SnapshotBuildError::TickOutOfRange;
     }
+    if (pending_input_count > protocol::kMaximumPendingInputCount) {
+        return SnapshotBuildError::InvalidWorldState;
+    }
 
     protocol::FullSnapshot snapshot{
         .snapshot_id = snapshot_id,
         .server_tick = static_cast<std::uint32_t>(world.tick().value()),
         .last_processed_input_id = last_processed,
+        .pending_input_count = pending_input_count,
+        .entities = {},
     };
     snapshot.entities.reserve(world.player_count() + world.food_count());
     const auto append = [&world, &snapshot](std::span<const simulation::EntityId> ids,
@@ -78,7 +84,8 @@ SnapshotBuildResult build_full_snapshot(const simulation::World& world,
 }
 
 SnapshotApplyResult ReplicatedWorld::apply(const protocol::FullSnapshot& snapshot) {
-    if (!snapshot.snapshot_id.is_valid()) {
+    if (!snapshot.snapshot_id.is_valid() ||
+        snapshot.pending_input_count > protocol::kMaximumPendingInputCount) {
         return SnapshotApplyResult::Invalid;
     }
     if (snapshot_id_.is_valid() && snapshot.snapshot_id <= snapshot_id_) {
@@ -99,6 +106,7 @@ SnapshotApplyResult ReplicatedWorld::apply(const protocol::FullSnapshot& snapsho
     snapshot_id_ = snapshot.snapshot_id;
     server_tick_ = snapshot.server_tick;
     last_processed_input_id_ = snapshot.last_processed_input_id;
+    pending_input_count_ = snapshot.pending_input_count;
     entities_ = snapshot.entities;
     std::sort(entities_.begin(),
               entities_.end(),
@@ -147,6 +155,10 @@ protocol::SnapshotId ReplicatedWorld::snapshot_id() const noexcept {
 
 protocol::InputSequenceId ReplicatedWorld::last_processed_input_id() const noexcept {
     return last_processed_input_id_;
+}
+
+std::uint8_t ReplicatedWorld::pending_input_count() const noexcept {
+    return pending_input_count_;
 }
 
 } // namespace dots::replication

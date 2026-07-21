@@ -7,7 +7,9 @@
 #include "mycore/math/vector2.hpp"
 #include "mycore/render_2d/render_2d.hpp"
 
+#include <chrono>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -17,6 +19,10 @@ enum class CircleKind : std::uint8_t {
     Food,
     Player,
     PositionGhost,
+    PredictedPositionGhost,
+    AuthoritativeSampleGhost,
+    PreCorrectionGhost,
+    ReplayMarker,
 };
 
 struct CircleInstance {
@@ -46,6 +52,64 @@ struct InterpolatedFollowTarget {
     bool show_current_position_ghost{};
 };
 
+inline constexpr auto kPredictionCorrectionSmoothingDuration = std::chrono::milliseconds{100};
+inline constexpr auto kPredictionDebugRetentionDuration = std::chrono::seconds{2};
+
+struct LocalPredictionSample {
+    mycore::math::Vector2 predicted_position;
+    mycore::math::Vector2 accumulated_correction_displacement;
+    std::uint64_t correction_sequence{};
+    std::uint64_t hard_resync_sequence{};
+    std::optional<mycore::math::Vector2> pre_correction_position;
+    std::span<const mycore::math::Vector2> correction_replay_path;
+};
+
+class LocalPredictionPresentation {
+public:
+    void update(const LocalPredictionSample& sample, std::chrono::steady_clock::time_point now);
+    void clear_correction_visuals() noexcept;
+
+    [[nodiscard]] mycore::math::Vector2 predicted_position() const noexcept;
+    [[nodiscard]] mycore::math::Vector2 presentation_position() const noexcept;
+    [[nodiscard]] mycore::math::Vector2 smoothing_offset() const noexcept;
+    [[nodiscard]] bool correction_visual_active() const noexcept;
+    [[nodiscard]] std::optional<mycore::math::Vector2>
+    retained_pre_correction_position() const noexcept;
+    [[nodiscard]] std::span<const mycore::math::Vector2>
+    retained_correction_replay_path() const noexcept;
+
+private:
+    [[nodiscard]] mycore::math::Vector2
+    evaluate_smoothing_offset(std::chrono::steady_clock::time_point now) const noexcept;
+    void initialize(const LocalPredictionSample& sample,
+                    std::chrono::steady_clock::time_point now) noexcept;
+
+    mycore::math::Vector2 predicted_position_;
+    mycore::math::Vector2 presentation_position_;
+    mycore::math::Vector2 smoothing_offset_;
+    mycore::math::Vector2 smoothing_start_offset_;
+    mycore::math::Vector2 last_correction_accumulator_;
+    std::optional<mycore::math::Vector2> retained_pre_correction_position_;
+    std::vector<mycore::math::Vector2> retained_correction_replay_path_;
+    std::chrono::steady_clock::time_point smoothing_start_time_;
+    std::chrono::steady_clock::time_point correction_visual_expiry_;
+    std::uint64_t last_correction_sequence_{};
+    std::uint64_t last_hard_resync_sequence_{};
+    bool initialized_{};
+    bool smoothing_active_{};
+    bool correction_visual_active_{};
+};
+
+struct PredictedReplicatedPlayer {
+    protocol::EntityId entity_id;
+    mycore::math::Vector2 presentation_position;
+    mycore::math::Vector2 predicted_position;
+    std::optional<mycore::math::Vector2> pre_correction_position;
+    std::span<const mycore::math::Vector2> correction_replay_path;
+    bool show_prediction_layers{true};
+    bool show_replay_path{true};
+};
+
 struct Settings {
     float pixels_per_world_unit{20.0F};
     bool draw_grid{true};
@@ -56,6 +120,9 @@ struct Settings {
     mycore::render::Color player_growth{1.0F, 0.820F, 0.4F, 1.0F};
     mycore::render::Color food{0.969F, 0.145F, 0.522F, 1.0F};
     mycore::render::Color comparison_ghost_outline{1.0F, 1.0F, 1.0F, 0.9F};
+    mycore::render::Color authoritative_sample_outline{1.0F, 0.55F, 0.12F, 0.95F};
+    mycore::render::Color pre_correction_outline{1.0F, 0.1F, 0.75F, 0.95F};
+    mycore::render::Color replay_marker{0.63F, 0.3F, 1.0F, 0.9F};
     float comparison_ghost_outline_pixels{2.0F};
 };
 
@@ -72,6 +139,10 @@ extract_interpolated_follow_frame(const simulation::World& world,
 
 [[nodiscard]] FrameData extract_replicated_frame(const replication::ReplicatedWorld& world,
                                                  protocol::EntityId controlled_entity_id);
+
+[[nodiscard]] FrameData
+extract_predicted_replicated_frame(const replication::ReplicatedWorld& world,
+                                   const PredictedReplicatedPlayer& controlled_player);
 
 [[nodiscard]] mycore::render_2d::DrawList build_draw_list(const FrameData& frame,
                                                           const Settings& settings);

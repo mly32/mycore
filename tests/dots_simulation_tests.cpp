@@ -1,3 +1,4 @@
+#include "dots/simulation/movement.hpp"
 #include "dots/simulation/world.hpp"
 
 #include <array>
@@ -48,6 +49,19 @@ TEST_CASE("Movement input advances a player by one 30 Hz tick", "[dots][simulati
     REQUIRE(position->x == Catch::Approx(0.12F));
     REQUIRE(position->y == Catch::Approx(0.16F));
     REQUIRE(world.tick() == mycore::time::Tick{1});
+}
+
+TEST_CASE("Shared player movement normalizes and advances exactly one fixed tick",
+          "[dots][simulation][movement]") {
+    const auto movement = dots::simulation::normalized_player_movement({3.0F, 4.0F});
+    REQUIRE(movement.x == Catch::Approx(0.6F));
+    REQUIRE(movement.y == Catch::Approx(0.8F));
+
+    const auto position = dots::simulation::advance_player_position({2.0F, -1.0F}, movement);
+    CHECK(position.x == Catch::Approx(2.12F));
+    CHECK(position.y == Catch::Approx(-0.84F));
+    CHECK(dots::simulation::advance_player_position(
+              position, dots::simulation::normalized_player_movement({})) == position);
 }
 
 TEST_CASE("World applies persistent movement over multiple ticks", "[dots][simulation]") {

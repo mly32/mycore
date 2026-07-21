@@ -48,8 +48,7 @@ public:
         std::function<void(render::CommandList&, const render::SwapchainTarget&)>;
 
     Renderer(render::Device& device, const assets::DirectorySource& assets);
-    // pimpl requires definition where Impl is complete
-    // NOLINTNEXTLINE(modernize-use-equals-default,performance-trivially-destructible)
+    // Defined out of line where Impl is complete.
     ~Renderer();
 
     Renderer(const Renderer&) = delete;

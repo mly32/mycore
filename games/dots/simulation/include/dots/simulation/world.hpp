@@ -2,6 +2,7 @@
 
 #include "dots/simulation/ids.hpp"
 #include "dots/simulation/input_command.hpp"
+#include "dots/simulation/movement.hpp"
 #include "dots/simulation/spatial_grid.hpp"
 #include "mycore/math/vector2.hpp"
 #include "mycore/time/time.hpp"
@@ -16,10 +17,6 @@
 
 namespace dots::simulation {
 
-inline constexpr std::uint32_t kTickRateHz = 30;
-inline constexpr auto kTickDuration =
-    std::chrono::nanoseconds{std::chrono::seconds{1}} / kTickRateHz;
-inline constexpr float kPlayerSpeedUnitsPerSecond = 6.0F;
 inline constexpr float kInitialPlayerMass = 16.0F;
 inline constexpr float kFoodMass = 1.0F;
 inline constexpr float kSpatialGridCellSize = 8.0F;

@@ -3,26 +3,28 @@
 This guide assumes you understand the basic idea of a client and server: the client collects
 input and draws the game, while the server runs shared gameplay. It explains the boundaries
 between Dots protocol messages, the game-neutral transport, authoritative simulation, replicated
-client state, and the prediction and interpolation planned for later features.
+client state, the current movement predictor, and presentation interpolation planned for later
+phases.
 
 ## The short version
 
 The current networked path is deliberately simple:
 
 ```text
-client input
+client input -> owned-player prediction -> smoothed local presentation
     |
-    | InputCommand bytes
+    | InputPacket bytes
     v
-transport -> authoritative server simulation -> FullSnapshot bytes -> replicated client world
-                                                                  |
-                                                                  v
-                                                               rendering
+transport -> authoritative server simulation -> FullSnapshot -> replicated client world
+                                                       |                 |
+                                                       v                 v
+                                             reconcile prediction   remote rendering
 ```
 
-The server owns the only gameplay `World`. The client sends movement requests and renders the
-latest state received from the server. It does not currently simulate its player locally in
-networked mode.
+The server owns the only gameplay `World`. The client sends movement requests, predicts only its
+controlled player's movement, and reconciles that prediction to validated snapshots. Gameplay
+state corrects immediately; only the visible correction offset decays over 100 ms. Remote
+players still render their latest received snapshot sample until Feature 12 interpolation.
 
 `dots_client --in-memory` exercises this complete path without opening a socket. Its client and
 server live in one process and communicate through the same abstract transport interface used by
@@ -30,9 +32,10 @@ the native backend. `dots_client --connect 127.0.0.1:27020` instead connects to 
 `dots_server` process through GameNetworkingSockets. The in-memory backend remains FIFO and
 lossless, while the native backend supports realistic outgoing latency and loss simulation.
 
-The current mode has **no client-side prediction, reconciliation, or remote interpolation**.
-That is why its overlay says `NETWORKED FIXED` and why movement advances at the 15 Hz snapshot
-rate even though the server simulates at 30 Hz.
+The runtime has **client-side movement prediction and reconciliation** without owning or stepping
+a gameplay `World`. The overlay says `NETWORKED PREDICTED` and separately displays the latest
+authoritative sample, corrected prediction, and smoothed presentation. Remote interpolation is
+still absent, so other players visibly advance at the 15 Hz snapshot rate.
 
 ## Three different responsibilities
 
@@ -44,7 +47,7 @@ Protocol, transport, and authority answer different questions:
 | Transport | How do byte payloads move between connected endpoints? | `MyCore::NetTransport` |
 | Server runtime and simulation | Which requests are accepted, and what is true now? | `Dots::Server` and `Dots::Simulation` |
 | Replication | Which authoritative state is sent and installed? | `Dots::Replication` |
-| Client runtime | What is this client's session and latest replicated view? | `Dots::ClientRuntime` |
+| Client runtime | What is this client's session, replicated view, and reconciled owned-player prediction? | `Dots::ClientRuntime` |
 | Presentation | How does received state become visible circles and a camera? | `Dots::Presentation` |
 
 Keeping these separate lets protocol tests run without sockets, transport tests run without Dots,
@@ -58,7 +61,7 @@ The Dots protocol is a game-owned contract. It defines four messages today:
 |---|---|---|---|
 | `ClientHello` | Client to server | Reliable | Request a session using the supported protocol version. |
 | `ServerWelcome` | Server to client | Reliable | Assign the client ID and controlled entity ID. |
-| `InputCommand` | Client to server | Unreliable | Submit sequenced movement and acknowledge the latest received snapshot. |
+| `InputPacket` | Client to server | Unreliable | Submit one to three sequenced movement samples and acknowledge the latest received snapshot. |
 | `FullSnapshot` | Server to client | Unreliable | Replace the client's replicated view with authoritative entity state. |
 
 Every encoded message starts with a 12-byte header containing:
@@ -66,6 +69,12 @@ Every encoded message starts with a 12-byte header containing:
 ```text
 magic "DOTS" + protocol version + message kind + flags + payload length
 ```
+
+The current protocol version is 2. Version 1, used by Features 8--10, carried one input sample
+and no pending-input depth. Version 2 keeps input message-kind value `3`, replaces that payload
+with one to three ordered samples, and adds per-client queue depth to full snapshots. There is no
+dual-version negotiation: a version-1 binary receives `UnsupportedVersion` rather than having its
+payload interpreted as version 2.
 
 Integers and floating-point bit patterns have defined widths and use big-endian network byte
 order. Fields are encoded individually; the implementation never copies a C++ struct directly
@@ -97,12 +106,14 @@ Retransmission also trades timeliness for delivery. Under loss, a reliable messa
 much later and reliable data can wait behind earlier missing data. This is appropriate for the
 small ordered handshake, but not for a continuous stream of replaceable gameplay state.
 
-Input and snapshots are time-sensitive. A delayed old movement command or snapshot is usually
+Input and snapshots are time-sensitive. A delayed old movement sample or snapshot is usually
 less useful than the newest one, so they are sent unreliably and carry application sequence IDs.
-The receiver can ignore stale data without waiting for retransmission. The current server sends
-another full snapshot at 15 Hz, so a lost snapshot is replaced by a newer complete view. Later
-input redundancy and snapshot deltas will improve loss handling without turning the real-time
-stream into a reliable queue of obsolete state.
+The receiver can ignore stale data without waiting for retransmission. Protocol-v2 input packets
+contain the current sample and, by default, up to two prior unacknowledged samples. The server
+deduplicates overlapping packets before its bounded scheduling queue. The current server also
+sends another full snapshot at 15 Hz, so a lost snapshot is replaced by a newer complete view.
+Later snapshot deltas will improve loss handling without turning the real-time stream into a
+reliable queue of obsolete state.
 
 The in-memory implementation is lossless for both delivery modes. It records the same intended
 semantics as the native implementation so tests and runtimes do not need a different contract.
@@ -116,7 +127,7 @@ cause unbounded allocation or parsing work.
 
 Current full-world snapshots are allowed to exceed the 1,200-byte target while remaining under
 the hard limit. The in-memory transport does not model a network MTU. Interest management,
-delta encoding, quantization, prioritization, and per-client byte budgets in Features 13–14 will
+delta encoding, quantization, prioritization, and per-client byte budgets in Features 15–16 will
 make ordinary native-network snapshots fit the preferred budget.
 
 ### IDs belong to domains
@@ -259,15 +270,15 @@ The current messages behave under impairment like this:
 | --- | --- | --- |
 | Transport connection establishment | Transport-managed | May retry, take much longer, or fail before the Dots handshake starts. |
 | `ClientHello` and `ServerWelcome` | Reliable | Transport retransmits while viable; delay increases, but Dots does not repeatedly call `send`. |
-| `InputCommand` at 30 Hz | Unreliable | A lost command is skipped. Newer sequence IDs continue; input redundancy is a later feature. |
-| `FullSnapshot` at 15 Hz | Unreliable | The client holds its previous view until a newer complete snapshot arrives. |
+| `InputPacket` at 30 Hz | Unreliable | The next one or two packets can recover a lost current sample while it remains inside the default two-sample redundancy window. Three consecutive losses, or any loss with redundancy disabled, can skip a sample. |
+| `FullSnapshot` at 15 Hz | Unreliable | Replicated/remotely rendered state holds until a newer snapshot. Owned movement keeps predicting, increasing ACK lead and later replay work. |
 | Disconnect | Transport lifecycle | Graceful requests are reported promptly when delivered; abrupt loss is reported after failure detection. |
 
-Because the current networked client has neither prediction nor interpolation, these effects are
-visible directly. Lag postpones local input response. Lost inputs can make movement briefly stop,
-and lost snapshots can make the view hold and then jump when a newer snapshot arrives. This is
-expected for the present feature stage, not evidence that the authoritative simulation itself
-stopped.
+Owned movement responds locally despite lag, but authority and its ACK arrive later, increasing
+history use and replay work. Inputs lost beyond the configured redundancy window can leave the
+server using an older desired direction and produce a later correction. Lost snapshots make
+remote entities hold and delay owned-player reconciliation. This is expected under impairment,
+not evidence that the authoritative simulation itself stopped.
 
 Use modest impairment to study steady-state behavior and high impairment to study failure paths:
 
@@ -301,10 +312,10 @@ my player is now at (900, 400), has mass 500, and consumed entity 17
 ```
 
 The server associates each connection with the player it spawned for that session. An
-`InputCommand` does not choose an entity to control. The server validates the command, maps its
-sequence to a simulation input ID, applies it only to the session's owned player, and advances
-the fixed-step world. Movement, collision, eating, mass, spawning, and removal remain server
-decisions.
+`InputPacket` samples do not choose an entity to control. The server validates and queues them,
+maps at most the oldest queued sequence to a simulation input ID before each tick, applies it
+only to the session's owned player, and advances the fixed-step world. Movement, collision,
+eating, mass, spawning, and removal remain server decisions.
 
 Authority is an ownership rule, not a statement about where code can execute. A future client
 may run the same movement code speculatively for responsiveness, but the server result still
@@ -333,10 +344,13 @@ its controlled player.
 After the handshake, each current in-memory fixed step is composed in this order:
 
 1. The client maps keyboard or mouse state to a normalized movement vector.
-2. It creates the next sequenced `InputCommand`, including its latest snapshot ID.
+2. It creates the next sequenced input sample and a bounded `InputPacket`, including its latest
+   snapshot ID and, when enabled, up to two prior unacknowledged samples.
 3. The protocol encoder produces bytes and the client sends them unreliably.
-4. The server polls, decodes, validates, and applies fresh input to that connection's player.
-5. The server advances its authoritative `World` by one 30 Hz tick.
+4. The server polls, decodes, validates, deduplicates, and orders fresh samples in that
+   connection's bounded queue.
+5. The server applies at most the oldest queued sample for each client, then advances its
+   authoritative `World` by one 30 Hz tick.
 6. Every two ticks, the server builds and sends a 15 Hz full snapshot for each ready client.
 7. The client polls and atomically installs a newer snapshot.
 8. Presentation extracts circles from the replicated world and centers the camera on the
@@ -348,14 +362,15 @@ ID, plus:
 - Its snapshot sequence ID.
 - The authoritative server tick.
 - The last input sequence processed for that client.
+- That client's current pending-input queue depth after the tick.
 
 `ReplicatedWorld` rejects invalid snapshots, ignores stale snapshots, and fully replaces its
 entity collection when it accepts a newer one. It is a client view, not a second authoritative
 `simulation::World`.
 
-## The current no-compensation mental model
+## The baseline no-compensation mental model
 
-Today, the networked client renders the last authoritative sample it has received:
+Without prediction, a networked client would render only the last authoritative sample received:
 
 ```text
 server truth at ticks:       0 -- 1 -- 2 -- 3 -- 4 -- 5 -- 6
@@ -363,9 +378,9 @@ snapshots sent:              S0      S1      S2      S3
 client renders:              S0------S1------S2------S3
 ```
 
-There is no state between `S1` and `S2` for presentation to estimate. The client holds `S1`
-until `S2` arrives, then jumps to `S2`. With the in-memory backend this appears as 15 Hz stepping
-inside a faster render loop.
+There is no known state between `S1` and `S2` for remote presentation to estimate. Dots still
+uses this hold model for remote entities until Feature 12, but the owned player now predicts from
+its known local input.
 
 On a real network without compensation, the same model would also put round-trip and scheduling
 delay between pressing a key and seeing the returned authoritative result:
@@ -375,25 +390,189 @@ press key -> input travels to server -> later server tick -> snapshot travels ba
 ```
 
 The in-memory mode validates the architecture but largely hides that responsiveness problem
-because it has no simulated network delay. Native sessions make the delay visible and allow it
-to be amplified with the fake-lag and fake-loss options. Features 11 and 12 address how the game
-feels under latency and jitter.
+because it has no simulated network delay. Native sessions make the distinction visible and
+allow it to be amplified with fake lag and loss: owned movement responds immediately, while
+authoritative samples and remote entities remain delayed. Feature 12 adds remote interpolation.
 
-Some groundwork is already present. Input commands have sequence IDs, snapshots acknowledge
-`last_processed_input`, and inputs report the latest received snapshot. The current client does
-not retain and replay input history, and the server does not yet use snapshot acknowledgements
-for delta baselines.
+Input samples have sequence IDs, protocol-v2 packets provide bounded redundancy, the server
+schedules at most one queued sample per client per tick, snapshots acknowledge
+`last_processed_input`, and inputs report the latest received snapshot. The client runtime now
+retains a fixed 256-entry input/result history and atomically replays the unacknowledged suffix
+from each validated authoritative controlled-player sample. The server does not yet use snapshot
+acknowledgements for delta baselines.
 
 ## There is no single “game frame”
 
 The word *frame* is overloaded. Rendering, simulation, replication, transport polling, and the
 physical display do not have to advance together.
 
+### Clock and timeline vocabulary
+
+Use one name per concept. In particular, do not use **estimated world time** as a second name for
+**estimated live server time**; the current server owns one authoritative world, so those phrases
+would describe the same estimate and invite accidental comparison with presentation time.
+
+| Term | Definition | Scope and authority |
+|---|---|---|
+| Authoritative server tick | Count of successfully completed `World::step()` calls. It starts at zero with the current server world and advances at the nominal 30 Hz simulation rate. | Shared truth for every client connected to that server run. |
+| World simulation time | `authoritative_server_tick / 30 Hz`. This measures simulated world progression, not necessarily server-process wall uptime when the server stalls or catches up. | Authoritative, discrete, and shared. |
+| Snapshot ID | Per-client sequence number for snapshots sent to that session. It starts when the client joins and exists to reject stale or reordered snapshots. | Not a clock and not comparable between clients. |
+| Latest-known world time | `latest_received_snapshot.server_tick / 30 Hz`. This is exact for the received sample but historical by the time it is drawn. | Per-client knowledge of shared authority. |
+| Client session time | Local steady-clock duration since that client became ready. It advances smoothly regardless of packet delivery. | Per-client and never authoritative gameplay time. |
+| Estimated live server time | A client's estimate anchored by a received server tick and advanced with local steady-clock elapsed time. Optional one-way-delay estimation can move the estimate closer to server “now.” | Per-client estimate; clients can disagree because their latency and samples differ. |
+| Remote presentation time | Feature 12's fractional server-tick cursor used to sample remote entities. It intentionally trails the newest known tick by about six ticks/200 ms. | Per-client presentation state, not live authority. |
+| Owned prediction extent | The latest authoritative controlled-player base plus a particular sequence of locally replayed, unacknowledged inputs. | Describe with snapshot/server tick, ACK, and replayed input range; it is not one trustworthy server tick. |
+| Correction smoothing age | Local wall time within the 100 ms visual correction decay. | Presentation-only; it does not advance or rewind simulation. |
+
+Client session time is deliberately independent of packet arrival. Tying it directly to snapshots
+would make it pause during loss and jump during jitter. Instead, local steady time makes a server
+clock estimate continuous between authoritative anchors:
+
+```text
+anchor_server_time = received_server_tick / 30 Hz
+anchor_local_time  = local steady-clock time when that snapshot arrived
+
+estimated_live_server_time(now) =
+    anchor_server_time + (now - anchor_local_time)
+```
+
+This basic estimate remains behind the server by the snapshot's production, transit, and polling
+delay. Adding roughly half the RTT is a simple symmetric-path approximation, not proof of actual
+one-way delay. Gameplay deadlines must therefore remain server decisions expressed as ticks; a
+client estimate is suitable only for presentation.
+
+#### Which compensation uses which clock
+
+**Estimated live server time is vocabulary and a possible future UI/time-synchronization
+facility; Dots does not currently calculate or consume it.** It must not be mistaken for a hidden
+input-prediction or smoothing clock.
+
+| Mechanism | Status | Timeline/input it actually uses | Uses estimated live server time? |
+|---|---|---|---|
+| Owned-player prediction | Current, Feature 11 | Local 30 Hz input steps, input sequence IDs, and the last server ACK. | No. |
+| Reconciliation | Current, Feature 11 | Authoritative controlled-player sample plus replay of the unacknowledged input suffix. Server tick labels the rollback base but does not choose how far to replay. | No. |
+| Local correction smoothing | Current, Feature 11 | Local steady-clock age of a fixed 100 ms visual offset. | No. |
+| Remote presentation | Current baseline | Newest replicated sample with no interpolation. | No. |
+| Remote interpolation | Planned, Feature 12 | Fractional cursor in historical server-tick coordinates, targeting six ticks behind the newest known snapshot. | No. |
+| Complete-World rollback | Planned, Feature 14 | Authoritative checkpoint plus retained command replay and recorded remote assumptions. | No. |
+| Adaptive command buffer | Planned, Feature 14 | Reported server input-queue depth controls a bounded client command cadence. | No. |
+| Smooth world-time UI or deadline display | Deferred | A filtered mapping from local steady time to estimated server tick. | Potentially. |
+| Server-side rewind/lag compensation | Deferred | Server history plus a validated, bounded mapping of client action time into server ticks. | It would need a clock-mapping policy, but never trust the client's claim directly. |
+
+Calling prediction “lookahead” can obscure this distinction. Owned prediction advances known
+local input beyond the latest acknowledged authority; it does not ask where the server clock is
+and extrapolate the whole world. Planned remote interpolation does the opposite of lookahead: it
+intentionally samples older known server states.
+
+Current local correction smoothing is spatial and fixed-duration:
+
+```text
+correction = prediction_before_reconcile - prediction_after_replay
+new_offset = residual_offset_from_any_prior_correction + correction
+presentation_position = corrected_prediction + decaying_offset
+
+decaying_offset(age) = new_offset * clamp(1 - age / 100 ms, 0, 1)
+```
+
+Changing RTT or jitter can change how often corrections arrive and how large they are, but it does
+not change the 100 ms decay. Overlapping corrections add to the residual that has not finished
+decaying.
+
+Feature 12 instead disciplines a deliberately delayed remote cursor:
+
+```text
+desired_cursor = newest_received_server_tick - 6
+tick_error      = desired_cursor - remote_presentation_cursor
+
+cursor_rate = 1.0                                      inside ±0.25 tick
+cursor_rate = clamp(1 + 0.02 * tick_error, 0.95, 1.05) outside the deadband
+```
+
+A newer snapshot moves `newest_received_server_tick` and therefore the target. Jitter changes
+arrival spacing but not the server-tick coordinates stored in the buffer. During loss, the cursor
+can exhaust its newer bracket and hold; recovery resumes from accepted samples or performs the
+documented hard rebase. The six-tick target remains fixed in Feature 12—RTT and measured jitter do
+not automatically enlarge or shrink it.
+
+#### If estimated live server time is implemented later
+
+Treat each accepted snapshot as a noisy clock observation, not a command to reset the clock. For
+snapshot `i`:
+
+```text
+t_i = local steady-clock arrival time
+s_i = authoritative server tick carried by the snapshot
+d_i = estimated snapshot production-to-arrival delay
+
+observed_server_tick_at_arrival = s_i + (30 Hz * d_i)
+phase_error = observed_server_tick_at_arrival - estimate(t_i)
+```
+
+Using `d_i = 0` produces the conservative historical anchor already described. Using
+`d_i ≈ RTT/2` estimates server “now” under a symmetric path, but includes error from asymmetric
+routing, snapshot cadence, and polling. A robust estimator would:
+
+1. Reject stale samples before clock processing.
+2. Filter delay/phase observations and reject large transient outliers.
+3. Slew phase gradually and adjust rate only for sustained clock drift.
+4. Keep the exposed estimate monotonic; do not jump a visible clock backward for ordinary jitter.
+5. Increase uncertainty while snapshots are missing and correct when accepted samples resume.
+6. Hard-rebase only at startup or after a separately specified large-error/recovery threshold.
+
+Higher stable RTT would move a delay-compensated estimate forward gradually. Jitter would widen
+observation noise rather than directly shake the displayed clock. Packet loss would leave the
+estimate advancing from local steady time with growing uncertainty. No concrete filter, delay
+sample selection rule, slew limit, or rebase threshold is implemented or approved yet, so this
+model must not be presented as current behavior.
+
+If a UI should match the delayed remote scene rather than estimate server “now,” derive its time
+from the Feature 12 remote presentation cursor instead. The owned predicted player and delayed
+remote entities intentionally occupy different presentation timelines, so a rendered frame does
+not have one exact authoritative tick.
+
+#### Two clients observing one server
+
+This illustrative instant assumes the live server has completed tick 300:
+
+| Value | Server | Client 1 | Client 2 |
+|---|---:|---:|---:|
+| Shared authoritative tick/world time | `300` / `10.000 s` | Same server truth, not directly visible live | Same server truth, not directly visible live |
+| Client joined near server tick | — | `240` | `285` |
+| Client session time | — | About `2.000 s` | About `0.500 s` |
+| Latest received snapshot | — | ID `29`, server tick `298` | ID `7`, server tick `296` |
+| Latest-known world time | — | `9.933 s` | `9.867 s` |
+| Time since that snapshot arrived | — | `40 ms` | `20 ms` |
+| Basic estimated live server time | — | `9.973 s` | `9.887 s` |
+| Feature 12 target remote cursor | — | About tick `292` / `9.733 s` | About tick `290` / `9.667 s` |
+
+Snapshot IDs `29` and `7` do not conflict: each belongs to its own client session. Server ticks
+`298` and `296` share one server timeline and reveal that Client 2 currently has older knowledge.
+Both estimates can legitimately differ from each other and from live tick 300.
+
+Client 1's owned predicted position may already include inputs newer than the ACK in snapshot 29.
+Name that state with its rollback base and replay range—for example, “snapshot 29/server tick 298,
+ACK 42, replayed inputs 43–44”—rather than assigning it an invented server tick.
+
+#### What reconciliation rewinds
+
+When a newer snapshot arrives, reconciliation rolls the owned predicted state back to that
+authoritative controlled-player sample and replays the remaining unacknowledged input. The word
+*rollback* applies to that state reconstruction, not to every clock:
+
+| Value | Effect of reconciliation |
+|---|---|
+| Authoritative server tick/world time | Never rewound by the client. |
+| Client session time | Never rewound. |
+| Accepted snapshot ID/latest-known server tick | Advance to the newer accepted sample. |
+| Owned predicted state | Rebuilt from the new authoritative base plus the retained input suffix. |
+| Local presentation position | Preserves continuity with a visual-only offset that decays over 100 ms. |
+| Feature 12 remote presentation cursor | Continues monotonically during normal sampling; a documented hard rebase is presentation recovery, not gameplay rollback. |
+
 | Clock or event | Current cadence | Approximate spacing | What happens |
 |---|---:|---:|---|
 | Client loop/render frame | Variable; commonly limited by vsync | 16.67 ms on a 60 Hz display | Poll input, run zero or more due fixed steps, extract presentation, submit rendering. |
 | Authoritative simulation tick | Fixed 30 Hz | 33.33 ms | Apply current movement, move entities, resolve food collisions, increment server tick. |
-| Client input command | At each due client fixed step | 33.33 ms | Encode and send the newest sampled movement with a new sequence ID. |
+| Client input packet | At each due client fixed step | 33.33 ms | Encode and send the newest sampled movement, plus configured redundancy, with a new sequence ID. |
 | Full snapshot | Every two server ticks, fixed 15 Hz | 66.67 ms | Send the latest authoritative entity state and input acknowledgement. |
 | Transport poll | Once or more at explicit loop points | Render-loop or server-tick dependent | Deliver queued connection and payload events to a runtime. |
 | Display refresh | Monitor-dependent | 16.67 ms at 60 Hz | Make a completed GPU image physically visible. |
@@ -435,13 +614,14 @@ ask the fixed-step accumulator how many 30 Hz steps are due
 
 for each due step:
     map the latest input sample to movement
-    client encodes and sends one InputCommand
-    server polls, decodes, validates, and applies the input
+    client encodes and sends one bounded InputPacket
+    server polls, validates, and queues its input samples
+    server applies at most one queued sample for this tick
     server advances one authoritative World tick
     server sends a FullSnapshot if this is every second tick
     client polls and installs any delivered snapshot
 
-extract presentation from the latest replicated state
+extract the owned player/camera from smoothed prediction and remotes from replicated state
 record and submit GPU rendering
 present through the swapchain
 ```
@@ -457,45 +637,46 @@ advances one 30 Hz tick, emits any due snapshots, and sleeps until its next tick
 cannot call or synchronize that loop; it only sends messages and processes messages that have
 arrived.
 
-### Concrete current timeline: when one input becomes visible
+### Concrete current timeline: prediction and authority
 
 Assume a ready in-memory session, a stable 60 Hz client render loop, and that snapshot `S10`
 contains server tick `T20`. The player presses and holds right immediately before render frame
 `R102`:
 
 ```text
-time       client/render work                 server work                  visible state
+time       client/render work                 server work                  visible owned state
 ------------------------------------------------------------------------------------------------
 33.3 ms    R102 polls RIGHT
-           sends input I42 -----------------> validate I42
+           predicts and sends I42 ----------> validate I42
                                                step authoritative T21
                                                no snapshot due
-           renders old S10                                                still S10
+           renders predicted I42                                          P(I42)
 
 50.0 ms    R103 polls RIGHT
            no fixed step is due
            sends nothing
-           renders old S10                                                still S10
+           renders current prediction                                     P(I42)
 
 66.7 ms    R104 polls RIGHT
-           sends input I43 -----------------> validate I43
+           predicts and sends I43 ----------> validate I43
                                                step authoritative T22
                           <------------------ send periodic snapshot S11
            installs S11, which contains T22
            and last_processed_input = I43
-           submits a render using S11                                      S11 at next refresh
+           reconciles with no correction
+           renders prediction equal to S11                                P(I43) = S11
 ```
 
 Input `I42` is measured and sent in client render frame `R102`. The server processes it before
 advancing authoritative tick `T21`, inside that same outer loop iteration because the in-memory
-transport adds no delay. The player position changes on the server at `T21`, but no snapshot is
-due on that odd tick, so the client still renders `S10`.
+transport adds no delay. The owned player already renders the predicted result of `I42`; remote
+and replicated state remain at `S10` because no snapshot is due on that odd tick.
 
 The server sends `S11` after tick `T22`, two render frames later in this example. `S11` is not a
 special response to `I42`; snapshots are a periodic stream containing the newest cumulative
 state. It also includes the newer `I43` acknowledgement because that input was processed before
-`T22`. The client installs and submits the new state during `R104`. With vsync, the monitor shows
-that submitted image at or shortly after the next refresh.
+`T22`. The client installs it, discards acknowledged history, and finds that replay produces its
+existing prediction, so no smoothing correction is needed.
 
 This gives four useful answers for the example:
 
@@ -504,7 +685,7 @@ This gives four useful answers for the example:
 | When was the input measured? | SDL input polling in client render frame `R102`. |
 | When did authority process it? | Immediately before server simulation tick `T21`. |
 | When was its result sent back? | As part of periodic snapshot `S11`, after tick `T22`. |
-| When did the player see it? | Submitted by render frame `R104`, physically visible on a following display refresh. |
+| When did the player see it? | Predicted and submitted by `R102`, physically visible on a following display refresh. |
 
 Depending on phase, a newly held input may just make a simulation tick and snapshot, or it may
 wait nearly one input interval before processing and then one additional server tick for the next
@@ -616,14 +797,14 @@ The critical rule is:
 Gradually moving gameplay state toward the server result would make later predictions start
 from knowingly false state and compound the error.
 
-Initial prediction should cover only owned-player movement. Eating, mass changes, spawning,
-death, and collisions involving other players remain visibly confirmed by snapshots until there
-is a demonstrated need for more speculation.
+Feature 11 prediction covers only owned-player movement. Eating, mass changes, spawning, death,
+and collisions involving other players remain visibly confirmed by snapshots until Feature 14
+tests those mechanics against a deterministic authoritative baseline.
 
 ### Remote players: buffer and interpolate
 
-The client cannot predict another human's future input. Remote players therefore use a
-different strategy: render slightly in the past between two known snapshots.
+The client cannot know another human's future input. Feature 12 therefore uses a different
+strategy: render slightly in the past between two known snapshots.
 
 ```text
 received snapshots:        S10 -------- S11 -------- S12
@@ -635,9 +816,11 @@ This adds a small intentional presentation delay but provides two known endpoint
 motion. A later adaptive buffer can grow or shrink based on measured jitter. Remote gameplay
 state is never invented by running guessed remote input.
 
-The owned player is therefore usually rendered from current predicted state, while remote
+Through Feature 12, the owned player is rendered from current predicted state while remote
 players are rendered from delayed interpolated state. Both are corrected from the same stream of
-authoritative snapshots.
+authoritative snapshots. Feature 14 later makes this policy selectable: it may advance remote
+players using their last known level-triggered movement, records that assumption, never invents
+remote edge actions, and retains interpolation as the correctness baseline and fallback.
 
 ### What “latency compensation” means here
 
@@ -647,11 +830,30 @@ The phrase is broad. For this project, the immediate roadmap means:
 - **Reconciliation** against server acknowledgements and authoritative snapshots.
 - **Presentation smoothing** for visible local corrections.
 - **Remote interpolation** for other players under snapshot delay and jitter.
+- **Selectable complete-World rollback** after the authoritative mechanics baseline exists.
 
 In some action games, “lag compensation” specifically means the server rewinds past world state
 when evaluating a shot. Dots currently has no such mechanic planned. Prediction and
 interpolation solve client responsiveness and smoothness; any future server rewind would be a
 separate, gameplay-specific authority policy.
+
+### Complete-World rollback direction — Features 13 and 14
+
+Feature 13 first adds deterministic authoritative absorption, defeat, spectating, and respawn.
+Those results remain unpredicted so the project has a trustworthy baseline for contested
+outcomes and session transitions.
+
+Feature 14 then restores a complete Dots World from an authoritative checkpoint and atomically
+replays retained commands. The selectable set defaults to every replicated entity, but
+owner-and-interaction-closure and owner-only modes provide cost and comparison controls. Reversible
+World state may be predicted; durable consequences such as entering spectator mode, respawn,
+score, and achievements remain confirmed-only. The kernel completes replay in the frame that
+accepts the snapshot unless measured workloads justify a separately reviewed multi-frame design.
+
+The canonical checkpoint, replay, predicted-entity, cue, adaptive-buffer, and recovery contracts
+are in [`rollback_prediction_design.md`](rollback_prediction_design.md). The phased implementation
+is in [`plans/13-authoritative-interactions-spectating.md`](plans/13-authoritative-interactions-spectating.md)
+and [`plans/14-selectable-world-rollback.md`](plans/14-selectable-world-rollback.md).
 
 ## How later replication work fits
 
@@ -663,8 +865,10 @@ change what is sent without changing who owns truth:
 | 10: native transport | Cross-process connections and network impairment testing | Same messages and authority over a real network. |
 | 11: prediction/reconciliation | Input history, replay, and local correction smoothing | Owned movement responds immediately. |
 | 12: remote interpolation | Buffered presentation snapshots | Other players move smoothly under jitter. |
-| 13: interest management | Per-client area-of-interest filtering | Clients receive only relevant authoritative entities. |
-| 14: delta snapshots | Baselines, field masks, quantization, and byte budgets | Snapshots describe changes rather than replacing everything on the wire. |
+| 13: authoritative interactions | Absorption, defeat, spectating, and optional respawn | Contested and durable outcomes gain a server-owned baseline. |
+| 14: selectable World rollback | Complete checkpoints, structural replay, predicted lifecycle, and adaptive command timing | Reversible gameplay can respond immediately without making session consequences speculative. |
+| 15: interest management | Per-client area-of-interest filtering | Clients receive only relevant authoritative entities; prediction membership follows coherent AOI entry/exit. |
+| 16: delta snapshots | Baselines, field masks, quantization, and byte budgets | Snapshots describe changes rather than replacing everything on the wire. |
 
 A delta snapshot is still authoritative. The client reconstructs a newer replicated view from a
 known baseline and validated changes. Missing or reordered data must cause recovery from a newer
@@ -678,14 +882,16 @@ rate. Native transport data includes connection state, RTT, packet loss, traffic
 queue depths, and queue delay. In-memory endpoints report connection state but leave measurements
 they cannot provide unavailable instead of implying zero latency or loss.
 
-Additional protocol-level values that may be useful in later work include:
+The client runtime exposes these protocol/prediction values programmatically and the ImGui
+**Session** and **Prediction** sections display them:
 
 - Client session state.
 - Last input sequence sent and last input sequence acknowledged by a snapshot.
 - Number of currently unacknowledged inputs.
-- Applied, stale, and invalid snapshot counts.
+- Replay counts/durations, correction counts/distances, history pressure, server input depth,
+  over-budget replays, and hard resyncs.
 
-Those are replication/runtime statistics, not measurements of a real network.
+These are replication/runtime statistics, not measurements of a real network.
 
 The recommended staging is:
 
@@ -695,6 +901,8 @@ The recommended staging is:
 | 10: native transport | Snapshot age/rate plus connection state, RTT, packet loss, traffic rates, outbound queues, and queue delay. |
 | 11: prediction/reconciliation | Unacknowledged input count, replay count, correction distance, correction frequency, and presentation smoothing offset. |
 | 12: remote interpolation | Snapshot-buffer fill, interpolation delay, measured jitter, late snapshots, and extrapolation/hold events. |
+| 13: authoritative interactions | Session mode, owned pieces, confirmed killer, defeat/respawn ticks, and authoritative absorption/respawn results. |
+| 14: selectable World rollback | Prediction mode, complete replay range/cost, structural divergence, spawn/cue lifecycle, command-buffer control, and state-layer overlays. |
 
 Genuine **network transport stats come from GameNetworkingSockets**. They remain labeled
 separately from replication health. One-way latency should not be inferred by simply halving RTT
@@ -711,7 +919,8 @@ because clocks and routes can differ.
 - Malformed peer data cannot corrupt trusted state or stop unrelated sessions.
 - Prediction may speculate locally, but reconciliation always accepts server truth.
 - Gameplay correction is immediate; visual correction may be smoothed.
-- Remote players are interpolated from known samples, not predicted from guessed input.
+- Feature 12 remotes are interpolated from known samples. Feature 14 may predict recorded held
+  movement, but never guesses remote edge actions and always exposes the assumption.
 - Presentation and replicated state are client views and never become server authority.
 
 ## Where to read the implementation

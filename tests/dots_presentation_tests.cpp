@@ -1,6 +1,18 @@
 #include "dots/presentation/presentation.hpp"
 
+#include <array>
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <chrono>
+
+namespace {
+
+[[nodiscard]] constexpr std::chrono::steady_clock::time_point
+clock_time(std::chrono::steady_clock::duration offset) noexcept {
+    return std::chrono::steady_clock::time_point{offset};
+}
+
+} // namespace
 
 TEST_CASE("Dots presentation extracts live food before players", "[dots][presentation]") {
     dots::simulation::World world;
@@ -234,4 +246,186 @@ TEST_CASE("Dots presentation shifts player color as food mass is gained", "[dots
     REQUIRE(draw_list.circles[0].color == settings.player);
     REQUIRE(draw_list.circles[1].color == mycore::render::Color{0.5F, 0.5F, 0.5F, 1.0F});
     REQUIRE(draw_list.circles[2].color == settings.player_growth);
+}
+
+TEST_CASE("Local prediction presentation preserves continuity and decays over 100 ms",
+          "[dots][presentation][prediction]") {
+    using namespace std::chrono_literals;
+    dots::presentation::LocalPredictionPresentation presentation;
+    const std::array replay_path{mycore::math::Vector2{0.25F, 0.0F},
+                                 mycore::math::Vector2{0.5F, 0.0F}};
+    presentation.update({.predicted_position = {1.0F, 0.0F}}, clock_time(0ms));
+
+    const dots::presentation::LocalPredictionSample correction{
+        .predicted_position = {},
+        .accumulated_correction_displacement = {1.0F, 0.0F},
+        .correction_sequence = 1,
+        .pre_correction_position = mycore::math::Vector2{1.0F, 0.0F},
+        .correction_replay_path = replay_path,
+    };
+    presentation.update(correction, clock_time(10ms));
+    CHECK(presentation.predicted_position() == mycore::math::Vector2{});
+    CHECK(presentation.presentation_position() == mycore::math::Vector2{1.0F, 0.0F});
+    CHECK(presentation.smoothing_offset() == mycore::math::Vector2{1.0F, 0.0F});
+    CHECK(presentation.correction_visual_active());
+    CHECK(presentation.retained_pre_correction_position() ==
+          std::optional{mycore::math::Vector2{1.0F, 0.0F}});
+    CHECK(presentation.retained_correction_replay_path().size() == 2);
+
+    presentation.update(correction, clock_time(60ms));
+    CHECK(presentation.presentation_position().x == Catch::Approx(0.5F));
+    CHECK(presentation.smoothing_offset().x == Catch::Approx(0.5F));
+
+    presentation.update(correction, clock_time(110ms));
+    CHECK(presentation.presentation_position() == mycore::math::Vector2{});
+    CHECK(presentation.smoothing_offset() == mycore::math::Vector2{});
+    CHECK(presentation.correction_visual_active());
+
+    presentation.update(correction, clock_time(2010ms));
+    CHECK_FALSE(presentation.correction_visual_active());
+    CHECK_FALSE(presentation.retained_pre_correction_position().has_value());
+    CHECK(presentation.retained_correction_replay_path().empty());
+}
+
+TEST_CASE("Overlapping corrections compound residuals and hard resync clears presentation",
+          "[dots][presentation][prediction]") {
+    using namespace std::chrono_literals;
+    dots::presentation::LocalPredictionPresentation presentation;
+    presentation.update({.predicted_position = {2.0F, 0.0F}}, clock_time(0ms));
+    presentation.update(
+        {
+            .predicted_position = {1.0F, 0.0F},
+            .accumulated_correction_displacement = {1.0F, 0.0F},
+            .correction_sequence = 1,
+            .pre_correction_position = mycore::math::Vector2{2.0F, 0.0F},
+        },
+        clock_time(0ms));
+    CHECK(presentation.presentation_position().x == Catch::Approx(2.0F));
+    CHECK(presentation.correction_visual_active());
+    presentation.clear_correction_visuals();
+    CHECK_FALSE(presentation.correction_visual_active());
+
+    presentation.update(
+        {
+            .predicted_position = {1.0F, 0.0F},
+            .accumulated_correction_displacement = {1.0F, 0.0F},
+            .correction_sequence = 1,
+        },
+        clock_time(50ms));
+    CHECK(presentation.presentation_position().x == Catch::Approx(1.5F));
+    CHECK_FALSE(presentation.correction_visual_active());
+    presentation.update(
+        {
+            .predicted_position = {},
+            .accumulated_correction_displacement = {2.0F, 0.0F},
+            .correction_sequence = 2,
+            .pre_correction_position = mycore::math::Vector2{1.0F, 0.0F},
+        },
+        clock_time(50ms));
+    CHECK(presentation.presentation_position().x == Catch::Approx(1.5F));
+    CHECK(presentation.smoothing_offset().x == Catch::Approx(1.5F));
+    CHECK(presentation.correction_visual_active());
+
+    presentation.update(
+        {
+            .predicted_position = {4.0F, 2.0F},
+            .hard_resync_sequence = 1,
+        },
+        clock_time(60ms));
+    CHECK(presentation.presentation_position() == mycore::math::Vector2{4.0F, 2.0F});
+    CHECK(presentation.smoothing_offset() == mycore::math::Vector2{});
+    CHECK_FALSE(presentation.correction_visual_active());
+}
+
+TEST_CASE("A correction observed after a hard resync starts from the reset presentation",
+          "[dots][presentation][prediction]") {
+    using namespace std::chrono_literals;
+    dots::presentation::LocalPredictionPresentation presentation;
+    presentation.update(
+        {
+            .predicted_position = {2.0F, 0.0F},
+            .accumulated_correction_displacement = {1.0F, 0.0F},
+            .correction_sequence = 1,
+        },
+        clock_time(0ms));
+    presentation.update(
+        {
+            .predicted_position = {3.0F, 0.0F},
+            .accumulated_correction_displacement = {1.0F, 0.0F},
+            .correction_sequence = 1,
+            .hard_resync_sequence = 1,
+            .pre_correction_position = mycore::math::Vector2{4.0F, 0.0F},
+        },
+        clock_time(10ms));
+
+    CHECK(presentation.predicted_position() == mycore::math::Vector2{3.0F, 0.0F});
+    CHECK(presentation.presentation_position() == mycore::math::Vector2{4.0F, 0.0F});
+    CHECK(presentation.smoothing_offset() == mycore::math::Vector2{1.0F, 0.0F});
+    CHECK(presentation.correction_visual_active());
+}
+
+TEST_CASE("Predicted replicated extraction separates presentation and known state layers",
+          "[dots][presentation][prediction]") {
+    dots::replication::ReplicatedWorld world;
+    REQUIRE(world.apply({
+                .snapshot_id = dots::protocol::SnapshotId{1},
+                .entities =
+                    {
+                        {
+                            .entity_id = dots::protocol::EntityId{3},
+                            .kind = dots::protocol::EntityKind::Player,
+                            .position_x = 5.0F,
+                            .position_y = -2.0F,
+                            .mass = 16.0F,
+                        },
+                        {
+                            .entity_id = dots::protocol::EntityId{7},
+                            .kind = dots::protocol::EntityKind::Food,
+                            .position_x = 8.0F,
+                            .position_y = 4.0F,
+                            .mass = 1.0F,
+                        },
+                    },
+            }) == dots::replication::SnapshotApplyResult::Applied);
+    const std::array replay_path{mycore::math::Vector2{5.25F, -1.75F},
+                                 mycore::math::Vector2{5.5F, -1.5F}};
+    const dots::presentation::PredictedReplicatedPlayer player{
+        .entity_id = dots::protocol::EntityId{3},
+        .presentation_position = {6.0F, -1.0F},
+        .predicted_position = {5.5F, -1.5F},
+        .pre_correction_position = mycore::math::Vector2{7.0F, 0.0F},
+        .correction_replay_path = replay_path,
+    };
+
+    const auto frame = dots::presentation::extract_predicted_replicated_frame(world, player);
+    REQUIRE(frame.camera == player.presentation_position);
+    REQUIRE(frame.circles.size() == 7);
+    CHECK(frame.circles[0].position == player.presentation_position);
+    CHECK(frame.circles[2].kind == dots::presentation::CircleKind::PredictedPositionGhost);
+    CHECK(frame.circles[2].position == player.predicted_position);
+    CHECK(frame.circles[3].kind == dots::presentation::CircleKind::AuthoritativeSampleGhost);
+    CHECK(frame.circles[3].position == mycore::math::Vector2{5.0F, -2.0F});
+    CHECK(frame.circles[4].kind == dots::presentation::CircleKind::PreCorrectionGhost);
+    CHECK(frame.circles[5].kind == dots::presentation::CircleKind::ReplayMarker);
+    CHECK(frame.circles[6].kind == dots::presentation::CircleKind::ReplayMarker);
+
+    const auto draw_list = dots::presentation::build_draw_list(frame, {});
+    CHECK(draw_list.camera.center == player.presentation_position);
+    CHECK(draw_list.circles[2].radius == Catch::Approx(4.05F));
+    CHECK(draw_list.circles[3].radius == Catch::Approx(4.1F));
+    CHECK(draw_list.circles[4].radius == Catch::Approx(4.15F));
+    CHECK(draw_list.circles[5].radius == Catch::Approx(0.15F));
+    CHECK(draw_list.circles[3].outline_color == mycore::render::Color{1.0F, 0.55F, 0.12F, 0.95F});
+    CHECK(draw_list.circles[4].outline_color == mycore::render::Color{1.0F, 0.1F, 0.75F, 0.95F});
+
+    const auto hidden = dots::presentation::extract_predicted_replicated_frame(
+        world,
+        {
+            .entity_id = player.entity_id,
+            .presentation_position = player.presentation_position,
+            .predicted_position = player.predicted_position,
+            .show_prediction_layers = false,
+            .show_replay_path = false,
+        });
+    CHECK(hidden.circles.size() == 2);
 }

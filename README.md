@@ -8,8 +8,9 @@ in demonstrated game requirements rather than speculative systems.
 
 [Dots](games/dots/README.md), an Agar.io-like server-authoritative multiplayer game, is the
 current implementation driver. It exercises deterministic simulation, SDL_GPU rendering,
-native transport, replication, observability, configuration, and packaging. A later offline 3D
-aim trainer will provide the first cross-game validation.
+native transport, replication, client prediction and reconciliation, observability,
+configuration, and packaging. A later offline 3D aim trainer will provide the first cross-game
+validation.
 
 ## Quick start
 
