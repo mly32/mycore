@@ -49,10 +49,13 @@ launcher to exercise impaired connections. Run an executable with `--help` for i
 | `dots_server` | Headless authoritative 30 Hz native server |
 | `dots_bot` | Foundation executable for future load-testing clients |
 
-Networked clients send input at 30 Hz and render authoritative snapshots at 15 Hz. Prediction
-and remote interpolation are intentionally deferred, so networked movement is less smooth than
-offline play. The [networking guide](../../docs/server_authoritative_networking_guide.md) covers
-authority, reliability, connection lifecycle, impairment, and the planned compensation model.
+Networked clients send protocol-v2 input packets at 30 Hz and receive authoritative snapshots at
+15 Hz. Each input packet can repeat up to two unacknowledged samples by default. The controlled
+player responds from bounded movement prediction immediately, reconciles against server ACKs,
+and smooths only visible corrections over 100 ms. Remote players still use their newest received
+snapshot until Feature 12 interpolation. The
+[networking guide](../../docs/server_authoritative_networking_guide.md) covers authority,
+reliability, connection lifecycle, impairment, prediction, and the planned compensation model.
 
 ## Controls and configuration
 
@@ -67,6 +70,9 @@ Configuration precedence is built-in defaults, then `dots-client.toml` in the wo
 when present. `--config <path>` replaces that automatic path. CLI mode flags such as `--offline`,
 `--in-memory`, and `--connect` override the configured network mode.
 
+Set `[network].input_redundancy = false` to send only the current input sample. This is useful for
+comparing recovery behavior under simulated loss; redundancy is enabled by default.
+
 ```bash
 ./build/macos-clang-debug/bin/dots_client \
     --config games/dots/config/dots-client.toml
@@ -74,10 +80,16 @@ when present. `--config <path>` replaces that automatic path. CLI mode flags suc
 
 ## Runtime visibility
 
-The in-game debug panel reports simulation, frame, replication, and transport health. Native
-connections expose RTT, loss, rates, and queues; unavailable in-memory measurements are labeled
-rather than displayed as zero. Logs use owner-qualified categories such as `dots.client.session`
-and `dots.server.session`, and on-demand Tracy zones cover the main client frame stages.
+The in-game debug panel separates Runtime, Network, Prediction, and Tools output. It reports
+server-assigned client/entity IDs, simulation and frame health, transport statistics, input ACK
+and history pressure, replay/correction metrics, and authoritative/predicted/presentation state.
+Tools can inject prediction errors or a three-packet drop burst without changing measured
+transport loss. Native connections expose RTT, loss, rates, and queues; unavailable in-memory
+measurements are labeled rather than displayed as zero. See the
+[debugging guide](../../docs/debugging_and_observability.md) for every field and visual layer.
+
+Logs use owner-qualified categories such as `dots.client.session` and `dots.server.session`, and
+on-demand Tracy zones cover the main client frame stages and prediction reconciliation.
 
 The [rendering guide](../../docs/sdl_gpu_rendering_guide.md) explains how Dots presentation data
 reaches SDL_GPU through MyCore's renderer.

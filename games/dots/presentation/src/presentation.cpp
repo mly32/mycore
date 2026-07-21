@@ -11,6 +11,10 @@ namespace dots::presentation {
 namespace {
 
 constexpr float kFoodForFullGrowthColor = 8.0F;
+constexpr float kPredictedOutlineRadiusOffsetPixels = 1.0F;
+constexpr float kAuthoritativeOutlineRadiusOffsetPixels = 2.0F;
+constexpr float kPreCorrectionOutlineRadiusOffsetPixels = 3.0F;
+constexpr float kReplayMarkerRadiusPixels = 3.0F;
 
 [[nodiscard]] mycore::render::Color
 lerp(mycore::render::Color from, mycore::render::Color to, float amount) noexcept {
@@ -28,7 +32,142 @@ lerp(mycore::render::Color from, mycore::render::Color to, float amount) noexcep
     return lerp(settings.player, settings.player_growth, growth);
 }
 
+[[nodiscard]] bool finite(mycore::math::Vector2 value) noexcept {
+    return std::isfinite(value.x) && std::isfinite(value.y);
+}
+
+void append_outline(mycore::render_2d::DrawList& draw_list,
+                    const CircleInstance& circle,
+                    mycore::render::Color color,
+                    float radius_offset_pixels,
+                    const Settings& settings) {
+    auto transparent_fill = color;
+    transparent_fill.alpha = 0.0F;
+    draw_list.circles.push_back({
+        .center = circle.position,
+        .radius = circle.radius + (radius_offset_pixels / settings.pixels_per_world_unit),
+        .color = transparent_fill,
+        .outline_color = color,
+        .outline_width_pixels = settings.comparison_ghost_outline_pixels,
+    });
+}
+
 } // namespace
+
+void LocalPredictionPresentation::update(const LocalPredictionSample& sample,
+                                         std::chrono::steady_clock::time_point now) {
+    if (!finite(sample.predicted_position) || !finite(sample.accumulated_correction_displacement) ||
+        (sample.pre_correction_position && !finite(*sample.pre_correction_position)) ||
+        std::any_of(sample.correction_replay_path.begin(),
+                    sample.correction_replay_path.end(),
+                    [](mycore::math::Vector2 position) {
+                        return !finite(position);
+                    })) {
+        throw std::runtime_error{"Dots prediction presentation encountered invalid state"};
+    }
+
+    if (!initialized_ || sample.hard_resync_sequence < last_hard_resync_sequence_ ||
+        (sample.hard_resync_sequence == last_hard_resync_sequence_ &&
+         sample.correction_sequence < last_correction_sequence_)) {
+        initialize(sample, now);
+        return;
+    }
+
+    auto residual = evaluate_smoothing_offset(now);
+    const auto hard_resynced = sample.hard_resync_sequence != last_hard_resync_sequence_;
+    if (hard_resynced) {
+        residual = {};
+        smoothing_start_offset_ = {};
+        smoothing_start_time_ = now;
+        smoothing_active_ = false;
+        last_correction_accumulator_ = {};
+        last_correction_sequence_ = 0;
+        clear_correction_visuals();
+    }
+
+    if (sample.correction_sequence != last_correction_sequence_) {
+        const auto correction_displacement =
+            sample.accumulated_correction_displacement - last_correction_accumulator_;
+        smoothing_start_offset_ = residual + correction_displacement;
+        smoothing_start_time_ = now;
+        smoothing_active_ = smoothing_start_offset_ != mycore::math::Vector2{};
+        retained_pre_correction_position_ = sample.pre_correction_position;
+        retained_correction_replay_path_.assign(sample.correction_replay_path.begin(),
+                                                sample.correction_replay_path.end());
+        correction_visual_expiry_ = now + kPredictionDebugRetentionDuration;
+        correction_visual_active_ = true;
+    }
+
+    last_correction_sequence_ = sample.correction_sequence;
+    last_hard_resync_sequence_ = sample.hard_resync_sequence;
+    last_correction_accumulator_ = sample.accumulated_correction_displacement;
+    predicted_position_ = sample.predicted_position;
+    smoothing_offset_ = evaluate_smoothing_offset(now);
+    presentation_position_ = predicted_position_ + smoothing_offset_;
+    if (correction_visual_active_ && now >= correction_visual_expiry_) {
+        clear_correction_visuals();
+    }
+}
+
+void LocalPredictionPresentation::clear_correction_visuals() noexcept {
+    correction_visual_active_ = false;
+    retained_pre_correction_position_.reset();
+    retained_correction_replay_path_.clear();
+}
+
+mycore::math::Vector2 LocalPredictionPresentation::predicted_position() const noexcept {
+    return predicted_position_;
+}
+
+mycore::math::Vector2 LocalPredictionPresentation::presentation_position() const noexcept {
+    return presentation_position_;
+}
+
+mycore::math::Vector2 LocalPredictionPresentation::smoothing_offset() const noexcept {
+    return smoothing_offset_;
+}
+
+bool LocalPredictionPresentation::correction_visual_active() const noexcept {
+    return correction_visual_active_;
+}
+
+std::optional<mycore::math::Vector2>
+LocalPredictionPresentation::retained_pre_correction_position() const noexcept {
+    return retained_pre_correction_position_;
+}
+
+std::span<const mycore::math::Vector2>
+LocalPredictionPresentation::retained_correction_replay_path() const noexcept {
+    return {retained_correction_replay_path_.data(), retained_correction_replay_path_.size()};
+}
+
+mycore::math::Vector2 LocalPredictionPresentation::evaluate_smoothing_offset(
+    std::chrono::steady_clock::time_point now) const noexcept {
+    if (!smoothing_active_) {
+        return {};
+    }
+    const auto elapsed =
+        std::max(now - smoothing_start_time_, std::chrono::steady_clock::duration::zero());
+    const auto progress =
+        std::chrono::duration<float>{elapsed}.count() /
+        std::chrono::duration<float>{kPredictionCorrectionSmoothingDuration}.count();
+    return smoothing_start_offset_ * std::clamp(1.0F - progress, 0.0F, 1.0F);
+}
+
+void LocalPredictionPresentation::initialize(const LocalPredictionSample& sample,
+                                             std::chrono::steady_clock::time_point now) noexcept {
+    predicted_position_ = sample.predicted_position;
+    presentation_position_ = sample.predicted_position;
+    smoothing_offset_ = {};
+    smoothing_start_offset_ = {};
+    last_correction_accumulator_ = sample.accumulated_correction_displacement;
+    smoothing_start_time_ = now;
+    last_correction_sequence_ = sample.correction_sequence;
+    last_hard_resync_sequence_ = sample.hard_resync_sequence;
+    initialized_ = true;
+    smoothing_active_ = false;
+    clear_correction_visuals();
+}
 
 FrameData extract_frame(const simulation::World& world,
                         mycore::math::Vector2 camera,
@@ -113,7 +252,7 @@ FrameData extract_replicated_frame(const replication::ReplicatedWorld& world,
         throw std::runtime_error{"Dots replicated presentation could not find its player"};
     }
 
-    FrameData frame{.camera = {controlled->position_x, controlled->position_y}};
+    FrameData frame{.camera = {controlled->position_x, controlled->position_y}, .circles = {}};
     frame.circles.reserve(world.entities().size());
     for (const auto& entity : world.entities()) {
         if (!std::isfinite(entity.position_x) || !std::isfinite(entity.position_y) ||
@@ -127,6 +266,64 @@ FrameData extract_replicated_frame(const replication::ReplicatedWorld& world,
             .kind =
                 entity.kind == protocol::EntityKind::Food ? CircleKind::Food : CircleKind::Player,
         });
+    }
+    return frame;
+}
+
+FrameData extract_predicted_replicated_frame(const replication::ReplicatedWorld& world,
+                                             const PredictedReplicatedPlayer& controlled_player) {
+    if (!finite(controlled_player.presentation_position) ||
+        !finite(controlled_player.predicted_position) ||
+        (controlled_player.pre_correction_position &&
+         !finite(*controlled_player.pre_correction_position))) {
+        throw std::runtime_error{"Dots predicted presentation encountered invalid geometry"};
+    }
+    const auto* controlled = world.find(controlled_player.entity_id);
+    if (controlled == nullptr || controlled->kind != protocol::EntityKind::Player) {
+        throw std::runtime_error{"Dots predicted presentation could not find its player"};
+    }
+
+    auto frame = extract_replicated_frame(world, controlled_player.entity_id);
+    const auto controlled_iterator =
+        std::find_if(world.entities().begin(),
+                     world.entities().end(),
+                     [&controlled_player](const protocol::EntityState& entity) {
+                         return entity.entity_id == controlled_player.entity_id;
+                     });
+    if (controlled_iterator == world.entities().end()) {
+        throw std::runtime_error{"Dots predicted presentation lost its player"};
+    }
+    const auto controlled_index =
+        static_cast<std::size_t>(std::distance(world.entities().begin(), controlled_iterator));
+    frame.camera = controlled_player.presentation_position;
+    frame.circles[controlled_index].position = controlled_player.presentation_position;
+
+    const auto radius = simulation::radius_for_mass(controlled->mass);
+    const auto append_ghost = [&frame, controlled, radius](mycore::math::Vector2 position,
+                                                           CircleKind kind) {
+        frame.circles.push_back({
+            .position = position,
+            .mass = controlled->mass,
+            .radius = radius,
+            .kind = kind,
+        });
+    };
+    if (controlled_player.show_prediction_layers) {
+        append_ghost(controlled_player.predicted_position, CircleKind::PredictedPositionGhost);
+        append_ghost({controlled->position_x, controlled->position_y},
+                     CircleKind::AuthoritativeSampleGhost);
+        if (controlled_player.pre_correction_position) {
+            append_ghost(*controlled_player.pre_correction_position,
+                         CircleKind::PreCorrectionGhost);
+        }
+    }
+    if (controlled_player.show_replay_path) {
+        for (const auto position : controlled_player.correction_replay_path) {
+            if (!finite(position)) {
+                throw std::runtime_error{"Dots replay visualization encountered invalid geometry"};
+            }
+            append_ghost(position, CircleKind::ReplayMarker);
+        }
     }
     return frame;
 }
@@ -149,14 +346,40 @@ mycore::render_2d::DrawList build_draw_list(const FrameData& frame, const Settin
     draw_list.circles.reserve(frame.circles.size());
     for (const auto& circle : frame.circles) {
         if (circle.kind == CircleKind::PositionGhost) {
-            auto transparent_fill = settings.comparison_ghost_outline;
-            transparent_fill.alpha = 0.0F;
+            append_outline(draw_list, circle, settings.comparison_ghost_outline, 0.0F, settings);
+            continue;
+        }
+        if (circle.kind == CircleKind::PredictedPositionGhost) {
+            append_outline(draw_list,
+                           circle,
+                           settings.comparison_ghost_outline,
+                           kPredictedOutlineRadiusOffsetPixels,
+                           settings);
+            continue;
+        }
+        if (circle.kind == CircleKind::AuthoritativeSampleGhost) {
+            append_outline(draw_list,
+                           circle,
+                           settings.authoritative_sample_outline,
+                           kAuthoritativeOutlineRadiusOffsetPixels,
+                           settings);
+            continue;
+        }
+        if (circle.kind == CircleKind::PreCorrectionGhost) {
+            append_outline(draw_list,
+                           circle,
+                           settings.pre_correction_outline,
+                           kPreCorrectionOutlineRadiusOffsetPixels,
+                           settings);
+            continue;
+        }
+        if (circle.kind == CircleKind::ReplayMarker) {
             draw_list.circles.push_back({
                 .center = circle.position,
-                .radius = circle.radius,
-                .color = transparent_fill,
-                .outline_color = settings.comparison_ghost_outline,
-                .outline_width_pixels = settings.comparison_ghost_outline_pixels,
+                .radius = kReplayMarkerRadiusPixels / settings.pixels_per_world_unit,
+                .color = settings.replay_marker,
+                .outline_color = {},
+                .outline_width_pixels = 0.0F,
             });
             continue;
         }

@@ -21,7 +21,8 @@ using dots::protocol::EntityId;
 using dots::protocol::EntityKind;
 using dots::protocol::EntityState;
 using dots::protocol::FullSnapshot;
-using dots::protocol::InputCommand;
+using dots::protocol::InputPacket;
+using dots::protocol::InputSample;
 using dots::protocol::InputSequenceId;
 using dots::protocol::Message;
 using dots::protocol::ServerWelcome;
@@ -84,14 +85,21 @@ void write_u32(EncodedMessage& bytes, std::size_t offset, std::uint32_t value) {
     bytes[offset + 3] = static_cast<std::byte>(value);
 }
 
-[[nodiscard]] InputCommand input_fixture() {
+[[nodiscard]] InputSample input_sample(std::uint32_t sequence_id = 0x01020304,
+                                       std::uint32_t client_tick = 0x05060708) {
     return {
-        .sequence_id = InputSequenceId{0x01020304},
-        .client_tick = 0x05060708,
+        .sequence_id = InputSequenceId{sequence_id},
+        .client_tick = client_tick,
         .movement_x = 0.5F,
         .movement_y = -0.25F,
         .action_bits = 0,
+    };
+}
+
+[[nodiscard]] InputPacket input_fixture() {
+    return {
         .last_received_snapshot_id = SnapshotId{0x0A0B0C0D},
+        .samples = {input_sample()},
     };
 }
 
@@ -100,6 +108,7 @@ void write_u32(EncodedMessage& bytes, std::size_t offset, std::uint32_t value) {
         .snapshot_id = SnapshotId{1},
         .server_tick = 2,
         .last_processed_input_id = InputSequenceId::invalid(),
+        .pending_input_count = 3,
         .entities =
             {
                 {
@@ -131,9 +140,9 @@ TEST_CASE("Protocol messages round trip", "[dots][protocol]") {
             .server_tick = 42,
         },
         input_fixture(),
-        InputCommand{
-            .sequence_id = InputSequenceId{1},
-            .last_received_snapshot_id = SnapshotId::invalid(),
+        InputPacket{
+            .last_received_snapshot_id = SnapshotId{1},
+            .samples = {input_sample(1, 1), input_sample(2, 2), input_sample(3, 3)},
         },
         FullSnapshot{
             .snapshot_id = SnapshotId{3},
@@ -148,23 +157,30 @@ TEST_CASE("Protocol messages round trip", "[dots][protocol]") {
     }
 }
 
-TEST_CASE("Input command encoding has stable golden bytes", "[dots][protocol][golden]") {
+TEST_CASE("Input packet encoding has stable golden bytes", "[dots][protocol][golden]") {
     const auto expected = byte_sequence({
-        0x44, 0x4F, 0x54, 0x53, 0x00, 0x01, 0x03, 0x00, 0x00, 0x00, 0x00, 0x16,
-        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x3F, 0x00, 0x00, 0x00,
-        0xBE, 0x80, 0x00, 0x00, 0x00, 0x00, 0x0A, 0x0B, 0x0C, 0x0D,
+        0x44, 0x4F, 0x54, 0x53, 0x00, 0x02, 0x03, 0x00, 0x00, 0x00, 0x00, 0x17,
+        0x01, 0x0A, 0x0B, 0x0C, 0x0D, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+        0x08, 0x3F, 0x00, 0x00, 0x00, 0xBE, 0x80, 0x00, 0x00, 0x00, 0x00,
     });
 
     CHECK(require_encode(input_fixture()) == expected);
     CHECK(require_decode(expected) == Message{input_fixture()});
+
+    const InputPacket maximum{
+        .last_received_snapshot_id = SnapshotId{1},
+        .samples = {input_sample(1, 1), input_sample(2, 2), input_sample(3, 3)},
+    };
+    CHECK(require_encode(maximum).size() == dots::protocol::kMaximumEncodedInputPacketBytes);
 }
 
 TEST_CASE("Full snapshot encoding has stable golden bytes", "[dots][protocol][golden]") {
     const auto expected = byte_sequence({
-        0x44, 0x4F, 0x54, 0x53, 0x00, 0x01, 0x04, 0x00, 0x00, 0x00, 0x00, 0x30, 0x00, 0x00, 0x00,
-        0x01, 0x00, 0x00, 0x00, 0x02, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
-        0x01, 0x3F, 0x80, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x41, 0x80, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x02, 0x02, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3F, 0x80, 0x00, 0x00,
+        0x44, 0x4F, 0x54, 0x53, 0x00, 0x02, 0x04, 0x00, 0x00, 0x00, 0x00, 0x31, 0x00,
+        0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0xFF, 0xFF, 0xFF, 0xFF, 0x03, 0x00,
+        0x02, 0x00, 0x00, 0x00, 0x01, 0x01, 0x3F, 0x80, 0x00, 0x00, 0xC0, 0x00, 0x00,
+        0x00, 0x41, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x02, 0x3F, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x3F, 0x80, 0x00, 0x00,
     });
 
     CHECK(require_encode(snapshot_fixture()) == expected);
@@ -184,6 +200,10 @@ TEST_CASE("Protocol decoder rejects malformed framing", "[dots][protocol][valida
     auto bad_version = hello;
     write_u16(bad_version, 4, dots::protocol::kProtocolVersion + 1);
     require_decode_error(bad_version, CodecError::UnsupportedVersion);
+
+    auto version_one = hello;
+    write_u16(version_one, 4, 1);
+    require_decode_error(version_one, CodecError::UnsupportedVersion);
 
     auto bad_kind = hello;
     bad_kind[6] = std::byte{0x7F};
@@ -212,22 +232,40 @@ TEST_CASE("Protocol encoder rejects invalid message values", "[dots][protocol][v
     require_encode_error(ServerWelcome{}, CodecError::InvalidId);
 
     auto input = input_fixture();
-    input.sequence_id = InputSequenceId::invalid();
+    input.last_received_snapshot_id = SnapshotId::invalid();
     require_encode_error(input, CodecError::InvalidId);
     input = input_fixture();
-    input.action_bits = 1;
+    input.samples.clear();
     require_encode_error(input, CodecError::OutOfRange);
     input = input_fixture();
-    input.movement_x = std::numeric_limits<float>::infinity();
+    input.samples.resize(dots::protocol::kMaximumInputSamplesPerPacket + 1, input_sample());
+    require_encode_error(input, CodecError::OutOfRange);
+    input = input_fixture();
+    input.samples.front().sequence_id = InputSequenceId::invalid();
+    require_encode_error(input, CodecError::InvalidId);
+    input = input_fixture();
+    input.samples.front().action_bits = 1;
+    require_encode_error(input, CodecError::OutOfRange);
+    input = input_fixture();
+    input.samples.front().movement_x = std::numeric_limits<float>::infinity();
     require_encode_error(input, CodecError::InvalidNumber);
     input = input_fixture();
-    input.movement_x = 1.0F;
-    input.movement_y = 1.0F;
+    input.samples.front().movement_x = 1.0F;
+    input.samples.front().movement_y = 1.0F;
     require_encode_error(input, CodecError::OutOfRange);
+    input = input_fixture();
+    input.samples.push_back(input_sample(0x01020306, 0x05060709));
+    require_encode_error(input, CodecError::InvalidInputOrdering);
+    input = input_fixture();
+    input.samples.push_back(input_sample(0x01020305, 0x0506070A));
+    require_encode_error(input, CodecError::InvalidInputOrdering);
 
     auto snapshot = snapshot_fixture();
     snapshot.snapshot_id = SnapshotId::invalid();
     require_encode_error(snapshot, CodecError::InvalidId);
+    snapshot = snapshot_fixture();
+    snapshot.pending_input_count = dots::protocol::kMaximumPendingInputCount + 1;
+    require_encode_error(snapshot, CodecError::OutOfRange);
     snapshot = snapshot_fixture();
     snapshot.entities[0].kind = static_cast<EntityKind>(99);
     require_encode_error(snapshot, CodecError::InvalidEnum);
@@ -251,51 +289,87 @@ TEST_CASE("Protocol decoder rejects invalid payload values", "[dots][protocol][v
     require_decode_error(welcome, CodecError::InvalidId);
 
     auto input = require_encode(input_fixture());
-    write_u32(input, 12, InputSequenceId::kInvalidValue);
+    write_u32(input, 13, SnapshotId::kInvalidValue);
     require_decode_error(input, CodecError::InvalidId);
 
     input = require_encode(input_fixture());
-    write_u16(input, 28, 1);
+    write_u32(input, 17, InputSequenceId::kInvalidValue);
+    require_decode_error(input, CodecError::InvalidId);
+
+    input = require_encode(input_fixture());
+    write_u16(input, 33, 1);
     require_decode_error(input, CodecError::OutOfRange);
 
     input = require_encode(input_fixture());
-    write_u32(input, 20, 0x7F800000);
+    write_u32(input, 25, 0x7F800000);
     require_decode_error(input, CodecError::InvalidNumber);
 
     input = require_encode(input_fixture());
-    write_u32(input, 24, 0x3F800000);
+    write_u32(input, 29, 0x3F800000);
     require_decode_error(input, CodecError::OutOfRange);
+
+    input = require_encode(input_fixture());
+    input[12] = std::byte{0};
+    require_decode_error(input, CodecError::OutOfRange);
+
+    input = require_encode(input_fixture());
+    input[12] = std::byte{4};
+    require_decode_error(input, CodecError::OutOfRange);
+
+    const InputPacket ordered{
+        .last_received_snapshot_id = SnapshotId{1},
+        .samples = {input_sample(1, 1), input_sample(2, 2)},
+    };
+    input = require_encode(ordered);
+    write_u32(input, 35, 3);
+    require_decode_error(input, CodecError::InvalidInputOrdering);
+
+    input = require_encode(ordered);
+    write_u32(input, 39, 3);
+    require_decode_error(input, CodecError::InvalidInputOrdering);
+
+    input = require_encode(ordered);
+    input[12] = std::byte{1};
+    require_decode_error(input, CodecError::TrailingBytes);
+
+    input = require_encode(input_fixture());
+    input[12] = std::byte{2};
+    require_decode_error(input, CodecError::Truncated);
 
     auto snapshot = require_encode(snapshot_fixture());
     write_u32(snapshot, 12, SnapshotId::kInvalidValue);
     require_decode_error(snapshot, CodecError::InvalidId);
 
     snapshot = require_encode(snapshot_fixture());
-    write_u32(snapshot, 26, EntityId::kInvalidValue);
-    require_decode_error(snapshot, CodecError::InvalidId);
-
-    snapshot = require_encode(snapshot_fixture());
-    snapshot[30] = std::byte{0x7F};
-    require_decode_error(snapshot, CodecError::InvalidEnum);
-
-    snapshot = require_encode(snapshot_fixture());
-    write_u32(snapshot, 31, 0x7F800000);
-    require_decode_error(snapshot, CodecError::InvalidNumber);
-
-    snapshot = require_encode(snapshot_fixture());
-    write_u32(snapshot, 39, 0);
+    snapshot[24] = static_cast<std::byte>(dots::protocol::kMaximumPendingInputCount + 1);
     require_decode_error(snapshot, CodecError::OutOfRange);
 
     snapshot = require_encode(snapshot_fixture());
-    write_u32(snapshot, 43, 1);
+    write_u32(snapshot, 27, EntityId::kInvalidValue);
+    require_decode_error(snapshot, CodecError::InvalidId);
+
+    snapshot = require_encode(snapshot_fixture());
+    snapshot[31] = std::byte{0x7F};
+    require_decode_error(snapshot, CodecError::InvalidEnum);
+
+    snapshot = require_encode(snapshot_fixture());
+    write_u32(snapshot, 32, 0x7F800000);
+    require_decode_error(snapshot, CodecError::InvalidNumber);
+
+    snapshot = require_encode(snapshot_fixture());
+    write_u32(snapshot, 40, 0);
+    require_decode_error(snapshot, CodecError::OutOfRange);
+
+    snapshot = require_encode(snapshot_fixture());
+    write_u32(snapshot, 44, 1);
     require_decode_error(snapshot, CodecError::DuplicateEntity);
 
     snapshot = require_encode(snapshot_fixture());
-    write_u16(snapshot, 24, 3);
+    write_u16(snapshot, 25, 3);
     require_decode_error(snapshot, CodecError::Truncated);
 
     snapshot = require_encode(snapshot_fixture());
-    write_u16(snapshot, 24, 1);
+    write_u16(snapshot, 25, 1);
     require_decode_error(snapshot, CodecError::TrailingBytes);
 }
 

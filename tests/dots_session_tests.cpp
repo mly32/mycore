@@ -8,6 +8,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <cstddef>
+#include <optional>
 #include <span>
 #include <thread>
 #include <utility>
@@ -57,6 +58,97 @@ public:
     auto* bytes = std::get_if<dots::protocol::EncodedMessage>(&result);
     REQUIRE(bytes != nullptr);
     return std::move(*bytes);
+}
+
+[[nodiscard]] dots::protocol::Message decode_bytes(std::span<const std::byte> bytes) {
+    auto result = dots::protocol::decode(bytes);
+    auto* message = std::get_if<dots::protocol::Message>(&result);
+    REQUIRE(message != nullptr);
+    return std::move(*message);
+}
+
+[[nodiscard]] dots::protocol::InputSample
+input_sample(std::uint32_t sequence_id, std::uint32_t client_tick, mycore::math::Vector2 movement) {
+    return {
+        .sequence_id = dots::protocol::InputSequenceId{sequence_id},
+        .client_tick = client_tick,
+        .movement_x = movement.x,
+        .movement_y = movement.y,
+    };
+}
+
+void send_input_packet(mycore::net_transport::Endpoint& endpoint,
+                       mycore::net_transport::ConnectionHandle connection,
+                       std::vector<dots::protocol::InputSample> samples) {
+    const auto bytes = encode_bytes(dots::protocol::InputPacket{
+        .last_received_snapshot_id = dots::protocol::SnapshotId{0},
+        .samples = std::move(samples),
+    });
+    REQUIRE(endpoint.send(connection, bytes, mycore::net_transport::DeliveryMode::Unreliable) ==
+            mycore::net_transport::SendStatus::Sent);
+}
+
+[[nodiscard]] mycore::net_transport::ConnectionHandle
+complete_raw_handshake(mycore::net_transport::Endpoint& client, dots::server::Runtime& server) {
+    const auto connected_events = client.poll();
+    REQUIRE(connected_events.size() == 1);
+    const auto* connected = std::get_if<mycore::net_transport::Connected>(&connected_events[0]);
+    REQUIRE(connected != nullptr);
+    const auto hello = encode_bytes(dots::protocol::ClientHello{});
+    REQUIRE(
+        client.send(connected->connection, hello, mycore::net_transport::DeliveryMode::Reliable) ==
+        mycore::net_transport::SendStatus::Sent);
+    REQUIRE_FALSE(server.process_events().has_value());
+    const auto handshake_messages = client.poll();
+    REQUIRE(handshake_messages.size() == 2);
+    return connected->connection;
+}
+
+void complete_manual_handshake(ManualEndpoint& endpoint,
+                               dots::client_runtime::Runtime& client,
+                               mycore::net_transport::ConnectionHandle connection) {
+    endpoint.events.push_back(mycore::net_transport::Connected{.connection = connection});
+    REQUIRE_FALSE(client.process_events().has_value());
+    endpoint.events.push_back(mycore::net_transport::PayloadReceived{
+        .connection = connection,
+        .delivery = mycore::net_transport::DeliveryMode::Reliable,
+        .payload = encode_bytes(dots::protocol::ServerWelcome{
+            .client_id = dots::protocol::ClientId{2},
+            .controlled_entity_id = dots::protocol::EntityId{8},
+        }),
+    });
+    endpoint.events.push_back(mycore::net_transport::PayloadReceived{
+        .connection = connection,
+        .delivery = mycore::net_transport::DeliveryMode::Unreliable,
+        .payload = encode_bytes(dots::protocol::FullSnapshot{
+            .snapshot_id = dots::protocol::SnapshotId{0},
+            .entities = {{
+                .entity_id = dots::protocol::EntityId{8},
+                .kind = dots::protocol::EntityKind::Player,
+                .mass = 16.0F,
+            }},
+        }),
+    });
+    REQUIRE_FALSE(client.process_events().has_value());
+    REQUIRE(client.state() == dots::client_runtime::State::Ready);
+    endpoint.sent_delivery.clear();
+    endpoint.sent_payloads.clear();
+}
+
+[[nodiscard]] std::optional<dots::protocol::FullSnapshot>
+find_snapshot(std::span<const mycore::net_transport::Event> events) {
+    std::optional<dots::protocol::FullSnapshot> snapshot;
+    for (const auto& event : events) {
+        const auto* received = std::get_if<mycore::net_transport::PayloadReceived>(&event);
+        if (received == nullptr) {
+            continue;
+        }
+        auto message = decode_bytes(received->payload);
+        if (auto* value = std::get_if<dots::protocol::FullSnapshot>(&message)) {
+            snapshot = std::move(*value);
+        }
+    }
+    return snapshot;
 }
 
 } // namespace
@@ -111,6 +203,159 @@ TEST_CASE("Authoritative input moves only the owning player and is acknowledged"
     CHECK(second_entity->position_x == Catch::Approx(0.0F));
     CHECK(first.world().last_processed_input_id() == dots::protocol::InputSequenceId{0});
     CHECK_FALSE(second.world().last_processed_input_id().is_valid());
+}
+
+TEST_CASE("Client input redundancy includes only bounded unacknowledged samples",
+          "[dots][session][input][redundancy]") {
+    ManualEndpoint endpoint;
+    dots::client_runtime::Runtime client{endpoint};
+    const mycore::net_transport::ConnectionHandle connection{7};
+    complete_manual_handshake(endpoint, client, connection);
+
+    REQUIRE(client.send_input(0, {1.0F, 0.0F}) == dots::client_runtime::InputSendResult::Sent);
+    REQUIRE(client.send_input(1, {0.0F, 1.0F}) == dots::client_runtime::InputSendResult::Sent);
+    REQUIRE(client.send_input(2, {-1.0F, 0.0F}) == dots::client_runtime::InputSendResult::Sent);
+    REQUIRE(client.send_input(3, {0.0F, -1.0F}) == dots::client_runtime::InputSendResult::Sent);
+    REQUIRE(endpoint.sent_payloads.size() == 4);
+
+    const std::array expected_counts{1U, 2U, 3U, 3U};
+    const std::array expected_first_sequences{0U, 0U, 0U, 1U};
+    for (std::size_t index = 0; index < endpoint.sent_payloads.size(); ++index) {
+        auto message = decode_bytes(endpoint.sent_payloads[index]);
+        const auto* packet = std::get_if<dots::protocol::InputPacket>(&message);
+        REQUIRE(packet != nullptr);
+        REQUIRE(packet->samples.size() == expected_counts[index]);
+        CHECK(packet->samples.front().sequence_id ==
+              dots::protocol::InputSequenceId{expected_first_sequences[index]});
+        CHECK(packet->samples.back().sequence_id ==
+              dots::protocol::InputSequenceId{static_cast<std::uint32_t>(index)});
+    }
+
+    endpoint.events.push_back(mycore::net_transport::PayloadReceived{
+        .connection = connection,
+        .delivery = mycore::net_transport::DeliveryMode::Unreliable,
+        .payload = encode_bytes(dots::protocol::FullSnapshot{
+            .snapshot_id = dots::protocol::SnapshotId{1},
+            .last_processed_input_id = dots::protocol::InputSequenceId{3},
+            .entities = {{
+                .entity_id = dots::protocol::EntityId{8},
+                .kind = dots::protocol::EntityKind::Player,
+                .mass = 16.0F,
+            }},
+        }),
+    });
+    REQUIRE_FALSE(client.process_events().has_value());
+    REQUIRE(client.send_input(4, {1.0F, 0.0F}) == dots::client_runtime::InputSendResult::Sent);
+    auto message = decode_bytes(endpoint.sent_payloads.back());
+    const auto* packet = std::get_if<dots::protocol::InputPacket>(&message);
+    REQUIRE(packet != nullptr);
+    REQUIRE(packet->samples.size() == 1);
+    CHECK(packet->samples.front().sequence_id == dots::protocol::InputSequenceId{4});
+}
+
+TEST_CASE("Client can disable input redundancy", "[dots][session][input][redundancy]") {
+    ManualEndpoint endpoint;
+    dots::client_runtime::Runtime client{endpoint, {.input_redundancy = false}};
+    complete_manual_handshake(endpoint, client, mycore::net_transport::ConnectionHandle{8});
+
+    REQUIRE(client.send_input(0, {1.0F, 0.0F}) == dots::client_runtime::InputSendResult::Sent);
+    REQUIRE(client.send_input(1, {0.0F, 1.0F}) == dots::client_runtime::InputSendResult::Sent);
+    REQUIRE(endpoint.sent_payloads.size() == 2);
+    for (const auto& bytes : endpoint.sent_payloads) {
+        auto message = decode_bytes(bytes);
+        const auto* packet = std::get_if<dots::protocol::InputPacket>(&message);
+        REQUIRE(packet != nullptr);
+        CHECK(packet->samples.size() == 1);
+    }
+}
+
+TEST_CASE("Server queues reordered redundant inputs and consumes one per tick",
+          "[dots][session][input][queue]") {
+    mycore::net_transport::InMemoryNetwork network;
+    dots::server::Runtime server{network.server_endpoint()};
+    auto& client = network.connect_client();
+    const auto connection = complete_raw_handshake(client, server);
+
+    const auto right = input_sample(0, 0, {1.0F, 0.0F});
+    const auto up = input_sample(1, 1, {0.0F, 1.0F});
+    const auto left = input_sample(2, 2, {-1.0F, 0.0F});
+    send_input_packet(client, connection, {left});
+    send_input_packet(client, connection, {right, up, left});
+    REQUIRE_FALSE(server.process_events().has_value());
+
+    REQUIRE(server.world().player_ids().size() == 1);
+    const auto player = server.world().player_ids().front();
+    REQUIRE_FALSE(server.step().has_value());
+    REQUIRE(server.world().position(player).has_value());
+    CHECK(server.world().position(player)->x == Catch::Approx(0.2F));
+    CHECK(server.world().position(player)->y == Catch::Approx(0.0F));
+
+    REQUIRE_FALSE(server.step().has_value());
+    CHECK(server.world().position(player)->x == Catch::Approx(0.2F));
+    CHECK(server.world().position(player)->y == Catch::Approx(0.2F));
+    const auto queued_snapshot = find_snapshot(client.poll());
+    REQUIRE(queued_snapshot.has_value());
+    CHECK(queued_snapshot->last_processed_input_id == dots::protocol::InputSequenceId{1});
+    CHECK(queued_snapshot->pending_input_count == 1);
+
+    REQUIRE_FALSE(server.step().has_value());
+    CHECK(server.world().position(player)->x == Catch::Approx(0.0F));
+    CHECK(server.world().position(player)->y == Catch::Approx(0.2F));
+    REQUIRE_FALSE(server.step().has_value());
+    CHECK(server.world().position(player)->x == Catch::Approx(-0.2F));
+    CHECK(server.world().position(player)->y == Catch::Approx(0.2F));
+    const auto drained_snapshot = find_snapshot(client.poll());
+    REQUIRE(drained_snapshot.has_value());
+    CHECK(drained_snapshot->last_processed_input_id == dots::protocol::InputSequenceId{2});
+    CHECK(drained_snapshot->pending_input_count == 0);
+}
+
+TEST_CASE("Server input queue overflow disconnects only the offending session",
+          "[dots][session][input][queue]") {
+    mycore::net_transport::InMemoryNetwork network;
+    dots::server::Runtime server{network.server_endpoint()};
+    dots::client_runtime::Runtime healthy{network.connect_client()};
+    dots::client_runtime::Runtime offender{network.connect_client()};
+    REQUIRE_FALSE(healthy.process_events().has_value());
+    REQUIRE_FALSE(offender.process_events().has_value());
+    REQUIRE_FALSE(server.process_events().has_value());
+    REQUIRE_FALSE(healthy.process_events().has_value());
+    REQUIRE_FALSE(offender.process_events().has_value());
+
+    for (std::uint32_t tick = 0; tick <= dots::protocol::kMaximumPendingInputCount; ++tick) {
+        REQUIRE(offender.send_input(tick, {1.0F, 0.0F}) ==
+                dots::client_runtime::InputSendResult::Sent);
+    }
+    REQUIRE_FALSE(server.process_events().has_value());
+    CHECK(server.rejected_packet_count() == 1);
+    CHECK(server.client_count() == 1);
+    CHECK(server.world().player_count() == 1);
+    CHECK(healthy.state() == dots::client_runtime::State::Ready);
+
+    REQUIRE(healthy.send_input(0, {0.0F, 1.0F}) == dots::client_runtime::InputSendResult::Sent);
+    REQUIRE_FALSE(server.process_events().has_value());
+    REQUIRE_FALSE(server.step().has_value());
+    REQUIRE(server.world().player_ids().size() == 1);
+    const auto position = server.world().position(server.world().player_ids().front());
+    REQUIRE(position.has_value());
+    CHECK(position->y == Catch::Approx(0.2F));
+}
+
+TEST_CASE("Server rejects conflicting data for a queued input sequence",
+          "[dots][session][input][queue]") {
+    mycore::net_transport::InMemoryNetwork network;
+    dots::server::Runtime server{network.server_endpoint()};
+    auto& client = network.connect_client();
+    const auto connection = complete_raw_handshake(client, server);
+
+    send_input_packet(client, connection, {input_sample(0, 0, {1.0F, 0.0F})});
+    REQUIRE_FALSE(server.process_events().has_value());
+    send_input_packet(client, connection, {input_sample(0, 0, {-1.0F, 0.0F})});
+    REQUIRE_FALSE(server.process_events().has_value());
+
+    CHECK(server.rejected_packet_count() == 1);
+    CHECK(server.client_count() == 0);
+    CHECK(server.world().player_count() == 0);
 }
 
 TEST_CASE("Disconnect cleanup removes only the owned authoritative player", "[dots][session]") {

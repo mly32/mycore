@@ -12,6 +12,7 @@ vsync = true
 [network]
 mode = "offline"
 server_address = "127.0.0.1:27020"
+input_redundancy = true
 
 [input]
 mode = "hybrid"

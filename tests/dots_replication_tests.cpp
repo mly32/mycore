@@ -13,11 +13,12 @@ TEST_CASE("Full snapshots map and sort authoritative entities", "[dots][replicat
     REQUIRE(player.has_value());
 
     const auto result = dots::replication::build_full_snapshot(
-        world, dots::protocol::SnapshotId{7}, dots::protocol::InputSequenceId{5});
+        world, dots::protocol::SnapshotId{7}, dots::protocol::InputSequenceId{5}, 4);
     const auto* snapshot = std::get_if<dots::protocol::FullSnapshot>(&result);
     REQUIRE(snapshot != nullptr);
     REQUIRE(snapshot->snapshot_id == dots::protocol::SnapshotId{7});
     REQUIRE(snapshot->last_processed_input_id == dots::protocol::InputSequenceId{5});
+    REQUIRE(snapshot->pending_input_count == 4);
     REQUIRE(snapshot->entities.size() == 2);
     CHECK(snapshot->entities[0].entity_id == dots::replication::to_protocol(*food));
     CHECK(snapshot->entities[0].kind == dots::protocol::EntityKind::Food);
@@ -32,6 +33,7 @@ TEST_CASE("Replicated worlds replace newer state and reject stale snapshots",
         .snapshot_id = dots::protocol::SnapshotId{1},
         .server_tick = 2,
         .last_processed_input_id = dots::protocol::InputSequenceId{3},
+        .pending_input_count = 2,
         .entities =
             {
                 {
@@ -52,6 +54,7 @@ TEST_CASE("Replicated worlds replace newer state and reject stale snapshots",
     REQUIRE(world.find(dots::protocol::EntityId{9}) != nullptr);
     REQUIRE(world.player_count() == 1);
     REQUIRE(world.food_count() == 1);
+    REQUIRE(world.pending_input_count() == 2);
 
     auto stale = first;
     stale.entities.clear();
@@ -85,6 +88,12 @@ TEST_CASE("Replicated worlds reject invalid state atomically", "[dots][replicati
     REQUIRE(world.apply(invalid) == dots::replication::SnapshotApplyResult::Invalid);
     REQUIRE_FALSE(world.snapshot_id().is_valid());
     REQUIRE(world.entities().empty());
+
+    auto invalid_queue_depth = invalid;
+    invalid_queue_depth.pending_input_count = dots::protocol::kMaximumPendingInputCount + 1;
+    invalid_queue_depth.entities.front().mass = 1.0F;
+    REQUIRE(world.apply(invalid_queue_depth) == dots::replication::SnapshotApplyResult::Invalid);
+    REQUIRE_FALSE(world.snapshot_id().is_valid());
 }
 
 TEST_CASE("Default Dots food field is shared simulation setup", "[dots][replication]") {

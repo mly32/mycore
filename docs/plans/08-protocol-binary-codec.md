@@ -69,7 +69,7 @@ Codec failures return a typed error value rather than throwing for malformed inp
 message size carried by transport. `kMaximumEncodedMessageBytes` is 64 KiB and is a hard
 hostile-input safety limit. Initial full snapshots may exceed the target while remaining below the
 safety limit. Fragment avoidance, prioritization, quantization, and per-client budgets remain
-Feature 14 work.
+Feature 16 work.
 
 ## Public API and Implementation
 

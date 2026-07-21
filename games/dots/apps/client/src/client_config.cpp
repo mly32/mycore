@@ -72,11 +72,11 @@ bool read_bool(const toml::table& table,
                std::string_view name,
                const std::filesystem::path& source,
                std::string_view field) {
-    const auto value = table.get(name)->value<bool>();
-    if (!value) {
+    const auto* value = table.get(name)->as_boolean();
+    if (value == nullptr) {
         fail(source, field, "expected a boolean");
     }
-    return *value;
+    return value->get();
 }
 
 std::int64_t read_integer(const toml::table& table,
@@ -357,7 +357,7 @@ void parse_window(const toml::table& table,
 void parse_network(const toml::table& table,
                    ClientConfig& config,
                    const std::filesystem::path& source) {
-    validate_keys(table, {"mode", "server_address"}, source, "network");
+    validate_keys(table, {"mode", "server_address", "input_redundancy"}, source, "network");
     if (table.contains("mode")) {
         config.network.mode = parse_network_mode(
             read_string(table, "mode", source, "network.mode"), source, "network.mode");
@@ -371,6 +371,10 @@ void parse_network(const toml::table& table,
                  "expected a numeric IPv4 or bracketed IPv6 address with a nonzero port");
         }
         config.network.server_address = address->value();
+    }
+    if (table.contains("input_redundancy")) {
+        config.network.input_redundancy =
+            read_bool(table, "input_redundancy", source, "network.input_redundancy");
     }
 }
 

@@ -31,6 +31,11 @@
           "description": "Numeric IPv4 or bracketed IPv6 native server address with a nonzero port.",
           "type": "string",
           "default": "127.0.0.1:27020"
+        },
+        "input_redundancy": {
+          "description": "Include up to two prior unacknowledged input samples with each current input packet.",
+          "type": "boolean",
+          "default": true
         }
       }
     },

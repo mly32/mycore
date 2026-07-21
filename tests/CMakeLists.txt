@@ -100,7 +100,7 @@ target_link_libraries(
 mycore_configure_test_executable(dots_replication_tests)
 catch_discover_tests(dots_replication_tests)
 
-add_executable(dots_session_tests dots_session_tests.cpp)
+add_executable(dots_session_tests dots_prediction_tests.cpp dots_session_tests.cpp)
 target_link_libraries(
     dots_session_tests
     PRIVATE

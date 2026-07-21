@@ -34,6 +34,8 @@ research/<topic>
 - Keep the server authoritative and headless.
 - Keep wire formats independent of C++ memory layout.
 - Defer research branches until a measurable baseline exists.
+- When a detailed plan contains approval checkpoints, complete and review one checkpoint at a
+  time; do not begin the next checkpoint from an unchecked approval marker.
 
 ## Validation Commands
 
@@ -236,7 +238,7 @@ Changes:
   under `assets/mycore/render_2d`.
 - Add a verified `dots_client_package` CMake target with exact target-owned shader assets, a
   macOS `.app` or flat Windows/Linux bundle, checksums, and short-lived per-platform CI
-  artifacts. Keep this playable-game bundle separate from the Feature 18 engine SDK package.
+  artifacts. Keep this playable-game bundle separate from the Feature 20 engine SDK package.
 
 Tests:
 
@@ -427,7 +429,64 @@ Exit criterion:
 - Remote players render smoothly under simulated jitter and packet loss, and the interpolation
   panel explains buffer health and any visible holds.
 
-### `feature/13-interest-management`
+### `feature/13-authoritative-interactions-spectating`
+
+Purpose: exercise contested server authority and session lifecycle before optimizing replication.
+
+Changes:
+
+- Add deterministic larger-player absorption, mass transfer, and player ownership.
+- Keep defeated connections alive in a replicated spectator session state.
+- Add free-camera and follow-killer spectator presentation.
+- Add optional server-authorized respawn after a configurable tick deadline.
+- Add Gameplay debugging for absorption, killer, session mode, and respawn eligibility.
+
+Tests:
+
+- Deterministic overlap arbitration, mass conservation, and player/food ordering.
+- Playing, spectating, early respawn rejection, eligible respawn, and disconnect lifecycle.
+- Snapshot loss cannot lose durable session state.
+- Spectator pan, zoom, follow-target loss, and camera transitions.
+
+Exit criterion:
+
+- The server alone resolves absorption, defeat, and respawn while defeated clients can continue
+  spectating and debug output explains every transition.
+
+Detailed plan:
+[`plans/13-authoritative-interactions-spectating.md`](plans/13-authoritative-interactions-spectating.md).
+
+### `feature/14-selectable-world-rollback`
+
+Purpose: replace position-only prediction with complete, selectable Dots World rollback.
+
+Changes:
+
+- Add the Dots-owned rollback contracts defined in
+  [`rollback_prediction_design.md`](rollback_prediction_design.md).
+- Restore and resimulate complete gameplay state with a selectable prediction set, defaulting to
+  every replicated entity.
+- Add predicted split/launch/remerge, cooldowns, and predicted-spawn classification.
+- Render predicted remotes normally while retaining Feature 12 interpolation as fallback and
+  comparison.
+- Add adaptive command-buffer timing plus Rollback metrics, overlays, and deliberate faults.
+
+Tests:
+
+- Matching/mismatching continuous and structural rollback.
+- Accepted/rejected predicted spawns, cue lifecycle, and guarded consequences.
+- Dynamic latency, loss, reordering, queue-depth convergence, and hard recovery.
+- Recorded 10, 100, 500, and 1,000-entity replay workloads.
+
+Exit criterion:
+
+- Complete predicted gameplay converges atomically to server truth, remains measurable and
+  recoverable, and produces evidence for or against later multi-frame resimulation research.
+
+Detailed plan:
+[`plans/14-selectable-world-rollback.md`](plans/14-selectable-world-rollback.md).
+
+### `feature/15-interest-management`
 
 Purpose: reduce replication to each client's area of interest.
 
@@ -437,6 +496,8 @@ Changes:
 - Add per-client camera/interest rectangle with margin.
 - Build full snapshots using AOI filtering.
 - Add debug visualization for AOI and replicated entity count.
+- Adapt Feature 14 prediction-set membership to AOI entry/exit, collision safety margins, and
+  atomic initialization/removal of predicted entities.
 
 Tests:
 
@@ -449,7 +510,7 @@ Exit criterion:
 
 - Clients receive only relevant entities plus required owned state.
 
-### `feature/14-delta-snapshots-byte-budget`
+### `feature/16-delta-snapshots-byte-budget`
 
 Purpose: move from full snapshots to scalable replication.
 
@@ -474,7 +535,7 @@ Exit criterion:
 
 - Snapshot stream remains correct under loss while respecting byte budgets.
 
-### `feature/15-bot-load-harness`
+### `feature/17-bot-load-harness`
 
 Purpose: measure scalability instead of guessing.
 
@@ -498,7 +559,7 @@ Exit criterion:
 
 - The project can produce repeatable load metrics and reach staged bot counts locally.
 
-### `feature/16-lua-rules`
+### `feature/18-lua-rules`
 
 Purpose: add scripting after the C++ gameplay baseline exists.
 
@@ -523,7 +584,7 @@ Exit criterion:
 - Dots match and spawn rules can be changed through Lua without destabilizing simulation,
   and `MyCore::Scripting` contains no Dots capabilities or types.
 
-### `feature/17-aim-trainer-3d-slice`
+### `feature/19-aim-trainer-3d-slice`
 
 Purpose: validate that the engine boundaries support a substantially different game without
 generalizing Dots systems.
@@ -564,7 +625,7 @@ Exit criterion:
   targets, registers ray-based hits, and tracks score while reusing engine libraries and no
   Dots code.
 
-### `feature/18-cmake-package-consumer`
+### `feature/20-cmake-package-consumer`
 
 Purpose: make stabilized MyCore engine libraries consumable outside the monorepo.
 
@@ -591,7 +652,7 @@ Exit criterion:
 - A separate CMake project can install and consume selected MyCore components without
   accessing the MyCore source tree.
 
-### `feature/19-profile-guided-task-scheduler`
+### `feature/21-profile-guided-task-scheduler`
 
 Purpose: adopt task scheduling only after networking, replication, the bot harness, and Tracy
 produce measured parallel workloads.
@@ -630,7 +691,7 @@ Exit criterion:
 - A measured workload improves while authoritative tick ordering, deterministic tests, and
   subsystem thread-affinity rules remain explicit.
 
-### `feature/20-platform-user-settings`
+### `feature/22-platform-user-settings`
 
 Purpose: let packaged games find user-editable configuration and other writable files in the
 locations expected by each desktop OS instead of depending on a Finder- or shell-selected
@@ -803,7 +864,7 @@ CI should eventually:
 - Run selected benchmarks.
 - Build and retain verified Dots client archives for Windows, Linux, and macOS.
 - Package the Linux `dots_server`.
-- After feature 18, stage-install MyCore and build the external consumer fixture.
+- After feature 20, stage-install MyCore and build the external consumer fixture.
 - Store logs and crash artifacts.
 - Cache vcpkg binary packages.
 
@@ -820,7 +881,7 @@ CI should eventually:
   public API.
 - Stable `MyCore::` targets and include roots are established before packaging. Playable game
   bundles may use runtime install rules earlier; engine SDK exports remain deferred until
-  Feature 18.
+  Feature 20.
 - Lua, EnTT, Vulkan, Conan, OpenGL, and fixed-point work are deferred until the baseline game loop and networking path are measurable.
 - The first server architecture uses one owner thread for world simulation.
 - Snapshot worker parallelism is introduced only after immutable replication views exist.

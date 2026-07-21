@@ -22,13 +22,17 @@ constexpr std::uint8_t kMagicT = 0x54;
 constexpr std::uint8_t kMagicS = 0x53;
 constexpr std::uint8_t kSupportedFlags = 0;
 constexpr std::size_t kServerWelcomePayloadBytes = 12;
-constexpr std::size_t kInputCommandPayloadBytes = 22;
-constexpr std::size_t kFullSnapshotHeaderBytes = 14;
+constexpr std::size_t kInputPacketPrefixBytes = 5;
+constexpr std::size_t kInputSampleBytes = 18;
+constexpr std::size_t kFullSnapshotHeaderBytes = 15;
 constexpr std::size_t kEntityStateBytes = 17;
 constexpr float kMaximumMovementLengthSquared = 1.0001F;
 
 static_assert(sizeof(float) == sizeof(std::uint32_t));
 static_assert(std::numeric_limits<float>::is_iec559);
+static_assert(kPacketHeaderBytes + kInputPacketPrefixBytes +
+                  (kMaximumInputSamplesPerPacket * kInputSampleBytes) ==
+              kMaximumEncodedInputPacketBytes);
 
 class Writer {
 public:
@@ -150,18 +154,44 @@ private:
     return std::nullopt;
 }
 
-[[nodiscard]] std::optional<CodecError> validate(const InputCommand& message) noexcept {
-    if (!message.sequence_id.is_valid()) {
+[[nodiscard]] std::optional<CodecError> validate(const InputSample& sample) noexcept {
+    if (!sample.sequence_id.is_valid()) {
         return CodecError::InvalidId;
     }
-    if (message.action_bits != 0) {
+    if (sample.action_bits != 0) {
         return CodecError::OutOfRange;
     }
-    if (!std::isfinite(message.movement_x) || !std::isfinite(message.movement_y)) {
+    if (!std::isfinite(sample.movement_x) || !std::isfinite(sample.movement_y)) {
         return CodecError::InvalidNumber;
     }
-    if (!valid_movement(message.movement_x, message.movement_y)) {
+    if (!valid_movement(sample.movement_x, sample.movement_y)) {
         return CodecError::OutOfRange;
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] std::optional<CodecError> validate(const InputPacket& message) noexcept {
+    if (!message.last_received_snapshot_id.is_valid()) {
+        return CodecError::InvalidId;
+    }
+    if (message.samples.empty() || message.samples.size() > kMaximumInputSamplesPerPacket) {
+        return CodecError::OutOfRange;
+    }
+    for (std::size_t index = 0; index < message.samples.size(); ++index) {
+        const auto& sample = message.samples[index];
+        if (const auto error = validate(sample)) {
+            return error;
+        }
+        if (index == 0) {
+            continue;
+        }
+        const auto& previous = message.samples[index - 1];
+        if (previous.sequence_id.value() == std::numeric_limits<std::uint32_t>::max() - 1U ||
+            sample.sequence_id.value() != previous.sequence_id.value() + 1U ||
+            previous.client_tick == std::numeric_limits<std::uint32_t>::max() ||
+            sample.client_tick != previous.client_tick + 1U) {
+            return CodecError::InvalidInputOrdering;
+        }
     }
     return std::nullopt;
 }
@@ -169,6 +199,9 @@ private:
 [[nodiscard]] std::optional<CodecError> validate(const FullSnapshot& message) {
     if (!message.snapshot_id.is_valid()) {
         return CodecError::InvalidId;
+    }
+    if (message.pending_input_count > kMaximumPendingInputCount) {
+        return CodecError::OutOfRange;
     }
     if (message.entities.size() > std::numeric_limits<std::uint16_t>::max()) {
         return CodecError::TooManyEntities;
@@ -197,8 +230,7 @@ private:
     return std::nullopt;
 }
 
-// NOLINTNEXTLINE(bugprone-exception-escape) - variants are never valueless in this protocol
-[[nodiscard]] MessageKind message_kind(const Message& message) noexcept {
+[[nodiscard]] MessageKind message_kind(const Message& message) {
     return std::visit(
         [](const auto& value) {
             using Value = std::decay_t<decltype(value)>;
@@ -206,8 +238,8 @@ private:
                 return MessageKind::ClientHello;
             } else if constexpr (std::is_same_v<Value, ServerWelcome>) {
                 return MessageKind::ServerWelcome;
-            } else if constexpr (std::is_same_v<Value, InputCommand>) {
-                return MessageKind::InputCommand;
+            } else if constexpr (std::is_same_v<Value, InputPacket>) {
+                return MessageKind::InputPacket;
             } else {
                 return MessageKind::FullSnapshot;
             }
@@ -223,8 +255,7 @@ private:
         message);
 }
 
-// NOLINTNEXTLINE(bugprone-exception-escape) - variants are never valueless in this protocol
-[[nodiscard]] std::size_t payload_size(const Message& message) noexcept {
+[[nodiscard]] std::size_t payload_size(const Message& message) {
     return std::visit(
         [](const auto& value) -> std::size_t {
             using Value = std::decay_t<decltype(value)>;
@@ -232,8 +263,8 @@ private:
                 return 0;
             } else if constexpr (std::is_same_v<Value, ServerWelcome>) {
                 return kServerWelcomePayloadBytes;
-            } else if constexpr (std::is_same_v<Value, InputCommand>) {
-                return kInputCommandPayloadBytes;
+            } else if constexpr (std::is_same_v<Value, InputPacket>) {
+                return kInputPacketPrefixBytes + (value.samples.size() * kInputSampleBytes);
             } else {
                 return kFullSnapshotHeaderBytes + (value.entities.size() * kEntityStateBytes);
             }
@@ -249,19 +280,23 @@ void encode_payload(Writer& writer, const ServerWelcome& message) {
     writer.write_u32(message.server_tick);
 }
 
-void encode_payload(Writer& writer, const InputCommand& message) {
-    writer.write_u32(message.sequence_id.value());
-    writer.write_u32(message.client_tick);
-    writer.write_float(message.movement_x);
-    writer.write_float(message.movement_y);
-    writer.write_u16(message.action_bits);
+void encode_payload(Writer& writer, const InputPacket& message) {
+    writer.write_u8(static_cast<std::uint8_t>(message.samples.size()));
     writer.write_u32(message.last_received_snapshot_id.value());
+    for (const auto& sample : message.samples) {
+        writer.write_u32(sample.sequence_id.value());
+        writer.write_u32(sample.client_tick);
+        writer.write_float(sample.movement_x);
+        writer.write_float(sample.movement_y);
+        writer.write_u16(sample.action_bits);
+    }
 }
 
 void encode_payload(Writer& writer, const FullSnapshot& message) {
     writer.write_u32(message.snapshot_id.value());
     writer.write_u32(message.server_tick);
     writer.write_u32(message.last_processed_input_id.value());
+    writer.write_u8(message.pending_input_count);
     writer.write_u16(static_cast<std::uint16_t>(message.entities.size()));
     for (const auto& entity : message.entities) {
         writer.write_u32(entity.entity_id.value());
@@ -298,20 +333,41 @@ void encode_payload(Writer& writer, const FullSnapshot& message) {
     return Message{message};
 }
 
-[[nodiscard]] DecodeResult decode_input_command(Reader& reader) {
-    std::uint32_t sequence_id{};
+[[nodiscard]] DecodeResult decode_input_packet(Reader& reader) {
+    std::uint8_t sample_count{};
     std::uint32_t last_received_snapshot_id{};
-    InputCommand message;
-    if (!reader.read_u32(sequence_id) || !reader.read_u32(message.client_tick) ||
-        !reader.read_float(message.movement_x) || !reader.read_float(message.movement_y) ||
-        !reader.read_u16(message.action_bits) || !reader.read_u32(last_received_snapshot_id)) {
+    if (!reader.read_u8(sample_count)) {
         return CodecError::Truncated;
     }
-    if (reader.remaining() != 0) {
+    if (sample_count == 0 || sample_count > kMaximumInputSamplesPerPacket) {
+        return CodecError::OutOfRange;
+    }
+    const auto expected_remaining =
+        sizeof(std::uint32_t) + (static_cast<std::size_t>(sample_count) * kInputSampleBytes);
+    if (reader.remaining() < expected_remaining) {
+        return CodecError::Truncated;
+    }
+    if (reader.remaining() > expected_remaining) {
         return CodecError::TrailingBytes;
     }
-    message.sequence_id = InputSequenceId{sequence_id};
+
+    InputPacket message;
+    if (!reader.read_u32(last_received_snapshot_id)) {
+        return CodecError::Truncated;
+    }
     message.last_received_snapshot_id = SnapshotId{last_received_snapshot_id};
+    message.samples.reserve(sample_count);
+    for (std::uint8_t index = 0; index < sample_count; ++index) {
+        std::uint32_t sequence_id{};
+        InputSample sample;
+        if (!reader.read_u32(sequence_id) || !reader.read_u32(sample.client_tick) ||
+            !reader.read_float(sample.movement_x) || !reader.read_float(sample.movement_y) ||
+            !reader.read_u16(sample.action_bits)) {
+            return CodecError::Truncated;
+        }
+        sample.sequence_id = InputSequenceId{sequence_id};
+        message.samples.push_back(sample);
+    }
     if (const auto error = validate(message)) {
         return *error;
     }
@@ -321,10 +377,12 @@ void encode_payload(Writer& writer, const FullSnapshot& message) {
 [[nodiscard]] DecodeResult decode_full_snapshot(Reader& reader) {
     std::uint32_t snapshot_id{};
     std::uint32_t last_processed_input_id{};
+    std::uint8_t pending_input_count{};
     std::uint16_t entity_count{};
     FullSnapshot message;
     if (!reader.read_u32(snapshot_id) || !reader.read_u32(message.server_tick) ||
-        !reader.read_u32(last_processed_input_id) || !reader.read_u16(entity_count)) {
+        !reader.read_u32(last_processed_input_id) || !reader.read_u8(pending_input_count) ||
+        !reader.read_u16(entity_count)) {
         return CodecError::Truncated;
     }
 
@@ -338,6 +396,7 @@ void encode_payload(Writer& writer, const FullSnapshot& message) {
 
     message.snapshot_id = SnapshotId{snapshot_id};
     message.last_processed_input_id = InputSequenceId{last_processed_input_id};
+    message.pending_input_count = pending_input_count;
     message.entities.reserve(entity_count);
     for (std::uint16_t index = 0; index < entity_count; ++index) {
         std::uint32_t entity_id{};
@@ -433,8 +492,8 @@ DecodeResult decode(std::span<const std::byte> bytes) {
         return decode_client_hello(payload);
     case MessageKind::ServerWelcome:
         return decode_server_welcome(payload);
-    case MessageKind::InputCommand:
-        return decode_input_command(payload);
+    case MessageKind::InputPacket:
+        return decode_input_packet(payload);
     case MessageKind::FullSnapshot:
         return decode_full_snapshot(payload);
     }

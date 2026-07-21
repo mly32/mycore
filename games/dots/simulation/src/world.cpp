@@ -199,17 +199,16 @@ bool World::apply_input(const InputCommand& command) {
         return false;
     }
 
-    movements_[*index] = mycore::math::normalized_or_zero(command.movement);
+    movements_[*index] = normalized_player_movement(command.movement);
     last_input_ids_[*index] = command.id;
     return true;
 }
 
 bool World::step() {
-    constexpr auto kDistancePerTick = kPlayerSpeedUnitsPerSecond / static_cast<float>(kTickRateHz);
     std::vector<mycore::math::Vector2> next_positions;
     next_positions.reserve(positions_.size());
     for (std::size_t index = 0; index < positions_.size(); ++index) {
-        const auto next_position = positions_[index] + movements_[index] * kDistancePerTick;
+        const auto next_position = advance_player_position(positions_[index], movements_[index]);
         if (!spatial_grid_.can_index({.center = next_position, .radius = radii_[index]})) {
             return false;
         }
