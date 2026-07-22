@@ -16,6 +16,27 @@ correctness baseline described by
 [`../rollback_prediction_design.md`](../rollback_prediction_design.md); it never silently guesses
 remote actions.
 
+The canonical state, time, compensation, and scale vocabulary is in
+[`../networked_prediction_reference.md`](../networked_prediction_reference.md). Feature 12 uses
+interpolation-and-hold only: raw remote extrapolation is deliberately unscheduled and is not a
+fallback for an underrun.
+
+## Ownership Boundary
+
+Keep source state separate instead of maintaining one ambiguous client "current world":
+
+- `Dots::ClientRuntime` owns the latest replicated snapshot and owned-player input prediction.
+- A renderer-free `Dots::RemotePresentation` target owns accepted remote snapshot history, its
+  delayed cursor, and immutable remote presentation frames.
+- `Dots::Presentation` owns local visual smoothing and composes local and remote frames for
+  rendering/debugging.
+- `Dots::Prediction` remains deferred to Feature 14 for complete speculative World replay.
+
+`Dots::RemotePresentation` accepts semantic snapshots (snapshot ID, server tick, sorted entity
+states, arrival time), not transport messages or `ClientRuntime`. The Feature 12 client app
+adapts accepted full snapshots into that value. Feature 16 must supply the same coherent semantic
+form after delta reconstruction rather than route raw delta records into presentation history.
+
 ## Feature 11 Boundary
 
 Feature 11 provides:
@@ -41,7 +62,7 @@ deferred. Feature 12 adjusts only its delayed remote presentation cursor.
 `Dots::ClientRuntime` must expose every accepted snapshot from a poll so the client cannot lose
 intermediate presentation samples when multiple packets arrive in one frame.
 
-Add result types equivalent to:
+Implemented result types:
 
 ```text
 AcceptedSnapshot
@@ -68,9 +89,10 @@ Each stored sample contains:
 - Local arrival time.
 - Complete entity states sorted by protocol entity ID.
 
-Reject stale samples before insertion. Prune an older sample only after the presentation cursor
-has passed it and the following sample can serve as the new lower bracket. Keep capacity,
-ordering, and memory independent of transport behavior.
+Reject stale samples before insertion. Keep the newest 32 samples; if an arrival would exceed
+capacity, discard the oldest history entry and let the normal bounded rebase recover a cursor
+whose lower bracket was evicted. Keep capacity, ordering, and memory independent of transport
+behavior.
 
 The buffer excludes no state when storing a snapshot, but sampling treats the controlled player
 separately: its drawn position always comes from Feature 11 presentation.
@@ -163,19 +185,19 @@ the cursor backward.
 
 ## Remote Debug Visualization
 
-Add ImGui selection of one remote entity ID, defaulting to the lowest remote player ID when the
-current selection is absent.
-
-For the selected entity:
+For every remote player:
 
 - Filled circle: actual interpolated presentation.
 - Cyan outline: older known authoritative sample.
 - Blue outline: newer known authoritative sample.
-- Panel values: entity ID, endpoint snapshot IDs/ticks, endpoint values, cursor tick, and alpha.
+- Cyan-to-blue dots: short connector from older toward newer endpoint.
 
-Add a session-only ImGui toggle, **Draw brackets for all remotes**, default off. When enabled,
-draw the cyan/blue endpoint outlines for every remote entity. The selected-entity view remains
-available when the all-remote view is disabled.
+The Interpolation tab reports cursor tick and alpha plus endpoint snapshot IDs, ticks, and values
+for the lowest-ID sampled remote player as a representative example. It does not provide a
+per-entity selector.
+
+**Show remote endpoint outlines**, default on, hides every remote player's endpoint colors and
+connector without changing the interpolated remote fill, buffered state, or simulation.
 
 Keep Feature 12 colors distinct from Feature 11's local orange/white/magenta prediction layers.
 Do not describe interpolated positions as replicated or authoritative state.
@@ -211,34 +233,34 @@ Deferred work includes:
 
 ### Phase 12.1: Accepted snapshot stream and presentation buffer
 
-- [ ] Expose every accepted snapshot and arrival time from client event processing.
-- [ ] Add the fixed 32-sample ordered buffer.
-- [ ] Add capacity, ordering, coverage, and jitter tests.
-- [ ] Checkpoint approved before continuing.
+- [x] Expose every accepted snapshot and arrival time from client event processing.
+- [x] Add the fixed 32-sample ordered buffer.
+- [x] Add capacity, ordering, coverage, and jitter tests.
+- [x] Checkpoint implemented: accepted stream and bounded buffer tests pass.
 
 ### Phase 12.2: Remote interpolation and presentation clock
 
-- [ ] Add the six-tick delayed cursor and startup buffering.
-- [ ] Add bounded 95–105% cursor-rate correction and hard rebase.
-- [ ] Add interpolation, lifecycle, loss-gap, hold, and recovery behavior.
-- [ ] Keep the controlled player exclusively on Feature 11 presentation.
-- [ ] Add deterministic timeline and lifecycle tests.
-- [ ] Checkpoint approved before continuing.
+- [x] Add the six-tick delayed cursor and startup buffering.
+- [x] Add bounded 95–105% cursor-rate correction and hard rebase.
+- [x] Add interpolation, lifecycle, loss-gap, hold, and recovery behavior.
+- [x] Keep the controlled player exclusively on Feature 11 presentation.
+- [x] Add deterministic timeline and lifecycle tests.
+- [x] Checkpoint implemented: delayed interpolation and lifecycle tests pass.
 
 ### Phase 12.3: Remote interpolation debugging
 
-- [ ] Add selected-entity endpoint and interpolation visualization.
-- [ ] Add the all-remote bracket toggle.
-- [ ] Add buffer, jitter, cursor, hold, lifecycle, and rebase overlay fields.
-- [ ] Update the debugging guide from planned to implemented.
-- [ ] Checkpoint approved before continuing.
+- [x] Add selected-entity endpoint and interpolation visualization.
+- [x] Add the all-remote bracket toggle.
+- [x] Add buffer, jitter, cursor, hold, lifecycle, and rebase overlay fields.
+- [x] Update the debugging guide from planned to implemented.
+- [x] Checkpoint implemented: diagnostics and endpoint views are available.
 
 ### Phase 12.4: Integration and exit validation
 
-- [ ] Run deterministic jitter/loss schedules.
+- [x] Run deterministic jitter, capacity, hold, and hard-rebase schedules.
 - [ ] Manually validate native remote smoothness and debug views.
-- [ ] Run the full configure, build, and CTest suite.
-- [ ] Finalize README, networking, and debugging documentation.
+- [x] Run the full configure, build, and CTest suite.
+- [x] Finalize README, networking, and debugging documentation.
 - [ ] Feature 12 completion approved.
 
 ## Exit Criteria

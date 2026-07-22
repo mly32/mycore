@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch a local authoritative Dots server and one or more graphical clients."""
+"""Launch a local authoritative Dots server with graphical clients and headless bots."""
 
 from __future__ import annotations
 
@@ -48,11 +48,13 @@ def _stop_processes(processes: Sequence[subprocess.Popen[str]]) -> None:
 def run_session(
     server_command: Sequence[str],
     client_commands: Sequence[Sequence[str]],
+    bot_commands: Sequence[Sequence[str]] = (),
     readiness_timeout: float = 10.0,
 ) -> int:
     messages: queue.Queue[tuple[str, str]] = queue.Queue()
     processes: list[subprocess.Popen[str]] = []
     clients: list[subprocess.Popen[str]] = []
+    bots: list[subprocess.Popen[str]] = []
     output_threads: list[threading.Thread] = []
 
     def start(label: str, command: Sequence[str]) -> subprocess.Popen[str]:
@@ -96,6 +98,8 @@ def run_session(
 
         for index, command in enumerate(client_commands, start=1):
             clients.append(start(f"client {index}", command))
+        for index, command in enumerate(bot_commands, start=1):
+            bots.append(start(f"bot {index}", command))
 
         while True:
             try:
@@ -118,8 +122,15 @@ def run_session(
                     )
                     return client.returncode or 1
             if clients and all(client.poll() == 0 for client in clients):
-                print("dots_session: all clients exited successfully", file=sys.stderr)
+                print("dots_session: all graphical clients exited; stopping the session", file=sys.stderr)
                 return 0
+            for bot in bots:
+                if bot.poll() not in (None, 0):
+                    print(
+                        f"dots_session: bot exited with code {bot.returncode}",
+                        file=sys.stderr,
+                    )
+                    return bot.returncode or 1
     except KeyboardInterrupt:
         print("dots_session: interrupted by user", file=sys.stderr)
         return 130
@@ -141,6 +152,7 @@ def _parse_arguments(arguments: Sequence[str] | None = None) -> argparse.Namespa
     parser = argparse.ArgumentParser(prog=Path(__file__).name, description=__doc__)
     parser.add_argument("--build-dir", required=True, type=Path)
     parser.add_argument("--clients", type=int, default=2)
+    parser.add_argument("--bots", type=int, default=0)
     parser.add_argument(
         "--client-config",
         type=Path,
@@ -152,6 +164,8 @@ def _parse_arguments(arguments: Sequence[str] | None = None) -> argparse.Namespa
     parsed = parser.parse_args(arguments)
     if parsed.clients <= 0:
         parser.error("--clients must be positive")
+    if parsed.bots < 0:
+        parser.error("--bots must be non-negative")
     if parsed.fake_lag_ms < 0:
         parser.error("--fake-lag-ms must be non-negative")
     if not 0.0 <= parsed.fake_loss_percent <= 100.0:
@@ -163,10 +177,11 @@ def _parse_arguments(arguments: Sequence[str] | None = None) -> argparse.Namespa
     return parsed
 
 
-def _session_commands(arguments: argparse.Namespace) -> tuple[list[str], list[str]]:
+def _session_commands(arguments: argparse.Namespace) -> tuple[list[str], list[str], list[str]]:
     build_directory = arguments.build_dir.resolve()
     server = _executable(build_directory, "dots_server")
     client = _executable(build_directory, "dots_client")
+    bot = _executable(build_directory, "dots_bot")
     impairment: list[str] = [
         "--fake-lag-ms",
         str(arguments.fake_lag_ms),
@@ -191,15 +206,22 @@ def _session_commands(arguments: argparse.Namespace) -> tuple[list[str], list[st
         arguments.server_address,
         *impairment,
     ]
-    return server_command, client_command
+    bot_command: list[str] = [
+        str(bot),
+        "--connect",
+        arguments.server_address,
+        *impairment,
+    ]
+    return server_command, client_command, bot_command
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = _parse_arguments(argv)
-    server_command, client_command = _session_commands(arguments)
+    server_command, client_command, bot_command = _session_commands(arguments)
     return run_session(
         server_command,
         [client_command for _ in range(arguments.clients)],
+        [bot_command for _ in range(arguments.bots)],
     )
 
 

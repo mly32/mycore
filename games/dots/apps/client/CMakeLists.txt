@@ -38,6 +38,7 @@ target_link_libraries(
     dots_client
     PRIVATE
         dots_client_support
+        Dots::AppCli
         Dots::ClientRuntime
         Dots::Presentation
         Dots::Server

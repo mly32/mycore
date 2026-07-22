@@ -68,6 +68,80 @@ TEST_CASE("Dots presentation extracts an empty world", "[dots][presentation]") {
     REQUIRE(frame.circles.empty());
 }
 
+TEST_CASE("Remote endpoint diagnostics include a visible interpolation connector",
+          "[dots][presentation][remote]") {
+    dots::replication::ReplicatedWorld world;
+    REQUIRE(world.apply({
+                .snapshot_id = dots::protocol::SnapshotId{1},
+                .entities =
+                    {
+                        {
+                            .entity_id = dots::protocol::EntityId{1},
+                            .kind = dots::protocol::EntityKind::Player,
+                            .position_x = 0.0F,
+                            .position_y = 0.0F,
+                            .mass = 16.0F,
+                        },
+                    },
+            }) == dots::replication::SnapshotApplyResult::Applied);
+
+    const dots::presentation::RemotePresentationFrame remotes{
+        .entities =
+            {
+                {
+                    .entity_id = dots::protocol::EntityId{2},
+                    .kind = dots::protocol::EntityKind::Player,
+                    .position = {3.0F, 0.0F},
+                    .mass = 16.0F,
+                },
+            },
+    };
+    const std::array endpoints{dots::presentation::RemoteEntityEndpoints{
+        .older =
+            dots::presentation::RemoteEntitySample{
+                .entity_id = dots::protocol::EntityId{2},
+                .kind = dots::protocol::EntityKind::Player,
+                .position = {0.0F, 0.0F},
+                .mass = 16.0F,
+            },
+        .newer =
+            dots::presentation::RemoteEntitySample{
+                .entity_id = dots::protocol::EntityId{2},
+                .kind = dots::protocol::EntityKind::Player,
+                .position = {4.0F, 0.0F},
+                .mass = 16.0F,
+            },
+    }};
+
+    const auto frame = dots::presentation::extract_remote_interpolated_predicted_frame(
+        world,
+        remotes,
+        endpoints,
+        {
+            .entity_id = dots::protocol::EntityId{1},
+            .presentation_position = {0.0F, 0.0F},
+            .predicted_position = {0.0F, 0.0F},
+            .show_prediction_layers = false,
+        });
+
+    REQUIRE(frame.circles.size() == 7);
+    CHECK(frame.circles[2].kind == dots::presentation::CircleKind::RemoteOlderEndpointGhost);
+    CHECK(frame.circles[3].kind == dots::presentation::CircleKind::RemoteNewerEndpointGhost);
+    CHECK(frame.circles[4].kind ==
+          dots::presentation::CircleKind::RemoteInterpolationConnectorStart);
+    CHECK(frame.circles[5].kind ==
+          dots::presentation::CircleKind::RemoteInterpolationConnectorMiddle);
+    CHECK(frame.circles[6].kind == dots::presentation::CircleKind::RemoteInterpolationConnectorEnd);
+    CHECK(frame.circles[4].position == mycore::math::Vector2{1.0F, 0.0F});
+    CHECK(frame.circles[5].position == mycore::math::Vector2{2.0F, 0.0F});
+    CHECK(frame.circles[6].position == mycore::math::Vector2{3.0F, 0.0F});
+
+    const auto draw_list = dots::presentation::build_draw_list(frame, {});
+    CHECK(draw_list.circles[4].radius == Catch::Approx(0.075F));
+    CHECK(draw_list.circles[4].color == mycore::render::Color{0.0F, 0.9F, 0.95F, 0.95F});
+    CHECK(draw_list.circles[6].color == mycore::render::Color{0.2F, 0.45F, 1.0F, 0.95F});
+}
+
 TEST_CASE("Dots presentation extracts replicated state around its controlled player",
           "[dots][presentation][replication]") {
     dots::replication::ReplicatedWorld world;
@@ -213,7 +287,7 @@ TEST_CASE("Dots presentation can omit the Render2D grid", "[dots][presentation]"
     REQUIRE_FALSE(draw_list.grid.has_value());
 }
 
-TEST_CASE("Dots presentation shifts player color as food mass is gained", "[dots][presentation]") {
+TEST_CASE("Dots presentation assigns stable colors from player IDs", "[dots][presentation]") {
     const dots::presentation::FrameData frame{
         .circles =
             {
@@ -221,18 +295,21 @@ TEST_CASE("Dots presentation shifts player color as food mass is gained", "[dots
                     .mass = dots::simulation::kInitialPlayerMass,
                     .radius = 4.0F,
                     .kind = dots::presentation::CircleKind::Player,
+                    .entity_id = dots::protocol::EntityId{1},
                 },
                 {
                     .mass =
                         dots::simulation::kInitialPlayerMass + (4.0F * dots::simulation::kFoodMass),
                     .radius = 5.0F,
                     .kind = dots::presentation::CircleKind::Player,
+                    .entity_id = dots::protocol::EntityId{1},
                 },
                 {
                     .mass =
                         dots::simulation::kInitialPlayerMass + (8.0F * dots::simulation::kFoodMass),
                     .radius = 6.0F,
                     .kind = dots::presentation::CircleKind::Player,
+                    .entity_id = dots::protocol::EntityId{2},
                 },
             },
     };
@@ -243,9 +320,8 @@ TEST_CASE("Dots presentation shifts player color as food mass is gained", "[dots
 
     const auto draw_list = dots::presentation::build_draw_list(frame, settings);
 
-    REQUIRE(draw_list.circles[0].color == settings.player);
-    REQUIRE(draw_list.circles[1].color == mycore::render::Color{0.5F, 0.5F, 0.5F, 1.0F});
-    REQUIRE(draw_list.circles[2].color == settings.player_growth);
+    REQUIRE(draw_list.circles[0].color == draw_list.circles[1].color);
+    REQUIRE(draw_list.circles[0].color != draw_list.circles[2].color);
 }
 
 TEST_CASE("Local prediction presentation preserves continuity and decays over 100 ms",

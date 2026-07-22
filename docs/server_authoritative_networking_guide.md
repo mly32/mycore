@@ -3,8 +3,7 @@
 This guide assumes you understand the basic idea of a client and server: the client collects
 input and draws the game, while the server runs shared gameplay. It explains the boundaries
 between Dots protocol messages, the game-neutral transport, authoritative simulation, replicated
-client state, the current movement predictor, and presentation interpolation planned for later
-phases.
+client state, the current movement predictor, and remote presentation interpolation.
 
 ## The short version
 
@@ -24,7 +23,8 @@ transport -> authoritative server simulation -> FullSnapshot -> replicated clien
 The server owns the only gameplay `World`. The client sends movement requests, predicts only its
 controlled player's movement, and reconciles that prediction to validated snapshots. Gameplay
 state corrects immediately; only the visible correction offset decays over 100 ms. Remote
-players still render their latest received snapshot sample until Feature 12 interpolation.
+players use the Feature 12 delayed interpolation buffer, while the controlled player retains
+its separate local prediction and correction-smoothing path.
 
 `dots_client --in-memory` exercises this complete path without opening a socket. Its client and
 server live in one process and communicate through the same abstract transport interface used by
@@ -183,6 +183,22 @@ A normal client exit explicitly disconnects its transport connection. The server
 disconnect event, removes the corresponding session and authoritative player, and logs the
 reason. Abrupt process loss follows the same cleanup path after the transport detects failure,
 but cannot provide a graceful local-request event.
+
+Before a native graphical client tears down its networking instance, it requests a lingering
+transport close and drains endpoint callbacks for a bounded interval. The interval is the
+configured outgoing fake lag plus 50 ms, clamped from 50 ms to two seconds. This lets a delayed
+close notification leave the process; it does not wait indefinitely for an application-level ACK.
+
+The Dots server also has a gameplay-level liveness fallback. Ready clients normally submit valid
+input packets at 30 Hz; after 90 server ticks (three seconds) without one, the server logs a
+warning, closes the transport session, and removes the player. This prevents a lost connection
+from retaining its last movement forever while still tolerating ordinary packet loss. The timeout
+uses server ticks, not wall-clock sleeps, so it is deterministic in tests.
+
+Separately, Dots holds a player's last applied movement for at most five server ticks when its
+per-tick input queue runs dry. On the next missing-input tick it neutralizes movement but retains
+the connection until normal input resumes or the liveness timeout expires. This gameplay policy
+avoids indefinite movement during packet gaps without treating one missing packet as a disconnect.
 
 ## Native session startup and lifecycle
 
@@ -378,9 +394,10 @@ snapshots sent:              S0      S1      S2      S3
 client renders:              S0------S1------S2------S3
 ```
 
-There is no known state between `S1` and `S2` for remote presentation to estimate. Dots still
-uses this hold model for remote entities until Feature 12, but the owned player now predicts from
-its known local input.
+There is no known state between `S1` and `S2` for remote presentation to estimate. Feature 12
+instead keeps a short history of those remote samples and samples a cursor six server ticks behind
+its newest known snapshot. If that cursor runs out of a newer sample, it holds rather than
+extrapolating. The owned player separately predicts from its known local input.
 
 On a real network without compensation, the same model would also put round-trip and scheduling
 delay between pressing a key and seeing the returned authoritative result:
@@ -392,7 +409,8 @@ press key -> input travels to server -> later server tick -> snapshot travels ba
 The in-memory mode validates the architecture but largely hides that responsiveness problem
 because it has no simulated network delay. Native sessions make the distinction visible and
 allow it to be amplified with fake lag and loss: owned movement responds immediately, while
-authoritative samples and remote entities remain delayed. Feature 12 adds remote interpolation.
+authoritative samples and remote entities remain delayed. Feature 12 makes remote motion smooth
+by presenting historical known samples rather than guessing remote input or velocity.
 
 Input samples have sequence IDs, protocol-v2 packets provide bounded redundancy, the server
 schedules at most one queued sample per client per tick, snapshots acknowledge
@@ -407,6 +425,10 @@ The word *frame* is overloaded. Rendering, simulation, replication, transport po
 physical display do not have to advance together.
 
 ### Clock and timeline vocabulary
+
+The canonical ownership and time definitions, including why remote presentation is intentionally
+historical, are in [Networked prediction and time reference](networked_prediction_reference.md).
+This section applies those definitions to the current Dots protocol and diagnostics.
 
 Use one name per concept. In particular, do not use **estimated world time** as a second name for
 **estimated live server time**; the current server owns one authoritative world, so those phrases
@@ -452,8 +474,7 @@ input-prediction or smoothing clock.
 | Owned-player prediction | Current, Feature 11 | Local 30 Hz input steps, input sequence IDs, and the last server ACK. | No. |
 | Reconciliation | Current, Feature 11 | Authoritative controlled-player sample plus replay of the unacknowledged input suffix. Server tick labels the rollback base but does not choose how far to replay. | No. |
 | Local correction smoothing | Current, Feature 11 | Local steady-clock age of a fixed 100 ms visual offset. | No. |
-| Remote presentation | Current baseline | Newest replicated sample with no interpolation. | No. |
-| Remote interpolation | Planned, Feature 12 | Fractional cursor in historical server-tick coordinates, targeting six ticks behind the newest known snapshot. | No. |
+| Remote presentation | Current, Feature 12 | Fractional cursor in historical server-tick coordinates, targeting six ticks behind the newest known snapshot; holds on underrun. | No. |
 | Complete-World rollback | Planned, Feature 14 | Authoritative checkpoint plus retained command replay and recorded remote assumptions. | No. |
 | Adaptive command buffer | Planned, Feature 14 | Reported server input-queue depth controls a bounded client command cadence. | No. |
 | Smooth world-time UI or deadline display | Deferred | A filtered mapping from local steady time to estimated server tick. | Potentially. |
@@ -461,7 +482,7 @@ input-prediction or smoothing clock.
 
 Calling prediction “lookahead” can obscure this distinction. Owned prediction advances known
 local input beyond the latest acknowledged authority; it does not ask where the server clock is
-and extrapolate the whole world. Planned remote interpolation does the opposite of lookahead: it
+and extrapolate the whole world. Remote interpolation does the opposite of lookahead: it
 intentionally samples older known server states.
 
 Current local correction smoothing is spatial and fixed-duration:

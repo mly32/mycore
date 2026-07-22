@@ -204,6 +204,15 @@ bool World::apply_input(const InputCommand& command) {
     return true;
 }
 
+bool World::stop_player(EntityId entity_id) noexcept {
+    const auto index = find_index(entity_id);
+    if (!index) {
+        return false;
+    }
+    movements_[*index] = {};
+    return true;
+}
+
 bool World::step() {
     std::vector<mycore::math::Vector2> next_positions;
     next_positions.reserve(positions_.size());

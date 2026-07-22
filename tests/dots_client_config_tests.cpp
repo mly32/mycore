@@ -73,6 +73,7 @@ TEST_CASE("Client configuration defaults match the playable client", "[dots][cli
     REQUIRE(config.simulation.max_steps_per_frame == 5);
     REQUIRE(config.view.pixels_per_world_unit == 20.0F);
     REQUIRE(config.view.draw_grid);
+    REQUIRE(config.debug.enabled);
     REQUIRE(config.debug.presentation_mode == dots::client::PresentationMode::Interpolated);
     REQUIRE(config.colors.player == dots::client::RgbColor{0x4C, 0xC9, 0xF0});
     REQUIRE(config.colors.player_growth == dots::client::RgbColor{0xFF, 0xD1, 0x66});
@@ -133,6 +134,7 @@ draw_grid = false
 grid_spacing_world_units = 4.0
 
 [debug]
+enabled = false
 presentation_mode = "comparison"
 
 [colors]
@@ -162,6 +164,7 @@ food = "#FEDCBA"
     REQUIRE(config.view.pixels_per_world_unit == 32.0F);
     REQUIRE_FALSE(config.view.draw_grid);
     REQUIRE(config.view.grid_spacing_world_units == 4.0F);
+    REQUIRE_FALSE(config.debug.enabled);
     REQUIRE(config.debug.presentation_mode == dots::client::PresentationMode::Comparison);
     REQUIRE(config.colors.background == dots::client::RgbColor{0x01, 0x02, 0x03});
     REQUIRE(config.colors.grid == dots::client::RgbColor{0xA0, 0xB1, 0xC2});
@@ -180,6 +183,7 @@ width = 900
 mode = "HyBrId"
 
 [debug]
+enabled = false
 presentation_mode = "FiXeD"
 
 [bindings]
@@ -195,6 +199,7 @@ quit = ["eScApE"]
     REQUIRE(config.window.height == 720);
     REQUIRE(config.window.title == "Dots");
     REQUIRE(config.controls.mode == dots::client::InputMode::Hybrid);
+    REQUIRE_FALSE(config.debug.enabled);
     REQUIRE(config.debug.presentation_mode == dots::client::PresentationMode::Fixed);
     REQUIRE(config.controls.bindings.up == std::vector{mycore::platform_sdl::Key::W});
     REQUIRE(config.controls.bindings.quit == std::vector{mycore::platform_sdl::Key::Escape});
@@ -280,6 +285,7 @@ TEST_CASE("Invalid client TOML reports the source and field", "[dots][client][co
         InvalidDocument{"[simulation]\nmax_steps_per_frame = 0", "simulation.max_steps_per_frame"},
         InvalidDocument{"[view]\npixels_per_world_unit = 0", "view.pixels_per_world_unit"},
         InvalidDocument{"[view]\ngrid_spacing_world_units = -2", "view.grid_spacing_world_units"},
+        InvalidDocument{"[debug]\nenabled = 1", "debug.enabled"},
         InvalidDocument{"[debug]\npresentation_mode = \"predicted\"", "debug.presentation_mode"},
         InvalidDocument{"[debug]\nghost = true", "debug.ghost"},
         InvalidDocument{"[colors]\nplayer = \"#12345Z\"", "colors.player"},

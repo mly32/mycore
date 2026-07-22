@@ -4,6 +4,7 @@
 #include "dots/replication/replication.hpp"
 #include "dots/simulation/input_command.hpp"
 #include "mycore/debug/log.hpp"
+#include "mycore/math/vector2.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -43,6 +44,8 @@ struct Session {
     simulation::EntityId player_id;
     protocol::InputSequenceId last_processed_input_id;
     std::map<std::uint32_t, protocol::InputSample> pending_inputs;
+    std::uint64_t last_activity_tick{};
+    std::uint32_t consecutive_missing_input_ticks{};
     std::uint32_t next_snapshot_id{};
 
     [[nodiscard]] bool ready() const noexcept {
@@ -56,13 +59,46 @@ enum class InputEnqueueResult : std::uint8_t {
     Overflow,
 };
 
+inline constexpr std::size_t kSpawnColumns = 11;
+inline constexpr std::size_t kSpawnRows = 7;
+inline constexpr std::size_t kSpawnPointCount = kSpawnColumns * kSpawnRows;
+inline constexpr std::size_t kSpawnStride = 37;
+inline constexpr std::size_t kSpawnOffset = 23;
+
+[[nodiscard]] mycore::math::Vector2 spawn_position(std::uint32_t ordinal) noexcept {
+    const auto slot =
+        (static_cast<std::size_t>(ordinal) * kSpawnStride + kSpawnOffset) % kSpawnPointCount;
+    const auto column = slot % kSpawnColumns;
+    const auto row = slot / kSpawnColumns;
+    return {
+        -76.0F + (static_cast<float>(column) * 16.0F),
+        -44.0F + (static_cast<float>(row) * 16.0F),
+    };
+}
+
+[[nodiscard]] bool spawn_is_clear(const simulation::World& world,
+                                  mycore::math::Vector2 candidate) noexcept {
+    constexpr auto kMinimumDistanceSquared = 64.0F;
+    for (const auto player_id : world.player_ids()) {
+        const auto current_position = world.position(player_id);
+        if (current_position &&
+            mycore::math::length_squared(*current_position - candidate) < kMinimumDistanceSquared) {
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 class Runtime::Impl {
 public:
-    Impl(mycore::net_transport::Endpoint& endpoint, simulation::World initial_world)
+    Impl(mycore::net_transport::Endpoint& endpoint,
+         simulation::World initial_world,
+         RuntimeSettings settings)
         : endpoint_(endpoint),
-          world_(std::move(initial_world)) {}
+          world_(std::move(initial_world)),
+          settings_(settings) {}
 
     [[nodiscard]] std::optional<RuntimeError> process_events() {
         for (const auto& event : endpoint_.poll()) {
@@ -75,6 +111,8 @@ public:
                                               .player_id = {},
                                               .last_processed_input_id = {},
                                               .pending_inputs = {},
+                                              .last_activity_tick = world_.tick().value(),
+                                              .consecutive_missing_input_ticks = 0,
                                               .next_snapshot_id = 0,
                                           });
                 static_cast<void>(unused);
@@ -124,6 +162,9 @@ public:
             }
             auto& session = session_iterator->second;
             const auto enqueue_result = enqueue_input(session, *input);
+            if (enqueue_result == InputEnqueueResult::Accepted) {
+                session.last_activity_tick = world_.tick().value();
+            }
             if (enqueue_result == InputEnqueueResult::ConflictingDuplicate) {
                 reject(received.connection, "conflicting duplicate input sample");
                 continue;
@@ -136,10 +177,19 @@ public:
     }
 
     [[nodiscard]] std::optional<RuntimeError> step() {
+        remove_inactive_sessions();
         std::vector<std::pair<std::uint32_t, protocol::InputSequenceId>> applied_inputs;
         applied_inputs.reserve(sessions_.size());
         for (auto& [connection_value, session] : sessions_) {
-            if (!session.ready() || session.pending_inputs.empty()) {
+            if (!session.ready()) {
+                continue;
+            }
+            if (session.pending_inputs.empty()) {
+                ++session.consecutive_missing_input_ticks;
+                if (session.consecutive_missing_input_ticks > settings_.input_hold_ticks &&
+                    !world_.stop_player(session.player_id)) {
+                    return RuntimeError::SimulationInputRejected;
+                }
                 continue;
             }
             const auto& sample = session.pending_inputs.begin()->second;
@@ -150,6 +200,7 @@ public:
                 })) {
                 return RuntimeError::SimulationInputRejected;
             }
+            session.consecutive_missing_input_ticks = 0;
             applied_inputs.emplace_back(connection_value, sample.sequence_id);
         }
 
@@ -235,7 +286,17 @@ private:
         if (next_client_id_ == protocol::ClientId::kInvalidValue) {
             return RuntimeError::ClientIdExhausted;
         }
-        const auto player = world_.spawn_player();
+        auto player = std::optional<simulation::EntityId>{};
+        for (std::size_t attempt = 0; attempt < kSpawnPointCount; ++attempt) {
+            const auto position = spawn_position(next_spawn_ordinal_++);
+            if (!spawn_is_clear(world_, position)) {
+                continue;
+            }
+            player = world_.spawn_player(position);
+            if (player) {
+                break;
+            }
+        }
         if (!player) {
             return RuntimeError::EntityIdExhausted;
         }
@@ -254,11 +315,16 @@ private:
         if (sessions_.contains(connection.value())) {
             const auto snapshot_error = send_snapshot(connection);
             if (!snapshot_error && sessions_.contains(connection.value())) {
-                mycore::debug::log_info("dots.server.session",
-                                        "Client {} joined on connection {} controlling entity {}",
-                                        session.client_id.value(),
-                                        connection.value(),
-                                        session.player_id.value());
+                if (const auto position = world_.position(session.player_id)) {
+                    mycore::debug::log_info("dots.server.session",
+                                            "Client {} joined on connection {} controlling entity "
+                                            "{} at ({:.1f}, {:.1f})",
+                                            session.client_id.value(),
+                                            connection.value(),
+                                            session.player_id.value(),
+                                            position->x,
+                                            position->y);
+                }
             }
             return snapshot_error;
         }
@@ -350,15 +416,45 @@ private:
         sessions_.erase(iterator);
     }
 
+    void remove_inactive_sessions() {
+        const auto current_tick = world_.tick().value();
+        std::vector<ConnectionHandle> inactive_connections;
+        inactive_connections.reserve(sessions_.size());
+        for (const auto& [unused, session] : sessions_) {
+            static_cast<void>(unused);
+            if (session.ready() &&
+                current_tick - session.last_activity_tick >= settings_.liveness_timeout_ticks) {
+                inactive_connections.push_back(session.connection);
+            }
+        }
+        for (const auto connection : inactive_connections) {
+            const auto iterator = sessions_.find(connection.value());
+            if (iterator == sessions_.end()) {
+                continue;
+            }
+            mycore::debug::log_warning(
+                "dots.server.session",
+                "Client {} timed out after {} server ticks without valid input; disconnecting",
+                iterator->second.client_id.value(),
+                settings_.liveness_timeout_ticks);
+            static_cast<void>(endpoint_.disconnect(connection));
+            remove_session(connection);
+        }
+    }
+
     mycore::net_transport::Endpoint& endpoint_;
     simulation::World world_;
+    RuntimeSettings settings_;
     std::unordered_map<std::uint32_t, Session> sessions_;
+    std::uint32_t next_spawn_ordinal_{};
     std::uint32_t next_client_id_{};
     std::size_t rejected_packet_count_{};
 };
 
-Runtime::Runtime(mycore::net_transport::Endpoint& endpoint, simulation::World initial_world)
-    : impl_(std::make_unique<Impl>(endpoint, std::move(initial_world))) {}
+Runtime::Runtime(mycore::net_transport::Endpoint& endpoint,
+                 simulation::World initial_world,
+                 RuntimeSettings settings)
+    : impl_(std::make_unique<Impl>(endpoint, std::move(initial_world), settings)) {}
 
 Runtime::~Runtime() = default;
 Runtime::Runtime(Runtime&&) noexcept = default;

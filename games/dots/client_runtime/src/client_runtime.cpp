@@ -118,12 +118,13 @@ public:
         : endpoint_(endpoint),
           settings_(settings) {}
 
-    [[nodiscard]] std::optional<RuntimeError>
-    process_events(std::chrono::steady_clock::time_point now) {
+    [[nodiscard]] ProcessEventsResult process_events(std::chrono::steady_clock::time_point now) {
+        ProcessEventsResult result;
         for (const auto& event : endpoint_.poll()) {
             if (const auto* connected = std::get_if<mycore::net_transport::Connected>(&event)) {
                 if (connection_.is_valid()) {
-                    return fail(RuntimeError::MultipleConnections);
+                    result.error = fail(RuntimeError::MultipleConnections);
+                    return result;
                 }
                 connection_ = connected->connection;
                 state_ = State::Handshaking;
@@ -131,7 +132,8 @@ public:
                                         "Transport connection {} opened; starting handshake",
                                         connection_.value());
                 if (!transmit(protocol::ClientHello{}, DeliveryMode::Reliable)) {
-                    return fail(RuntimeError::TransportSendFailed);
+                    result.error = fail(RuntimeError::TransportSendFailed);
+                    return result;
                 }
                 continue;
             }
@@ -149,41 +151,50 @@ public:
             const auto decoded = protocol::decode(received.payload);
             const auto* message = std::get_if<protocol::Message>(&decoded);
             if (message == nullptr) {
-                return fail(RuntimeError::ProtocolDecodeFailed);
+                result.error = fail(RuntimeError::ProtocolDecodeFailed);
+                return result;
             }
             if (const auto* welcome = std::get_if<protocol::ServerWelcome>(message)) {
                 if (received.delivery != DeliveryMode::Reliable || client_id_.is_valid()) {
-                    return fail(RuntimeError::UnexpectedMessage);
+                    result.error = fail(RuntimeError::UnexpectedMessage);
+                    return result;
                 }
                 client_id_ = welcome->client_id;
                 controlled_entity_id_ = welcome->controlled_entity_id;
                 if (const auto error = update_ready_state()) {
-                    return error;
+                    result.error = error;
+                    return result;
                 }
                 continue;
             }
             if (const auto* snapshot = std::get_if<protocol::FullSnapshot>(message)) {
                 if (received.delivery != DeliveryMode::Unreliable) {
-                    return fail(RuntimeError::UnexpectedMessage);
+                    result.error = fail(RuntimeError::UnexpectedMessage);
+                    return result;
                 }
-                const auto result = process_snapshot(*snapshot, now);
-                if (result.error) {
-                    return fail(*result.error);
+                const auto snapshot_result = process_snapshot(*snapshot, now);
+                if (snapshot_result.error) {
+                    result.error = fail(*snapshot_result.error);
+                    return result;
                 }
-                if (result.applied) {
+                if (snapshot_result.applied) {
                     snapshot_times_.push_back(now);
                     latest_snapshot_time_ = now;
                     ++accepted_snapshot_count_;
                     prune_snapshot_times(now);
+                    result.accepted_snapshots.push_back(
+                        {.snapshot = *snapshot, .arrival_time = now});
                 }
                 if (const auto error = update_ready_state()) {
-                    return error;
+                    result.error = error;
+                    return result;
                 }
                 continue;
             }
-            return fail(RuntimeError::UnexpectedMessage);
+            result.error = fail(RuntimeError::UnexpectedMessage);
+            return result;
         }
-        return std::nullopt;
+        return result;
     }
 
     [[nodiscard]] InputSendResult send_input(std::uint32_t client_tick,
@@ -717,7 +728,7 @@ Runtime::~Runtime() = default;
 Runtime::Runtime(Runtime&&) noexcept = default;
 Runtime& Runtime::operator=(Runtime&&) noexcept = default;
 
-std::optional<RuntimeError> Runtime::process_events(std::chrono::steady_clock::time_point now) {
+ProcessEventsResult Runtime::process_events(std::chrono::steady_clock::time_point now) {
     return impl_->process_events(now);
 }
 

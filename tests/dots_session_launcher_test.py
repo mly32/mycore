@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -26,6 +27,8 @@ class DotsSessionLauncherTests(unittest.TestCase):
                 """
                 import sys
                 import time
+                from pathlib import Path
+                import signal
 
                 mode = sys.argv[1]
                 if mode == "server":
@@ -35,8 +38,16 @@ class DotsSessionLauncherTests(unittest.TestCase):
                 if mode == "silent-server":
                     time.sleep(5)
                 if mode == "client":
-                    time.sleep(0.05)
+                    time.sleep(float(sys.argv[3]) if len(sys.argv) > 3 else 0.05)
                     raise SystemExit(int(sys.argv[2]))
+                if mode == "bot":
+                    marker = Path(sys.argv[2])
+                    def stop(*_args):
+                        marker.write_text("stopped", encoding="utf-8")
+                        raise SystemExit(0)
+                    signal.signal(signal.SIGTERM, stop)
+                    while True:
+                        time.sleep(0.05)
                 """
             ),
             encoding="utf-8",
@@ -62,6 +73,33 @@ class DotsSessionLauncherTests(unittest.TestCase):
         )
         self.assertEqual(result, 7)
 
+    def test_client_exit_stops_running_bots(self) -> None:
+        marker = Path(self.directory.name) / "bot-stopped.txt"
+        launched_processes = []
+        original_popen = subprocess.Popen
+
+        def start_process(*arguments, **keyword_arguments):
+            process = original_popen(*arguments, **keyword_arguments)
+            launched_processes.append(process)
+            return process
+
+        with mock.patch.object(dots_session.subprocess, "Popen", side_effect=start_process):
+            result = dots_session.run_session(
+                self.command("server"),
+                [self.command("client", "0")],
+                [self.command("bot", str(marker))],
+            )
+        self.assertEqual(result, 0)
+        self.assertEqual(len(launched_processes), 3)
+        self.assertIsNotNone(launched_processes[2].poll())
+
+    def test_session_waits_for_every_graphical_client(self) -> None:
+        result = dots_session.run_session(
+            self.command("server"),
+            [self.command("client", "0", "0"), self.command("client", "7", "0.1")],
+        )
+        self.assertEqual(result, 7)
+
     def test_readiness_timeout_fails(self) -> None:
         result = dots_session.run_session(
             self.command("silent-server"),
@@ -77,6 +115,7 @@ class DotsSessionLauncherTests(unittest.TestCase):
         executable_suffix = ".exe" if os.name == "nt" else ""
         (binary_directory / f"dots_server{executable_suffix}").touch()
         (binary_directory / f"dots_client{executable_suffix}").touch()
+        (binary_directory / f"dots_bot{executable_suffix}").touch()
         client_config = Path(self.directory.name) / "client.toml"
         client_config.write_text('[network]\nmode = "offline"\n', encoding="utf-8")
 
@@ -86,11 +125,13 @@ class DotsSessionLauncherTests(unittest.TestCase):
                 str(build_directory),
                 "--clients",
                 "3",
+                "--bots",
+                "2",
                 "--client-config",
                 str(client_config),
             ]
         )
-        server_command, client_command = dots_session._session_commands(arguments)
+        server_command, client_command, bot_command = dots_session._session_commands(arguments)
 
         self.assertEqual(arguments.client_config, client_config.resolve())
         self.assertEqual(server_command[1:3], ["--listen", "127.0.0.1:27020"])
@@ -99,6 +140,8 @@ class DotsSessionLauncherTests(unittest.TestCase):
             ["--config", str(client_config.resolve()), "--connect", "127.0.0.1:27020"],
         )
         self.assertEqual(arguments.clients, 3)
+        self.assertEqual(arguments.bots, 2)
+        self.assertEqual(bot_command[1:3], ["--connect", "127.0.0.1:27020"])
 
         with mock.patch.object(dots_session, "run_session", return_value=0) as run_session:
             result = dots_session.main(
@@ -107,15 +150,17 @@ class DotsSessionLauncherTests(unittest.TestCase):
                     str(build_directory),
                     "--clients",
                     "3",
+                    "--bots",
+                    "2",
                     "--client-config",
                     str(client_config),
                 ]
             )
         self.assertEqual(result, 0)
-        launched_server, launched_clients = run_session.call_args.args
+        launched_server, launched_clients, launched_bots = run_session.call_args.args
         self.assertEqual(launched_server, server_command)
-        self.assertEqual(len(launched_clients), 3)
-        self.assertTrue(all(command == client_command for command in launched_clients))
+        self.assertEqual(launched_clients, [client_command] * 3)
+        self.assertEqual(launched_bots, [bot_command] * 2)
 
     def test_missing_client_config_is_rejected(self) -> None:
         with self.assertRaises(SystemExit):
@@ -126,6 +171,12 @@ class DotsSessionLauncherTests(unittest.TestCase):
                     "--client-config",
                     str(Path(self.directory.name) / "missing.toml"),
                 ]
+            )
+
+    def test_negative_bot_count_is_rejected(self) -> None:
+        with self.assertRaises(SystemExit):
+            dots_session._parse_arguments(
+                ["--build-dir", self.directory.name, "--bots", "-1"]
             )
 
 

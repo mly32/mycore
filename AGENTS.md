@@ -18,6 +18,8 @@ Read only the documentation relevant to the task:
   predicted lifecycle, consequence policy, and rollback recovery.
 - `docs/debugging_and_observability.md`: overlay fields, metric meanings, debug visuals,
   troubleshooting, and the boundary between current and planned observability.
+- `docs/dots_gameplay.md`: implemented Dots rules, resources, spawning, movement-loss behavior,
+  presentation model, and the boundary between current and planned mechanics.
 - `docs/game_engine_technology_plan.md`: architecture, technology choices, module ownership,
   and cross-game reuse decisions.
 - `docs/development_branch_plan.md`: feature order, planned scope, dependencies, and exit
@@ -84,6 +86,9 @@ and worktree before making changes.
   debug visual, fault control, unit, threshold, or availability rule changes.
 - Keep `docs/rollback_prediction_design.md` synchronized when checkpoint contents, prediction-set
   closure, replay atomicity, speculative lifecycle, cue policy, or recovery behavior changes.
+- Keep `docs/dots_gameplay.md` synchronized when implemented Dots rules, objectives, resources,
+  spawn behavior, player lifecycle, movement-loss behavior, or presentation-facing gameplay
+  behavior changes. Keep future mechanics clearly marked as planned until implemented.
 
 ## Build and Validation
 

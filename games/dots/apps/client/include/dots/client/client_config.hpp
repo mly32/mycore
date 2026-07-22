@@ -87,6 +87,7 @@ struct ViewSettings {
 };
 
 struct DebugSettings {
+    bool enabled{true};
     PresentationMode presentation_mode{PresentationMode::Interpolated};
 };
 

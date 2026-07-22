@@ -1,6 +1,7 @@
 #pragma once
 
 #include "dots/protocol/ids.hpp"
+#include "dots/protocol/messages.hpp"
 #include "dots/replication/replication.hpp"
 #include "mycore/math/vector2.hpp"
 #include "mycore/net_transport/net_transport.hpp"
@@ -11,6 +12,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <vector>
 
 namespace dots::client_runtime {
 
@@ -50,6 +52,24 @@ struct ReplicationStatistics {
 
 struct Settings {
     bool input_redundancy{true};
+};
+
+struct AcceptedSnapshot {
+    protocol::FullSnapshot snapshot;
+    std::chrono::steady_clock::time_point arrival_time;
+};
+
+struct ProcessEventsResult {
+    std::optional<RuntimeError> error;
+    std::vector<AcceptedSnapshot> accepted_snapshots;
+
+    [[nodiscard]] bool has_value() const noexcept {
+        return error.has_value();
+    }
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return error.has_value();
+    }
 };
 
 inline constexpr std::size_t kPredictionHistoryCapacity = 256;
@@ -97,7 +117,7 @@ public:
     Runtime(Runtime&&) noexcept;
     Runtime& operator=(Runtime&&) noexcept;
 
-    [[nodiscard]] std::optional<RuntimeError>
+    [[nodiscard]] ProcessEventsResult
     process_events(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
     [[nodiscard]] InputSendResult send_input(std::uint32_t client_tick,
                                              mycore::math::Vector2 movement);

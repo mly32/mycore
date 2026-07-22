@@ -9,8 +9,8 @@ output.
 
 - **Current:** Feature 11 predicts only the owned player's position by replaying unacknowledged
   movement.
-- **Planned baseline:** Feature 12 adds delayed interpolation for remote presentation before
-  complete rollback changes the normal predicted view.
+- **Remote presentation baseline:** Feature 12 uses delayed interpolation for remote presentation
+  before complete rollback changes the normal predicted view.
 - **Committed direction:** Feature 14 replaces position-only replay with a complete Dots World
   rollback kernel and makes the prediction set selectable.
 - **Deferred research:** time-sliced resimulation may be reconsidered only from measured Feature
@@ -21,14 +21,15 @@ The first kernel is deliberately Dots-owned. Its contracts should be reusable in
 
 ## State Model and Authority
 
-Keep these views separate:
+Keep these views separate. The complete cross-feature ownership and clock vocabulary is in
+[`networked_prediction_reference.md`](networked_prediction_reference.md).
 
 | State | Meaning | Owner |
 |---|---|---|
 | Authoritative World | Complete gameplay truth at a server tick. | Server only |
-| Replicated state | Newest validated authoritative data received by one client. | Client copy of server truth |
+| Latest replicated snapshot | Newest validated authoritative data received by one client. It is historical by receipt time. | Client copy of server truth |
 | Predicted World | Replicated checkpoint advanced speculatively through retained commands and remote assumptions. | Client only |
-| Interpolated state | Delayed presentation sampled between known snapshots. | Client presentation |
+| Remote presentation frame | Delayed presentation sampled between known snapshots. | Client presentation |
 | Presentation state | Positions, radii, camera, UI, audio, and effects actually shown. | Client presentation |
 | Confirmed consequence | Session or durable event that is exposed only after authority reports it. | Server decision, client display |
 
