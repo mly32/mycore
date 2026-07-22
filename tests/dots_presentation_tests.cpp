@@ -287,7 +287,7 @@ TEST_CASE("Dots presentation can omit the Render2D grid", "[dots][presentation]"
     REQUIRE_FALSE(draw_list.grid.has_value());
 }
 
-TEST_CASE("Dots presentation shifts player color as food mass is gained", "[dots][presentation]") {
+TEST_CASE("Dots presentation assigns stable colors from player IDs", "[dots][presentation]") {
     const dots::presentation::FrameData frame{
         .circles =
             {
@@ -295,18 +295,21 @@ TEST_CASE("Dots presentation shifts player color as food mass is gained", "[dots
                     .mass = dots::simulation::kInitialPlayerMass,
                     .radius = 4.0F,
                     .kind = dots::presentation::CircleKind::Player,
+                    .entity_id = dots::protocol::EntityId{1},
                 },
                 {
                     .mass =
                         dots::simulation::kInitialPlayerMass + (4.0F * dots::simulation::kFoodMass),
                     .radius = 5.0F,
                     .kind = dots::presentation::CircleKind::Player,
+                    .entity_id = dots::protocol::EntityId{1},
                 },
                 {
                     .mass =
                         dots::simulation::kInitialPlayerMass + (8.0F * dots::simulation::kFoodMass),
                     .radius = 6.0F,
                     .kind = dots::presentation::CircleKind::Player,
+                    .entity_id = dots::protocol::EntityId{2},
                 },
             },
     };
@@ -317,9 +320,8 @@ TEST_CASE("Dots presentation shifts player color as food mass is gained", "[dots
 
     const auto draw_list = dots::presentation::build_draw_list(frame, settings);
 
-    REQUIRE(draw_list.circles[0].color == settings.player);
-    REQUIRE(draw_list.circles[1].color == mycore::render::Color{0.5F, 0.5F, 0.5F, 1.0F});
-    REQUIRE(draw_list.circles[2].color == settings.player_growth);
+    REQUIRE(draw_list.circles[0].color == draw_list.circles[1].color);
+    REQUIRE(draw_list.circles[0].color != draw_list.circles[2].color);
 }
 
 TEST_CASE("Local prediction presentation preserves continuity and decays over 100 ms",

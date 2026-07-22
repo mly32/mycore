@@ -4,6 +4,7 @@
 #include "mycore/net_transport/net_transport.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
 
@@ -20,10 +21,19 @@ enum class RuntimeError : std::uint8_t {
     ProtocolEncodeFailed,
 };
 
+inline constexpr std::uint32_t kDefaultLivenessTimeoutTicks = 90;
+inline constexpr std::uint32_t kDefaultInputHoldTicks = 5;
+
+struct RuntimeSettings {
+    std::uint32_t liveness_timeout_ticks{kDefaultLivenessTimeoutTicks};
+    std::uint32_t input_hold_ticks{kDefaultInputHoldTicks};
+};
+
 class Runtime {
 public:
     explicit Runtime(mycore::net_transport::Endpoint& endpoint,
-                     simulation::World initial_world = {});
+                     simulation::World initial_world = {},
+                     RuntimeSettings settings = {});
     ~Runtime();
 
     Runtime(const Runtime&) = delete;

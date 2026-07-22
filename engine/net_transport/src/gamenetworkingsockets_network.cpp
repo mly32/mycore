@@ -229,7 +229,7 @@ public:
                 connection->native == k_HSteamNetConnection_Invalid) {
                 return false;
             }
-            owner_.sockets_->CloseConnection(connection->native, 0, "Local request", false);
+            owner_.sockets_->CloseConnection(connection->native, 0, "Local request", true);
             native_to_handle_.erase(connection->native);
             connection->native = k_HSteamNetConnection_Invalid;
             connection->state = ConnectionState::Disconnected;

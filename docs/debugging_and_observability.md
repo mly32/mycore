@@ -103,16 +103,20 @@ contains the formulas, network-change behavior, and the explicitly deferred live
 
 ## Current Dots Overlay
 
-The Dots-owned Dear ImGui panel is anchored in the lower-right corner. `[debug].enabled` defaults
-to `true`; set it to `false` to hide the panel, suppress world-space diagnostic layers, and
-prevent the panel from receiving input. Disabling debug does not change simulation or gameplay
-presentation. When enabled, the panel can collapse and splits its output into **Runtime**,
-**Network**, **Prediction**, and **Tools** tabs so unrelated diagnostics do not create one tall
-scrolling view. Fault injection and visual-layer controls live under Tools rather than extending
-the Prediction metrics view. A tab can still scroll when the available window height is small.
-`MyCore::DebugUI` owns ImGui integration, but the fields and their meanings remain Dots-owned.
+The Dots-owned Dear ImGui UI has a compact **Dots game state** panel fixed at the top left, a
+left lower **Dots session** pane with **Runtime** and **Network** tabs, and a right lower **Dots
+diagnostics** pane with **Prediction**, **Interpolation**, and **Tools** tabs.
+`[debug].enabled` defaults to `true`; set it to `false` to hide these panes, suppress world-space
+diagnostic layers, and prevent the UI from receiving input. Disabling debug does not change
+simulation or gameplay presentation. Fault injection and visual-layer controls live under Tools
+rather than extending the Prediction metrics view. `MyCore::DebugUI` owns ImGui integration, but
+the fields and their meanings remain Dots-owned.
 
 ### World and presentation fields — Current
+
+The top-left game-state panel shows **Players** and **Authoritative player**. The latter is the
+controlled player's latest position in the offline world or latest accepted replicated snapshot;
+it is not the locally smoothed presentation position.
 
 | Label | Source and units | Meaning |
 |---|---|---|
@@ -209,7 +213,7 @@ Important log categories include:
 | `dots.client.simulation` | Client fixed-step overload warnings, escalation, and recovery. |
 | `dots.client.prediction` | Prediction history pressure/recovery, hard resyncs, replay-budget warnings, and explicit debug fault injection. |
 | `dots.server` | Headless server startup, listen address, tick lifetime, and shutdown. |
-| `dots.server.session` | Connection acceptance, assigned players, rejected packets, and cleanup. |
+| `dots.server.session` | Connection acceptance, assigned players, rejected packets, liveness timeouts, and cleanup. |
 
 Feature 7 added Tracy zones for the client frame, fixed-step work, presentation extraction, and
 render submission. Phase 11.2 adds `Dots prediction reconciliation`, covering bounded scratch

@@ -283,7 +283,7 @@
           "default": "#4CC9F0"
         },
         "player_growth": {
-          "description": "Color approached as the player grows by consuming food.",
+          "description": "Upper color of the deterministic player-ID palette.",
           "type": "string",
           "pattern": "^#[0-9A-Fa-f]{6}$",
           "default": "#FFD166"

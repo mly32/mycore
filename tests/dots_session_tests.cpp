@@ -423,6 +423,68 @@ TEST_CASE("Server replicates a disconnected player removal to remaining clients"
     CHECK(observer.world().find(departing_entity_id) == nullptr);
 }
 
+TEST_CASE("Server disconnects a client that exceeds its liveness timeout", "[dots][session]") {
+    mycore::net_transport::InMemoryNetwork network;
+    dots::server::Runtime server{
+        network.server_endpoint(),
+        {},
+        {.liveness_timeout_ticks = 2},
+    };
+    dots::client_runtime::Runtime active{network.connect_client()};
+    dots::client_runtime::Runtime inactive{network.connect_client()};
+    complete_handshake(active, server);
+    complete_handshake(inactive, server);
+
+    REQUIRE(active.send_input(0, {1.0F, 0.0F}) == dots::client_runtime::InputSendResult::Sent);
+    REQUIRE_FALSE(server.process_events().has_value());
+    REQUIRE_FALSE(server.step().has_value());
+
+    REQUIRE(active.send_input(1, {1.0F, 0.0F}) == dots::client_runtime::InputSendResult::Sent);
+    REQUIRE_FALSE(server.process_events().has_value());
+    REQUIRE_FALSE(server.step().has_value());
+
+    REQUIRE_FALSE(server.step().has_value());
+    CHECK(server.client_count() == 1);
+    CHECK(server.world().player_count() == 1);
+    CHECK(active.state() == dots::client_runtime::State::Ready);
+
+    REQUIRE_FALSE(inactive.process_events().has_value());
+    CHECK(inactive.state() == dots::client_runtime::State::Disconnected);
+}
+
+TEST_CASE("Server stops held movement after its missing-input window", "[dots][session]") {
+    mycore::net_transport::InMemoryNetwork network;
+    dots::server::Runtime server{
+        network.server_endpoint(),
+        {},
+        {
+            .liveness_timeout_ticks = 100,
+            .input_hold_ticks = 2,
+        },
+    };
+    dots::client_runtime::Runtime client{network.connect_client()};
+    complete_handshake(client, server);
+
+    const auto player_id = dots::simulation::EntityId{client.controlled_entity_id().value()};
+    const auto spawn = server.world().position(player_id);
+    REQUIRE(spawn.has_value());
+    REQUIRE(client.send_input(0, {1.0F, 0.0F}) == dots::client_runtime::InputSendResult::Sent);
+    REQUIRE_FALSE(server.process_events().has_value());
+    REQUIRE_FALSE(server.step().has_value());
+
+    REQUIRE_FALSE(server.step().has_value());
+    REQUIRE_FALSE(server.step().has_value());
+    const auto held_position = server.world().position(player_id);
+    REQUIRE(held_position.has_value());
+    CHECK(held_position->x == Catch::Approx(spawn->x + 0.6F));
+
+    REQUIRE_FALSE(server.step().has_value());
+    const auto stopped_position = server.world().position(player_id);
+    REQUIRE(stopped_position.has_value());
+    CHECK(stopped_position->x == Catch::Approx(held_position->x));
+    CHECK(server.client_count() == 1);
+}
+
 TEST_CASE("Invalid packets disconnect one client without stopping another", "[dots][session]") {
     mycore::net_transport::InMemoryNetwork network;
     dots::server::Runtime server{network.server_endpoint()};

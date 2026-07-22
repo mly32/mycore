@@ -4,6 +4,8 @@
 
 - [Dots](../games/dots/README.md): run modes, controls, configuration, runtime visibility, and
   code ownership for the current vertical slice.
+- [Dots gameplay](dots_gameplay.md): implemented rules, world resources, spawning, movement-loss
+  behavior, presentation model, and explicitly deferred mechanics.
 
 ## Developer references
 

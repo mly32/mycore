@@ -90,6 +90,7 @@ struct DebugWorldStats {
     std::uint64_t tick{};
     std::size_t player_count{};
     std::size_t food_count{};
+    std::optional<Vector2> current_player_position;
     std::optional<std::size_t> occupied_grid_cells;
     std::optional<std::uint32_t> snapshot_id;
     std::optional<mycore::net_transport::TransportStatistics> transport;
@@ -580,6 +581,21 @@ void draw_debug_overlay(const ClientConfig& config,
         ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoSavedSettings |
         ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
 
+    ImGui::SetNextWindowPos({viewport->WorkPos.x + kMargin, viewport->WorkPos.y + kMargin},
+                            ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.82F);
+    if (ImGui::Begin("Dots game state", nullptr, kWindowFlags)) {
+        ImGui::Text("Players: %zu", world.player_count);
+        if (world.current_player_position) {
+            ImGui::Text("Authoritative player: (%.2f, %.2f)",
+                        world.current_player_position->x,
+                        world.current_player_position->y);
+        } else {
+            ImGui::TextDisabled("Authoritative player: unavailable");
+        }
+    }
+    ImGui::End();
+
     ImGui::SetNextWindowPos(
         {viewport->WorkPos.x + kMargin, viewport->WorkPos.y + viewport->WorkSize.y - kMargin},
         ImGuiCond_Always,
@@ -708,13 +724,15 @@ void validate_render_assets(const mycore::assets::DirectorySource& assets) {
     }
 }
 
-int run_networked_game(const ClientConfig& config,
-                       mycore::platform_sdl::Window& window,
-                       mycore::render_2d::Renderer& renderer,
-                       mycore::debug_ui::Context& debug_ui,
-                       const dots::presentation::Settings& render_settings,
-                       mycore::net_transport::Endpoint& endpoint,
-                       dots::server::Runtime* embedded_server) {
+int run_networked_game(
+    const ClientConfig& config,
+    mycore::platform_sdl::Window& window,
+    mycore::render_2d::Renderer& renderer,
+    mycore::debug_ui::Context& debug_ui,
+    const dots::presentation::Settings& render_settings,
+    mycore::net_transport::Endpoint& endpoint,
+    dots::server::Runtime* embedded_server,
+    std::optional<std::chrono::milliseconds> graceful_disconnect_drain = std::nullopt) {
     using namespace std::chrono_literals;
     dots::client_runtime::Runtime client{
         endpoint,
@@ -774,6 +792,15 @@ int run_networked_game(const ClientConfig& config,
                     "dots.client.session",
                     "Could not request a graceful disconnect for connection {}",
                     client.connection_handle().value());
+            } else if (graceful_disconnect_drain) {
+                mycore::debug::log_info("dots.client.session",
+                                        "Draining native disconnect for {} ms",
+                                        graceful_disconnect_drain->count());
+                const auto deadline = std::chrono::steady_clock::now() + *graceful_disconnect_drain;
+                while (std::chrono::steady_clock::now() < deadline) {
+                    static_cast<void>(endpoint.poll());
+                    std::this_thread::sleep_for(1ms);
+                }
             }
             return 0;
         }
@@ -913,6 +940,8 @@ int run_networked_game(const ClientConfig& config,
                     .tick = client.world().server_tick(),
                     .player_count = client.world().player_count(),
                     .food_count = client.world().food_count(),
+                    .current_player_position =
+                        Vector2{controlled->position_x, controlled->position_y},
                     .occupied_grid_cells = std::nullopt,
                     .snapshot_id = client.world().snapshot_id().value(),
                     .transport = endpoint.statistics(client.connection_handle()),
@@ -1042,8 +1071,24 @@ int run_native_game(const ClientConfig& config,
     }
     mycore::net_transport::GameNetworkingSocketsNetwork network{options.impairment};
     auto& endpoint = network.connect(*address);
-    return run_networked_game(
-        config, window, renderer, debug_ui, render_settings, endpoint, nullptr);
+    constexpr std::uint32_t kMinimumDisconnectDrainMilliseconds = 50;
+    constexpr std::uint32_t kDisconnectDrainMarginMilliseconds = 50;
+    constexpr std::uint32_t kMaximumDisconnectDrainMilliseconds = 2'000;
+    const auto requested_drain_milliseconds =
+        static_cast<std::uint64_t>(options.impairment.outgoing_lag_milliseconds) +
+        kDisconnectDrainMarginMilliseconds;
+    const auto drain_milliseconds =
+        std::clamp(requested_drain_milliseconds,
+                   static_cast<std::uint64_t>(kMinimumDisconnectDrainMilliseconds),
+                   static_cast<std::uint64_t>(kMaximumDisconnectDrainMilliseconds));
+    return run_networked_game(config,
+                              window,
+                              renderer,
+                              debug_ui,
+                              render_settings,
+                              endpoint,
+                              nullptr,
+                              std::chrono::milliseconds{drain_milliseconds});
 }
 
 } // namespace
@@ -1254,6 +1299,7 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
                     .tick = world.tick().value(),
                     .player_count = world.player_count(),
                     .food_count = world.food_count(),
+                    .current_player_position = current_player_position,
                     .occupied_grid_cells = world.occupied_spatial_cell_count(),
                     .snapshot_id = std::nullopt,
                     .transport = std::nullopt,

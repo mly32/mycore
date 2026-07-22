@@ -36,6 +36,7 @@ struct CircleInstance {
     float mass{};
     float radius{};
     CircleKind kind{};
+    protocol::EntityId entity_id;
 
     auto operator<=>(const CircleInstance&) const = default;
 };

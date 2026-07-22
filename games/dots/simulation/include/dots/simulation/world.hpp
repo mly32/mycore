@@ -49,6 +49,7 @@ public:
     [[nodiscard]] mycore::time::Tick tick() const noexcept;
 
     [[nodiscard]] bool apply_input(const InputCommand& command);
+    [[nodiscard]] bool stop_player(EntityId entity_id) noexcept;
     [[nodiscard]] bool step();
 
 private:

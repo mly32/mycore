@@ -184,6 +184,22 @@ disconnect event, removes the corresponding session and authoritative player, an
 reason. Abrupt process loss follows the same cleanup path after the transport detects failure,
 but cannot provide a graceful local-request event.
 
+Before a native graphical client tears down its networking instance, it requests a lingering
+transport close and drains endpoint callbacks for a bounded interval. The interval is the
+configured outgoing fake lag plus 50 ms, clamped from 50 ms to two seconds. This lets a delayed
+close notification leave the process; it does not wait indefinitely for an application-level ACK.
+
+The Dots server also has a gameplay-level liveness fallback. Ready clients normally submit valid
+input packets at 30 Hz; after 90 server ticks (three seconds) without one, the server logs a
+warning, closes the transport session, and removes the player. This prevents a lost connection
+from retaining its last movement forever while still tolerating ordinary packet loss. The timeout
+uses server ticks, not wall-clock sleeps, so it is deterministic in tests.
+
+Separately, Dots holds a player's last applied movement for at most five server ticks when its
+per-tick input queue runs dry. On the next missing-input tick it neutralizes movement but retains
+the connection until normal input resumes or the liveness timeout expires. This gameplay policy
+avoids indefinite movement during packet gaps without treating one missing packet as a disconnect.
+
 ## Native session startup and lifecycle
 
 There are three related but separate layers during startup:

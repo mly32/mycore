@@ -10,7 +10,6 @@
 namespace dots::presentation {
 namespace {
 
-constexpr float kFoodForFullGrowthColor = 8.0F;
 constexpr float kPredictedOutlineRadiusOffsetPixels = 1.0F;
 constexpr float kAuthoritativeOutlineRadiusOffsetPixels = 2.0F;
 constexpr float kPreCorrectionOutlineRadiusOffsetPixels = 3.0F;
@@ -27,10 +26,19 @@ lerp(mycore::render::Color from, mycore::render::Color to, float amount) noexcep
     };
 }
 
-[[nodiscard]] mycore::render::Color player_color(float mass, const Settings& settings) noexcept {
-    const auto gained_food = (mass - simulation::kInitialPlayerMass) / simulation::kFoodMass;
-    const auto growth = std::clamp(gained_food / kFoodForFullGrowthColor, 0.0F, 1.0F);
-    return lerp(settings.player, settings.player_growth, growth);
+[[nodiscard]] mycore::render::Color player_color(protocol::EntityId entity_id,
+                                                 const Settings& settings) noexcept {
+    if (!entity_id.is_valid()) {
+        return settings.player;
+    }
+    auto hash = entity_id.value();
+    hash ^= hash >> 16U;
+    hash *= 0x7FEB352DU;
+    hash ^= hash >> 15U;
+    hash *= 0x846CA68BU;
+    hash ^= hash >> 16U;
+    const auto palette_fraction = static_cast<float>(hash & 0xFFFFU) / 65'535.0F;
+    return lerp(settings.player, settings.player_growth, palette_fraction);
 }
 
 [[nodiscard]] bool finite(mycore::math::Vector2 value) noexcept {
@@ -200,6 +208,7 @@ FrameData extract_frame(const simulation::World& world,
                 .mass = *mass,
                 .radius = *radius,
                 .kind = kind,
+                .entity_id = protocol::EntityId{entity_id.value()},
             });
         }
     };
@@ -241,6 +250,7 @@ FrameData extract_interpolated_follow_frame(const simulation::World& world,
             .mass = *mass,
             .radius = *radius,
             .kind = CircleKind::PositionGhost,
+            .entity_id = protocol::EntityId{follow_target.entity_id.value()},
         });
     }
     return frame;
@@ -266,6 +276,7 @@ FrameData extract_replicated_frame(const replication::ReplicatedWorld& world,
             .radius = simulation::radius_for_mass(entity.mass),
             .kind =
                 entity.kind == protocol::EntityKind::Food ? CircleKind::Food : CircleKind::Player,
+            .entity_id = entity.entity_id,
         });
     }
     return frame;
@@ -300,13 +311,14 @@ FrameData extract_predicted_replicated_frame(const replication::ReplicatedWorld&
     frame.circles[controlled_index].position = controlled_player.presentation_position;
 
     const auto radius = simulation::radius_for_mass(controlled->mass);
-    const auto append_ghost = [&frame, controlled, radius](mycore::math::Vector2 position,
-                                                           CircleKind kind) {
+    const auto append_ghost = [&frame, controlled, radius, &controlled_player](
+                                  mycore::math::Vector2 position, CircleKind kind) {
         frame.circles.push_back({
             .position = position,
             .mass = controlled->mass,
             .radius = radius,
             .kind = kind,
+            .entity_id = controlled_player.entity_id,
         });
     };
     if (controlled_player.show_prediction_layers) {
@@ -359,6 +371,7 @@ extract_remote_interpolated_predicted_frame(const replication::ReplicatedWorld& 
             .radius = simulation::radius_for_mass(entity.mass),
             .kind =
                 entity.kind == protocol::EntityKind::Food ? CircleKind::Food : CircleKind::Player,
+            .entity_id = entity.entity_id,
         });
     }
     frame.circles.push_back({
@@ -366,6 +379,7 @@ extract_remote_interpolated_predicted_frame(const replication::ReplicatedWorld& 
         .mass = controlled->mass,
         .radius = simulation::radius_for_mass(controlled->mass),
         .kind = CircleKind::Player,
+        .entity_id = controlled_player.entity_id,
     });
     const auto append_remote_endpoint = [&frame](const RemoteEntitySample& entity,
                                                  CircleKind kind) {
@@ -374,6 +388,7 @@ extract_remote_interpolated_predicted_frame(const replication::ReplicatedWorld& 
             .mass = entity.mass,
             .radius = simulation::radius_for_mass(entity.mass),
             .kind = kind,
+            .entity_id = entity.entity_id,
         });
     };
     for (const auto& endpoints : remote_endpoints) {
@@ -398,19 +413,21 @@ extract_remote_interpolated_predicted_frame(const replication::ReplicatedWorld& 
                     .mass = 1.0F,
                     .radius = 0.0F,
                     .kind = kConnectorKinds[index],
+                    .entity_id = endpoints.older->entity_id,
                 });
             }
         }
     }
 
     const auto radius = simulation::radius_for_mass(controlled->mass);
-    const auto append_ghost = [&frame, controlled, radius](mycore::math::Vector2 position,
-                                                           CircleKind kind) {
+    const auto append_ghost = [&frame, controlled, radius, &controlled_player](
+                                  mycore::math::Vector2 position, CircleKind kind) {
         frame.circles.push_back({
             .position = position,
             .mass = controlled->mass,
             .radius = radius,
             .kind = kind,
+            .entity_id = controlled_player.entity_id,
         });
     };
     if (controlled_player.show_prediction_layers) {
@@ -526,7 +543,7 @@ mycore::render_2d::DrawList build_draw_list(const FrameData& frame, const Settin
             .center = circle.position,
             .radius = circle.radius,
             .color = circle.kind == CircleKind::Food ? settings.food
-                                                     : player_color(circle.mass, settings),
+                                                     : player_color(circle.entity_id, settings),
             .outline_color = {},
             .outline_width_pixels = 0.0F,
         });

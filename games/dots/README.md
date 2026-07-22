@@ -4,6 +4,9 @@ Dots is MyCore's first complete game vertical slice: an Agar.io-like game that d
 requirements for deterministic simulation, rendering, input, networking, replication,
 observability, and packaging.
 
+The [Dots gameplay guide](../../docs/dots_gameplay.md) is the canonical description of current
+rules, food, spawning, connection-loss behavior, presentation, and deferred mechanics.
+
 Commands below run from the repository root and use the macOS preset as an example. See the
 [build guide](../../docs/building.md) for other platforms.
 
@@ -72,6 +75,13 @@ reliability, connection lifecycle, impairment, prediction, and compensation mode
 The [networked prediction and time reference](../../docs/networked_prediction_reference.md)
 defines the distinct authoritative, predicted, remote-presentation, and screen-presentation
 states used by that model.
+
+The server removes a ready client that has supplied no valid input packet for three seconds. This
+is a liveness fallback for lost connections; a normal disconnect removes the player immediately.
+Native graphical clients drain a normal close for 50 ms plus configured fake outgoing lag (capped
+at two seconds), allowing the close notification to leave before process teardown.
+When input samples are briefly missing, the server holds the last movement for five ticks and then
+stops that player while keeping the session alive.
 
 The authoritative server assigns each joining player a distinct, deterministically shuffled
 spawn slot near the food field. Spawn position is included in the welcome-following full snapshot;
