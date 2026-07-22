@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -74,13 +75,23 @@ class DotsSessionLauncherTests(unittest.TestCase):
 
     def test_client_exit_stops_running_bots(self) -> None:
         marker = Path(self.directory.name) / "bot-stopped.txt"
-        result = dots_session.run_session(
-            self.command("server"),
-            [self.command("client", "0")],
-            [self.command("bot", str(marker))],
-        )
+        launched_processes = []
+        original_popen = subprocess.Popen
+
+        def start_process(*arguments, **keyword_arguments):
+            process = original_popen(*arguments, **keyword_arguments)
+            launched_processes.append(process)
+            return process
+
+        with mock.patch.object(dots_session.subprocess, "Popen", side_effect=start_process):
+            result = dots_session.run_session(
+                self.command("server"),
+                [self.command("client", "0")],
+                [self.command("bot", str(marker))],
+            )
         self.assertEqual(result, 0)
-        self.assertTrue(marker.is_file())
+        self.assertEqual(len(launched_processes), 3)
+        self.assertIsNotNone(launched_processes[2].poll())
 
     def test_session_waits_for_every_graphical_client(self) -> None:
         result = dots_session.run_session(

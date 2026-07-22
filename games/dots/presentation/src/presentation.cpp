@@ -392,28 +392,31 @@ extract_remote_interpolated_predicted_frame(const replication::ReplicatedWorld& 
         });
     };
     for (const auto& endpoints : remote_endpoints) {
-        if (endpoints.older) {
-            append_remote_endpoint(*endpoints.older, CircleKind::RemoteOlderEndpointGhost);
+        const auto& older_endpoint = endpoints.older;
+        const auto& newer_endpoint = endpoints.newer;
+        if (older_endpoint) {
+            append_remote_endpoint(*older_endpoint, CircleKind::RemoteOlderEndpointGhost);
         }
-        if (endpoints.newer) {
-            append_remote_endpoint(*endpoints.newer, CircleKind::RemoteNewerEndpointGhost);
+        if (newer_endpoint) {
+            append_remote_endpoint(*newer_endpoint, CircleKind::RemoteNewerEndpointGhost);
         }
-        if (endpoints.older && endpoints.newer) {
+        if (older_endpoint && newer_endpoint) {
+            const auto& older = *older_endpoint;
+            const auto& newer = *newer_endpoint;
             constexpr std::array kConnectorFractions{0.25F, 0.5F, 0.75F};
             constexpr std::array kConnectorKinds{
                 CircleKind::RemoteInterpolationConnectorStart,
                 CircleKind::RemoteInterpolationConnectorMiddle,
                 CircleKind::RemoteInterpolationConnectorEnd,
             };
-            const auto displacement = endpoints.newer->position - endpoints.older->position;
+            const auto displacement = newer.position - older.position;
             for (std::size_t index = 0; index < kConnectorFractions.size(); ++index) {
                 frame.circles.push_back({
-                    .position =
-                        endpoints.older->position + (displacement * kConnectorFractions[index]),
+                    .position = older.position + (displacement * kConnectorFractions[index]),
                     .mass = 1.0F,
                     .radius = 0.0F,
                     .kind = kConnectorKinds[index],
-                    .entity_id = endpoints.older->entity_id,
+                    .entity_id = older.entity_id,
                 });
             }
         }
