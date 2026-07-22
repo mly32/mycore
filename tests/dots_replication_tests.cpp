@@ -8,7 +8,7 @@
 TEST_CASE("Full snapshots map and sort authoritative entities", "[dots][replication]") {
     dots::simulation::World world;
     const auto food = world.spawn_food({3.0F, 4.0F});
-    const auto player = world.spawn_player({1.0F, 2.0F});
+    const auto player = world.spawn_player(dots::simulation::PlayerOwnerId{0}, {1.0F, 2.0F});
     REQUIRE(food.has_value());
     REQUIRE(player.has_value());
 

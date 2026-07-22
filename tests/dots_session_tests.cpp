@@ -178,7 +178,7 @@ TEST_CASE("Two in-memory clients receive authoritative identities and snapshots"
     REQUIRE(first_spawn.has_value());
     REQUIRE(second_spawn.has_value());
     CHECK(*first_spawn != *second_spawn);
-    CHECK(*first_spawn != mycore::math::Vector2{});
+    CHECK(*first_spawn == mycore::math::Vector2{});
     CHECK(*second_spawn != mycore::math::Vector2{});
     REQUIRE(first.world().player_count() == 1);
     REQUIRE(second.world().player_count() == 2);
@@ -207,8 +207,8 @@ TEST_CASE("Authoritative input moves only the owning player and is acknowledged"
     const auto* second_entity = first.world().find(second.controlled_entity_id());
     REQUIRE(first_entity != nullptr);
     REQUIRE(second_entity != nullptr);
-    CHECK(first_entity->position_x == Catch::Approx(-59.6F));
-    CHECK(second_entity->position_x == Catch::Approx(4.0F));
+    CHECK(first_entity->position_x == Catch::Approx(0.4F));
+    CHECK(second_entity->position_x == Catch::Approx(12.0F));
     CHECK(first.world().last_processed_input_id() == dots::protocol::InputSequenceId{0});
     CHECK_FALSE(second.world().last_processed_input_id().is_valid());
 }

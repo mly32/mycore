@@ -1151,7 +1151,7 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
     }
 
     dots::simulation::World world;
-    const auto player = world.spawn_player();
+    const auto player = world.spawn_player(dots::simulation::PlayerOwnerId{0});
     if (!player) {
         throw dots::client::StartupError{"Could not spawn the local player"};
     }

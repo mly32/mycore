@@ -3,6 +3,7 @@
 #include "dots/protocol/codec.hpp"
 #include "dots/replication/replication.hpp"
 #include "dots/simulation/input_command.hpp"
+#include "dots/simulation/world_setup.hpp"
 #include "mycore/debug/log.hpp"
 #include "mycore/math/vector2.hpp"
 
@@ -41,6 +42,7 @@ disconnect_reason_name(mycore::net_transport::DisconnectReason reason) noexcept 
 struct Session {
     ConnectionHandle connection;
     protocol::ClientId client_id;
+    simulation::PlayerOwnerId owner_id;
     simulation::EntityId player_id;
     protocol::InputSequenceId last_processed_input_id;
     std::map<std::uint32_t, protocol::InputSample> pending_inputs;
@@ -49,7 +51,7 @@ struct Session {
     std::uint32_t next_snapshot_id{};
 
     [[nodiscard]] bool ready() const noexcept {
-        return client_id.is_valid() && player_id.is_valid();
+        return client_id.is_valid() && owner_id.is_valid() && player_id.is_valid();
     }
 };
 
@@ -58,36 +60,6 @@ enum class InputEnqueueResult : std::uint8_t {
     ConflictingDuplicate,
     Overflow,
 };
-
-inline constexpr std::size_t kSpawnColumns = 11;
-inline constexpr std::size_t kSpawnRows = 7;
-inline constexpr std::size_t kSpawnPointCount = kSpawnColumns * kSpawnRows;
-inline constexpr std::size_t kSpawnStride = 37;
-inline constexpr std::size_t kSpawnOffset = 23;
-
-[[nodiscard]] mycore::math::Vector2 spawn_position(std::uint32_t ordinal) noexcept {
-    const auto slot =
-        (static_cast<std::size_t>(ordinal) * kSpawnStride + kSpawnOffset) % kSpawnPointCount;
-    const auto column = slot % kSpawnColumns;
-    const auto row = slot / kSpawnColumns;
-    return {
-        -76.0F + (static_cast<float>(column) * 16.0F),
-        -44.0F + (static_cast<float>(row) * 16.0F),
-    };
-}
-
-[[nodiscard]] bool spawn_is_clear(const simulation::World& world,
-                                  mycore::math::Vector2 candidate) noexcept {
-    constexpr auto kMinimumDistanceSquared = 64.0F;
-    for (const auto player_id : world.player_ids()) {
-        const auto current_position = world.position(player_id);
-        if (current_position &&
-            mycore::math::length_squared(*current_position - candidate) < kMinimumDistanceSquared) {
-            return false;
-        }
-    }
-    return true;
-}
 
 } // namespace
 
@@ -108,6 +80,7 @@ public:
                                           Session{
                                               .connection = connected->connection,
                                               .client_id = {},
+                                              .owner_id = {},
                                               .player_id = {},
                                               .last_processed_input_id = {},
                                               .pending_inputs = {},
@@ -286,22 +259,24 @@ private:
         if (next_client_id_ == protocol::ClientId::kInvalidValue) {
             return RuntimeError::ClientIdExhausted;
         }
-        auto player = std::optional<simulation::EntityId>{};
-        for (std::size_t attempt = 0; attempt < kSpawnPointCount; ++attempt) {
-            const auto position = spawn_position(next_spawn_ordinal_++);
-            if (!spawn_is_clear(world_, position)) {
-                continue;
-            }
-            player = world_.spawn_player(position);
-            if (player) {
-                break;
-            }
+        if (next_owner_id_ == simulation::PlayerOwnerId::kInvalidValue) {
+            return RuntimeError::PlayerOwnerIdExhausted;
         }
-        if (!player) {
+
+        const auto owner_id = simulation::PlayerOwnerId{next_owner_id_};
+        const auto spawn_result = simulation::spawn_player_safely(world_, owner_id);
+        const auto* player = std::get_if<simulation::EntityId>(&spawn_result);
+        if (player == nullptr) {
+            if (std::get<simulation::SafePlayerSpawnError>(spawn_result) ==
+                simulation::SafePlayerSpawnError::NoSafePosition) {
+                return RuntimeError::NoSafeSpawn;
+            }
             return RuntimeError::EntityIdExhausted;
         }
 
         session.client_id = protocol::ClientId{next_client_id_++};
+        session.owner_id = owner_id;
+        ++next_owner_id_;
         session.player_id = *player;
         const auto connection = session.connection;
         const protocol::ServerWelcome welcome{
@@ -446,8 +421,8 @@ private:
     simulation::World world_;
     RuntimeSettings settings_;
     std::unordered_map<std::uint32_t, Session> sessions_;
-    std::uint32_t next_spawn_ordinal_{};
     std::uint32_t next_client_id_{};
+    std::uint32_t next_owner_id_{};
     std::size_t rejected_packet_count_{};
 };
 

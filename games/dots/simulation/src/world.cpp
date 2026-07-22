@@ -10,6 +10,12 @@ namespace {
 struct FoodConsumption {
     EntityId food_id;
     EntityId player_id;
+    std::size_t player_index{};
+};
+
+struct PlayerAbsorptionCandidate {
+    std::size_t absorber_index{};
+    std::size_t victim_index{};
 };
 
 template <typename T> void reserve_for_append(std::vector<T>& values) {
@@ -22,11 +28,12 @@ template <typename T> void reserve_for_append(std::vector<T>& values) {
 
 } // namespace
 
-std::optional<EntityId> World::spawn_player(mycore::math::Vector2 position) {
+std::optional<EntityId> World::spawn_player(PlayerOwnerId owner_id,
+                                            mycore::math::Vector2 position) {
     const auto entity_id = next_entity_id();
     const auto radius = radius_for_mass(kInitialPlayerMass);
     const Circle bounds{.center = position, .radius = radius};
-    if (!entity_id || !spatial_grid_.can_index(bounds)) {
+    if (!owner_id.is_valid() || !entity_id || !spatial_grid_.can_index(bounds)) {
         return std::nullopt;
     }
 
@@ -37,6 +44,7 @@ std::optional<EntityId> World::spawn_player(mycore::math::Vector2 position) {
 
     const auto index = entity_ids_.size();
     entity_ids_.push_back(*entity_id);
+    owner_ids_.push_back(owner_id);
     positions_.push_back(position);
     movements_.emplace_back();
     last_input_ids_.emplace_back();
@@ -60,6 +68,7 @@ bool World::remove_player(EntityId entity_id) {
     if (*index != last_index) {
         const auto moved_entity_id = entity_ids_[last_index];
         entity_ids_[*index] = entity_ids_[last_index];
+        owner_ids_[*index] = owner_ids_[last_index];
         positions_[*index] = positions_[last_index];
         movements_[*index] = movements_[last_index];
         last_input_ids_[*index] = last_input_ids_[last_index];
@@ -70,6 +79,7 @@ bool World::remove_player(EntityId entity_id) {
     }
 
     entity_ids_.pop_back();
+    owner_ids_.pop_back();
     positions_.pop_back();
     movements_.pop_back();
     last_input_ids_.pop_back();
@@ -146,6 +156,14 @@ std::span<const EntityId> World::food_ids() const noexcept {
     return food_entity_ids_;
 }
 
+std::optional<PlayerOwnerId> World::player_owner(EntityId entity_id) const noexcept {
+    const auto index = find_index(entity_id);
+    if (!index) {
+        return std::nullopt;
+    }
+    return owner_ids_[*index];
+}
+
 std::optional<mycore::math::Vector2> World::position(EntityId entity_id) const noexcept {
     const auto* location = find_location(entity_id);
     if (location == nullptr) {
@@ -179,8 +197,38 @@ std::optional<float> World::radius(EntityId entity_id) const noexcept {
     return radius_for_mass(kFoodMass);
 }
 
+bool World::has_available_entity_id() const noexcept {
+    return next_entity_id().has_value();
+}
+
+bool World::can_index_initial_player(mycore::math::Vector2 position) const noexcept {
+    return spatial_grid_.can_index(
+        {.center = position, .radius = radius_for_mass(kInitialPlayerMass)});
+}
+
+bool World::is_initial_player_spawn_clear(mycore::math::Vector2 position) const {
+    const Circle candidate_circle{.center = position,
+                                  .radius = radius_for_mass(kInitialPlayerMass)};
+    if (!spatial_grid_.can_index(candidate_circle)) {
+        return false;
+    }
+    for (const auto candidate : spatial_grid_.query(candidate_circle)) {
+        const auto player_index = find_index(candidate);
+        if (player_index && circles_overlap(candidate_circle,
+                                            {.center = positions_[*player_index],
+                                             .radius = radii_[*player_index]})) {
+            return false;
+        }
+    }
+    return true;
+}
+
 mycore::time::Tick World::tick() const noexcept {
     return tick_;
+}
+
+std::span<const PlayerAbsorbed> World::last_step_events() const noexcept {
+    return last_step_events_;
 }
 
 bool World::apply_input(const InputCommand& command) {
@@ -224,16 +272,165 @@ bool World::step() {
         next_positions.push_back(next_position);
     }
 
-    for (std::size_t index = 0; index < positions_.size(); ++index) {
+    SpatialGrid collision_grid{kSpatialGridCellSize};
+    for (std::size_t index = 0; index < entity_ids_.size(); ++index) {
+        if (!collision_grid.insert(entity_ids_[index],
+                                   {.center = next_positions[index], .radius = radii_[index]})) {
+            throw std::logic_error{"Player could not enter the Dots collision-phase grid"};
+        }
+    }
+
+    std::vector<PlayerAbsorptionCandidate> absorption_candidates;
+    for (std::size_t first = 0; first < entity_ids_.size(); ++first) {
+        const Circle first_circle{.center = next_positions[first], .radius = radii_[first]};
+        for (const auto candidate_id : collision_grid.query(first_circle)) {
+            const auto second_index = find_index(candidate_id);
+            if (!second_index || *second_index <= first) {
+                continue;
+            }
+            const auto second = *second_index;
+            if (owner_ids_[first] == owner_ids_[second]) {
+                continue;
+            }
+            const Circle second_circle{.center = next_positions[second], .radius = radii_[second]};
+            if (!circles_overlap(first_circle, second_circle) ||
+                masses_[first] == masses_[second]) {
+                continue;
+            }
+            if (masses_[first] > masses_[second]) {
+                absorption_candidates.push_back({.absorber_index = first, .victim_index = second});
+            } else {
+                absorption_candidates.push_back({.absorber_index = second, .victim_index = first});
+            }
+        }
+    }
+
+    std::sort(absorption_candidates.begin(),
+              absorption_candidates.end(),
+              [this](const PlayerAbsorptionCandidate& lhs, const PlayerAbsorptionCandidate& rhs) {
+                  const auto lhs_mass = masses_[lhs.absorber_index];
+                  const auto rhs_mass = masses_[rhs.absorber_index];
+                  if (lhs_mass != rhs_mass) {
+                      return lhs_mass > rhs_mass;
+                  }
+                  const auto lhs_absorber = entity_ids_[lhs.absorber_index];
+                  const auto rhs_absorber = entity_ids_[rhs.absorber_index];
+                  if (lhs_absorber != rhs_absorber) {
+                      return lhs_absorber < rhs_absorber;
+                  }
+                  return entity_ids_[lhs.victim_index] < entity_ids_[rhs.victim_index];
+              });
+
+    std::vector<bool> live_players(entity_ids_.size(), true);
+    std::vector<float> mass_gains(entity_ids_.size());
+    std::vector<PlayerAbsorbed> next_events;
+    next_events.reserve(absorption_candidates.size());
+    auto completed_tick = tick_;
+    completed_tick += mycore::time::TickDelta{1};
+    for (const auto& candidate : absorption_candidates) {
+        if (!live_players[candidate.absorber_index] || !live_players[candidate.victim_index]) {
+            continue;
+        }
+        live_players[candidate.victim_index] = false;
+        mass_gains[candidate.absorber_index] += masses_[candidate.victim_index];
+        next_events.push_back({
+            .tick = completed_tick,
+            .absorber_entity_id = entity_ids_[candidate.absorber_index],
+            .victim_entity_id = entity_ids_[candidate.victim_index],
+            .absorber_owner_id = owner_ids_[candidate.absorber_index],
+            .victim_owner_id = owner_ids_[candidate.victim_index],
+            .transferred_mass = masses_[candidate.victim_index],
+        });
+    }
+
+    std::vector<FoodConsumption> food_consumptions;
+    for (std::size_t player_index = 0; player_index < entity_ids_.size(); ++player_index) {
+        if (!live_players[player_index]) {
+            continue;
+        }
+        const Circle player_circle{.center = next_positions[player_index],
+                                   .radius = radii_[player_index]};
+        for (const auto candidate : spatial_grid_.query(player_circle)) {
+            const auto food_index = find_food_index(candidate);
+            if (!food_index) {
+                continue;
+            }
+            const Circle food_circle{.center = food_positions_[*food_index],
+                                     .radius = radius_for_mass(kFoodMass)};
+            if (circles_overlap(player_circle, food_circle)) {
+                food_consumptions.push_back({
+                    .food_id = candidate,
+                    .player_id = entity_ids_[player_index],
+                    .player_index = player_index,
+                });
+            }
+        }
+    }
+    std::sort(food_consumptions.begin(),
+              food_consumptions.end(),
+              [](const FoodConsumption& lhs, const FoodConsumption& rhs) {
+                  if (lhs.food_id != rhs.food_id) {
+                      return lhs.food_id < rhs.food_id;
+                  }
+                  return lhs.player_id < rhs.player_id;
+              });
+
+    std::vector<EntityId> consumed_food_ids;
+    auto last_food_id = EntityId::invalid();
+    for (const auto& consumption : food_consumptions) {
+        if (consumption.food_id == last_food_id) {
+            continue;
+        }
+        last_food_id = consumption.food_id;
+        mass_gains[consumption.player_index] += kFoodMass;
+        consumed_food_ids.push_back(consumption.food_id);
+    }
+
+    std::vector<float> next_radii = radii_;
+    for (std::size_t index = 0; index < entity_ids_.size(); ++index) {
+        if (!live_players[index]) {
+            continue;
+        }
+        next_radii[index] = radius_for_mass(masses_[index] + mass_gains[index]);
+        if (!spatial_grid_.can_index(
+                {.center = next_positions[index], .radius = next_radii[index]})) {
+            return false;
+        }
+    }
+
+    for (std::size_t index = 0; index < entity_ids_.size(); ++index) {
+        if (!live_players[index]) {
+            continue;
+        }
         if (!spatial_grid_.update(entity_ids_[index],
-                                  {.center = next_positions[index], .radius = radii_[index]})) {
+                                  {.center = next_positions[index], .radius = next_radii[index]})) {
             throw std::logic_error{"Player could not be updated in the Dots spatial grid"};
         }
         positions_[index] = next_positions[index];
+        masses_[index] += mass_gains[index];
+        radii_[index] = next_radii[index];
     }
 
-    resolve_food_collisions();
+    std::vector<EntityId> removed_player_ids;
+    removed_player_ids.reserve(entity_ids_.size());
+    for (std::size_t index = 0; index < entity_ids_.size(); ++index) {
+        if (!live_players[index]) {
+            removed_player_ids.push_back(entity_ids_[index]);
+        }
+    }
+    for (const auto entity_id : removed_player_ids) {
+        if (!remove_player(entity_id)) {
+            throw std::logic_error{"Absorbed player could not be removed from the Dots World"};
+        }
+    }
+    for (const auto food_id : consumed_food_ids) {
+        if (!remove_food(food_id)) {
+            throw std::logic_error{"Consumed food could not be removed from the Dots World"};
+        }
+    }
+
     tick_ += mycore::time::TickDelta{1};
+    last_step_events_ = std::move(next_events);
     return true;
 }
 
@@ -277,6 +474,7 @@ std::optional<EntityId> World::next_entity_id() const noexcept {
 
 void World::reserve_player_capacity() {
     reserve_for_append(entity_ids_);
+    reserve_for_append(owner_ids_);
     reserve_for_append(positions_);
     reserve_for_append(movements_);
     reserve_for_append(last_input_ids_);
@@ -289,102 +487,6 @@ void World::reserve_food_capacity() {
     reserve_for_append(food_entity_ids_);
     reserve_for_append(food_positions_);
     reserve_for_append(entity_locations_);
-}
-
-void World::resolve_food_collisions() {
-    if (food_entity_ids_.empty()) {
-        return;
-    }
-
-    // Gather every overlap before changing mass so growth only affects the following tick.
-    std::vector<FoodConsumption> consumptions;
-    for (std::size_t player_index = 0; player_index < entity_ids_.size(); ++player_index) {
-        const Circle player_circle{.center = positions_[player_index],
-                                   .radius = radii_[player_index]};
-        const auto candidates = spatial_grid_.query(player_circle);
-        for (const auto candidate : candidates) {
-            const auto food_index = find_food_index(candidate);
-            if (!food_index) {
-                continue;
-            }
-
-            const Circle food_circle{.center = food_positions_[*food_index],
-                                     .radius = radius_for_mass(kFoodMass)};
-            if (circles_overlap(player_circle, food_circle)) {
-                consumptions.push_back(
-                    {.food_id = candidate, .player_id = entity_ids_[player_index]});
-            }
-        }
-    }
-
-    if (consumptions.empty()) {
-        return;
-    }
-
-    std::sort(consumptions.begin(),
-              consumptions.end(),
-              [](const FoodConsumption& lhs, const FoodConsumption& rhs) {
-                  if (lhs.food_id != rhs.food_id) {
-                      return lhs.food_id < rhs.food_id;
-                  }
-                  return lhs.player_id < rhs.player_id;
-              });
-
-    std::vector<float> mass_gains(entity_ids_.size());
-    auto last_food_id = EntityId::invalid();
-    for (const auto& consumption : consumptions) {
-        if (consumption.food_id == last_food_id) {
-            continue;
-        }
-        last_food_id = consumption.food_id;
-        const auto player_index = find_index(consumption.player_id);
-        if (!player_index) {
-            throw std::logic_error{"Food consumption references an unknown player"};
-        }
-        mass_gains[*player_index] += kFoodMass;
-    }
-
-    auto next_radii = radii_;
-    for (std::size_t player_index = 0; player_index < entity_ids_.size(); ++player_index) {
-        if (mass_gains[player_index] == 0.0F) {
-            continue;
-        }
-        const auto next_radius = radius_for_mass(masses_[player_index] + mass_gains[player_index]);
-        if (!spatial_grid_.can_index({.center = positions_[player_index], .radius = next_radius})) {
-            throw std::overflow_error{"Player growth exceeds the Dots spatial-grid range"};
-        }
-        next_radii[player_index] = next_radius;
-    }
-
-    for (std::size_t player_index = 0; player_index < entity_ids_.size(); ++player_index) {
-        if (mass_gains[player_index] == 0.0F) {
-            continue;
-        }
-        masses_[player_index] += mass_gains[player_index];
-        radii_[player_index] = next_radii[player_index];
-    }
-
-    last_food_id = EntityId::invalid();
-    for (const auto& consumption : consumptions) {
-        if (consumption.food_id == last_food_id) {
-            continue;
-        }
-        last_food_id = consumption.food_id;
-        if (!remove_food(consumption.food_id)) {
-            throw std::logic_error{"Food consumption references unknown food"};
-        }
-    }
-
-    for (std::size_t player_index = 0; player_index < entity_ids_.size(); ++player_index) {
-        if (mass_gains[player_index] == 0.0F) {
-            continue;
-        }
-        if (!spatial_grid_.update(
-                entity_ids_[player_index],
-                {.center = positions_[player_index], .radius = radii_[player_index]})) {
-            throw std::logic_error{"Player growth could not update the Dots spatial grid"};
-        }
-    }
 }
 
 } // namespace dots::simulation

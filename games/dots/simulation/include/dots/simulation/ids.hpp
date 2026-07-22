@@ -8,8 +8,10 @@ namespace dots::simulation {
 
 struct EntityIdTag;
 struct InputCommandIdTag;
+struct PlayerOwnerIdTag;
 
 using EntityId = mycore::core::StrongId<EntityIdTag, std::uint32_t>;
 using InputCommandId = mycore::core::StrongId<InputCommandIdTag, std::uint32_t>;
+using PlayerOwnerId = mycore::core::StrongId<PlayerOwnerIdTag, std::uint32_t>;
 
 } // namespace dots::simulation
