@@ -202,6 +202,9 @@ Do not start a checkpoint until the preceding checkpoint is reviewed and approve
 - [x] Add player ownership and deterministic safe-spawn selection.
 - [x] Add absorption arbitration, mass transfer, removal, and step events.
 - [x] Define player/food ordering and mass-conservation invariants in tests.
+- [x] Keep protocol-v2 server sessions in a temporary shared-owner compatibility group so the
+  simulation checkpoint cannot remove a client's permanent controlled entity. Phase 13.2
+  replaces this gate with distinct owners and durable lifecycle replication.
 - [ ] Phase 13.1 approved.
 
 ### Phase 13.2: Protocol and session lifecycle

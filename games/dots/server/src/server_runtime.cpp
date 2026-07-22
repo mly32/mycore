@@ -61,6 +61,10 @@ enum class InputEnqueueResult : std::uint8_t {
     Overflow,
 };
 
+// Protocol v2 cannot represent defeat or a missing controlled entity. Keep current network
+// sessions in one non-contested ownership group until Feature 13.2 adds the v3 lifecycle.
+inline constexpr simulation::PlayerOwnerId kLegacySharedOwnerId{0};
+
 } // namespace
 
 class Runtime::Impl {
@@ -259,12 +263,7 @@ private:
         if (next_client_id_ == protocol::ClientId::kInvalidValue) {
             return RuntimeError::ClientIdExhausted;
         }
-        if (next_owner_id_ == simulation::PlayerOwnerId::kInvalidValue) {
-            return RuntimeError::PlayerOwnerIdExhausted;
-        }
-
-        const auto owner_id = simulation::PlayerOwnerId{next_owner_id_};
-        const auto spawn_result = simulation::spawn_player_safely(world_, owner_id);
+        const auto spawn_result = simulation::spawn_player_safely(world_, kLegacySharedOwnerId);
         const auto* player = std::get_if<simulation::EntityId>(&spawn_result);
         if (player == nullptr) {
             if (std::get<simulation::SafePlayerSpawnError>(spawn_result) ==
@@ -275,8 +274,7 @@ private:
         }
 
         session.client_id = protocol::ClientId{next_client_id_++};
-        session.owner_id = owner_id;
-        ++next_owner_id_;
+        session.owner_id = kLegacySharedOwnerId;
         session.player_id = *player;
         const auto connection = session.connection;
         const protocol::ServerWelcome welcome{
@@ -422,7 +420,6 @@ private:
     RuntimeSettings settings_;
     std::unordered_map<std::uint32_t, Session> sessions_;
     std::uint32_t next_client_id_{};
-    std::uint32_t next_owner_id_{};
     std::size_t rejected_packet_count_{};
 };
 

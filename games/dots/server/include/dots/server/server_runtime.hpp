@@ -12,7 +12,6 @@ namespace dots::server {
 
 enum class RuntimeError : std::uint8_t {
     ClientIdExhausted,
-    PlayerOwnerIdExhausted,
     EntityIdExhausted,
     NoSafeSpawn,
     SnapshotIdExhausted,

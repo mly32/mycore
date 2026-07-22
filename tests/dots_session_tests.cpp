@@ -173,6 +173,10 @@ TEST_CASE("Two in-memory clients receive authoritative identities and snapshots"
     REQUIRE(first.controlled_entity_id() != second.controlled_entity_id());
     REQUIRE(server.client_count() == 2);
     REQUIRE(server.world().player_count() == 2);
+    // Protocol v2 cannot represent defeat. Phase 13.1 keeps network sessions in a temporary
+    // shared ownership group until Feature 13.2 adds the durable spectator lifecycle.
+    CHECK(server.world().player_owner(server.world().player_ids()[0]) ==
+          server.world().player_owner(server.world().player_ids()[1]));
     const auto first_spawn = server.world().position(server.world().player_ids()[0]);
     const auto second_spawn = server.world().position(server.world().player_ids()[1]);
     REQUIRE(first_spawn.has_value());
