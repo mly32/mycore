@@ -185,19 +185,19 @@ the cursor backward.
 
 ## Remote Debug Visualization
 
-Add ImGui selection of one remote entity ID, defaulting to the lowest remote player ID when the
-current selection is absent.
-
-For the selected entity:
+For every remote player:
 
 - Filled circle: actual interpolated presentation.
 - Cyan outline: older known authoritative sample.
 - Blue outline: newer known authoritative sample.
-- Panel values: entity ID, endpoint snapshot IDs/ticks, endpoint values, cursor tick, and alpha.
+- Cyan-to-blue dots: short connector from older toward newer endpoint.
 
-Add a session-only ImGui toggle, **Draw brackets for all remotes**, default off. When enabled,
-draw the cyan/blue endpoint outlines for every remote entity. The selected-entity view remains
-available when the all-remote view is disabled.
+The Interpolation tab reports cursor tick and alpha plus endpoint snapshot IDs, ticks, and values
+for the lowest-ID sampled remote player as a representative example. It does not provide a
+per-entity selector.
+
+**Show remote endpoint outlines**, default on, hides every remote player's endpoint colors and
+connector without changing the interpolated remote fill, buffered state, or simulation.
 
 Keep Feature 12 colors distinct from Feature 11's local orange/white/magenta prediction layers.
 Do not describe interpolated positions as replicated or authoritative state.

@@ -203,8 +203,9 @@ Add interactive debug controls:
 
 Show active drop progress followed by a two-second completion receipt, disable overlapping drop
 bursts, and keep injected drops separate from transport-reported loss. Organize the observability
-window into Runtime, Network, Prediction, and Tools tabs so prediction debugging does not force
-unrelated metrics or interactive controls into one scrolling column.
+UI into two panes: a left **Session** pane with **Runtime** and **Network** tabs, and a right
+**Diagnostics** pane with **Prediction**, **Interpolation** when available, and **Tools** tabs.
+This keeps related information easy to find without one oversized pane.
 
 ## Clock Drift and Buffer Sizing
 

@@ -1,9 +1,8 @@
+#include "dots/app_cli/app_cli.hpp"
 #include "dots/client/client_app.hpp"
 #include "dots/client/client_config.hpp"
 #include "mycore/debug/log.hpp"
 
-#include <charconv>
-#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
@@ -63,25 +62,6 @@ struct CliOptions {
     bool help{};
 };
 
-std::uint32_t parse_unsigned(std::string_view value, std::string_view option) {
-    std::uint32_t result{};
-    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), result);
-    if (error != std::errc{} || end != value.data() + value.size()) {
-        throw CliError{std::string{option} + " requires a non-negative integer"};
-    }
-    return result;
-}
-
-float parse_percent(std::string_view value, std::string_view option) {
-    float result{};
-    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), result);
-    if (error != std::errc{} || end != value.data() + value.size() || !std::isfinite(result) ||
-        result < 0.0F || result > 100.0F) {
-        throw CliError{std::string{option} + " requires a number in the range 0..100"};
-    }
-    return result;
-}
-
 void select_network_mode(CliOptions& options, dots::client::NetworkMode mode) {
     if (options.network_mode) {
         throw CliError{"--offline, --in-memory, and --connect are mutually exclusive"};
@@ -114,35 +94,15 @@ CliOptions parse_arguments(int argc, char** argv) {
             continue;
         }
         if (argument == "--connect") {
-            if (index + 1 >= argc) {
-                throw CliError{"--connect requires an address"};
-            }
             select_network_mode(options, dots::client::NetworkMode::Native);
-            options.connect_address = argv[++index];
-            const auto address =
-                mycore::net_transport::NetworkAddress::parse(*options.connect_address);
-            if (!address || address->port() == 0) {
-                throw CliError{
-                    "--connect requires a numeric IPv4 or bracketed IPv6 address with a port"};
-            }
-            options.connect_address = address->value();
+            options.connect_address =
+                dots::app_cli::parse_connect_address(
+                    dots::app_cli::require_option_value(index, argc, argv, argument), argument)
+                    .value();
             continue;
         }
-        if (argument == "--fake-lag-ms") {
-            if (index + 1 >= argc) {
-                throw CliError{"--fake-lag-ms requires a value"};
-            }
-            options.impairment.outgoing_lag_milliseconds =
-                parse_unsigned(argv[++index], "--fake-lag-ms");
-            options.impairment_specified = true;
-            continue;
-        }
-        if (argument == "--fake-loss-percent") {
-            if (index + 1 >= argc) {
-                throw CliError{"--fake-loss-percent requires a value"};
-            }
-            options.impairment.outgoing_loss_percent =
-                parse_percent(argv[++index], "--fake-loss-percent");
+        if (dots::app_cli::consume_network_impairment_option(
+                argument, index, argc, argv, options.impairment)) {
             options.impairment_specified = true;
             continue;
         }
@@ -211,6 +171,9 @@ int main(int argc, char** argv) {
         }
         return dots::client::run_client(config, run_options);
     } catch (const CliError& error) {
+        mycore::debug::log_error("dots.client", "{}", error.what());
+        std::cerr << "dots_client: " << error.what() << "\n\n" << kHelp;
+    } catch (const dots::app_cli::ParseError& error) {
         mycore::debug::log_error("dots.client", "{}", error.what());
         std::cerr << "dots_client: " << error.what() << "\n\n" << kHelp;
     } catch (const std::exception& error) {

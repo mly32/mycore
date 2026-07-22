@@ -284,7 +284,7 @@ coincident outlines visible.
 
 ### Current prediction fault controls
 
-The **Tools** tab owns these controls:
+The **Tools** tab in the right-hand **Diagnostics** pane owns these controls:
 
 - Inject `+1` world unit of client-only X or Y prediction error.
 - Force `+1` world unit of client-only position drift along the last non-zero movement direction.
@@ -296,8 +296,9 @@ The **Tools** tab owns these controls:
 - Show/hide state layers and replay markers.
 - Clear retained correction visuals.
 
-The layer and replay toggles default on. During an injected-drop burst, the Prediction tab shows
-completed and remaining drop counts and disables starting an overlapping burst. Completion is
+The layer and replay toggles default on. During an injected-drop burst, the **Prediction** tab in
+the right-hand **Diagnostics** pane shows completed and remaining drop counts and disables
+starting an overlapping burst. Completion is
 retained as a green receipt for two seconds, even when catch-up consumes all three drops between
 rendered frames. Suppressed sends still record and predict their input exactly as deliberate
 network loss would. Injected drops have a separate counter and are never added to transport
@@ -309,7 +310,7 @@ Feature 12 uses a 32-sample presentation buffer and a remote render cursor delay
 ticks, currently 200 ms. The client receives every accepted snapshot from a runtime poll, then
 adapts it into the renderer-free remote history.
 
-The **Interpolation** tab reports:
+The **Interpolation** tab in the right-hand **Diagnostics** pane reports:
 
 | Field | Meaning |
 |---|---|
@@ -327,16 +328,19 @@ The **Interpolation** tab reports:
 
 ### Feature 12 world-space legend
 
-For the selected remote player (the lowest currently sampled player by default; select an ID in
-the Tools tab):
+For every remote player:
 
 - Filled circle: interpolated presentation.
 - Cyan outline: older known authoritative endpoint.
 - Blue outline: newer known authoritative endpoint.
+- Cyan-to-blue dots: short connector from the older endpoint toward the newer endpoint.
 
-The **Draw brackets for all remotes** Tools toggle defaults off to avoid clutter and unnecessary
-debug draw cost at scale. The Interpolation tab also lists the selected endpoint values. Endpoint
-circles are debug-only and never feed presentation or gameplay state.
+**Show remote endpoint outlines** controls the cyan/blue outlines and their cyan-to-blue
+connectors for every remote player without changing remote interpolation or gameplay. Cyan is the
+older bracket endpoint; blue is the newer endpoint that the delayed cursor is approaching. The
+**Interpolation** tab lists endpoint values for the lowest-ID sampled remote player as a
+representative example. Endpoint circles are debug-only and never feed presentation or gameplay
+state.
 
 Feature 12 presentation-clock correction and future local input-clock synchronization solve
 different problems. Feature 12 keeps a delayed remote cursor centered in known snapshots. A

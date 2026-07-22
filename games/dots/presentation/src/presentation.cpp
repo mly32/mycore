@@ -15,6 +15,7 @@ constexpr float kPredictedOutlineRadiusOffsetPixels = 1.0F;
 constexpr float kAuthoritativeOutlineRadiusOffsetPixels = 2.0F;
 constexpr float kPreCorrectionOutlineRadiusOffsetPixels = 3.0F;
 constexpr float kReplayMarkerRadiusPixels = 3.0F;
+constexpr float kRemoteInterpolationConnectorRadiusPixels = 1.5F;
 
 [[nodiscard]] mycore::render::Color
 lerp(mycore::render::Color from, mycore::render::Color to, float amount) noexcept {
@@ -382,6 +383,24 @@ extract_remote_interpolated_predicted_frame(const replication::ReplicatedWorld& 
         if (endpoints.newer) {
             append_remote_endpoint(*endpoints.newer, CircleKind::RemoteNewerEndpointGhost);
         }
+        if (endpoints.older && endpoints.newer) {
+            constexpr std::array kConnectorFractions{0.25F, 0.5F, 0.75F};
+            constexpr std::array kConnectorKinds{
+                CircleKind::RemoteInterpolationConnectorStart,
+                CircleKind::RemoteInterpolationConnectorMiddle,
+                CircleKind::RemoteInterpolationConnectorEnd,
+            };
+            const auto displacement = endpoints.newer->position - endpoints.older->position;
+            for (std::size_t index = 0; index < kConnectorFractions.size(); ++index) {
+                frame.circles.push_back({
+                    .position =
+                        endpoints.older->position + (displacement * kConnectorFractions[index]),
+                    .mass = 1.0F,
+                    .radius = 0.0F,
+                    .kind = kConnectorKinds[index],
+                });
+            }
+        }
     }
 
     const auto radius = simulation::radius_for_mass(controlled->mass);
@@ -480,6 +499,27 @@ mycore::render_2d::DrawList build_draw_list(const FrameData& frame, const Settin
                            settings.remote_newer_endpoint_outline,
                            kPreCorrectionOutlineRadiusOffsetPixels + 1.0F,
                            settings);
+            continue;
+        }
+        if (circle.kind == CircleKind::RemoteInterpolationConnectorStart ||
+            circle.kind == CircleKind::RemoteInterpolationConnectorMiddle ||
+            circle.kind == CircleKind::RemoteInterpolationConnectorEnd) {
+            const auto connector_color =
+                circle.kind == CircleKind::RemoteInterpolationConnectorStart
+                    ? settings.remote_older_endpoint_outline
+                : circle.kind == CircleKind::RemoteInterpolationConnectorMiddle
+                    ? lerp(settings.remote_older_endpoint_outline,
+                           settings.remote_newer_endpoint_outline,
+                           0.5F)
+                    : settings.remote_newer_endpoint_outline;
+            draw_list.circles.push_back({
+                .center = circle.position,
+                .radius =
+                    kRemoteInterpolationConnectorRadiusPixels / settings.pixels_per_world_unit,
+                .color = connector_color,
+                .outline_color = {},
+                .outline_width_pixels = 0.0F,
+            });
             continue;
         }
         draw_list.circles.push_back({

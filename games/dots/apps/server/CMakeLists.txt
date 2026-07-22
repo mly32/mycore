@@ -3,6 +3,7 @@ target_link_libraries(
     dots_server
     PRIVATE
         Dots::Server
+        Dots::AppCli
         MyCore::Debug
 )
 mycore_configure_executable(dots_server)

@@ -26,6 +26,9 @@ enum class CircleKind : std::uint8_t {
     ReplayMarker,
     RemoteOlderEndpointGhost,
     RemoteNewerEndpointGhost,
+    RemoteInterpolationConnectorStart,
+    RemoteInterpolationConnectorMiddle,
+    RemoteInterpolationConnectorEnd,
 };
 
 struct CircleInstance {

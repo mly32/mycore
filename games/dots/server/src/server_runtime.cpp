@@ -4,6 +4,7 @@
 #include "dots/replication/replication.hpp"
 #include "dots/simulation/input_command.hpp"
 #include "mycore/debug/log.hpp"
+#include "mycore/math/vector2.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -55,6 +56,36 @@ enum class InputEnqueueResult : std::uint8_t {
     ConflictingDuplicate,
     Overflow,
 };
+
+inline constexpr std::size_t kSpawnColumns = 11;
+inline constexpr std::size_t kSpawnRows = 7;
+inline constexpr std::size_t kSpawnPointCount = kSpawnColumns * kSpawnRows;
+inline constexpr std::size_t kSpawnStride = 37;
+inline constexpr std::size_t kSpawnOffset = 23;
+
+[[nodiscard]] mycore::math::Vector2 spawn_position(std::uint32_t ordinal) noexcept {
+    const auto slot =
+        (static_cast<std::size_t>(ordinal) * kSpawnStride + kSpawnOffset) % kSpawnPointCount;
+    const auto column = slot % kSpawnColumns;
+    const auto row = slot / kSpawnColumns;
+    return {
+        -76.0F + (static_cast<float>(column) * 16.0F),
+        -44.0F + (static_cast<float>(row) * 16.0F),
+    };
+}
+
+[[nodiscard]] bool spawn_is_clear(const simulation::World& world,
+                                  mycore::math::Vector2 candidate) noexcept {
+    constexpr auto kMinimumDistanceSquared = 64.0F;
+    for (const auto player_id : world.player_ids()) {
+        const auto current_position = world.position(player_id);
+        if (current_position &&
+            mycore::math::length_squared(*current_position - candidate) < kMinimumDistanceSquared) {
+            return false;
+        }
+    }
+    return true;
+}
 
 } // namespace
 
@@ -235,7 +266,17 @@ private:
         if (next_client_id_ == protocol::ClientId::kInvalidValue) {
             return RuntimeError::ClientIdExhausted;
         }
-        const auto player = world_.spawn_player();
+        auto player = std::optional<simulation::EntityId>{};
+        for (std::size_t attempt = 0; attempt < kSpawnPointCount; ++attempt) {
+            const auto position = spawn_position(next_spawn_ordinal_++);
+            if (!spawn_is_clear(world_, position)) {
+                continue;
+            }
+            player = world_.spawn_player(position);
+            if (player) {
+                break;
+            }
+        }
         if (!player) {
             return RuntimeError::EntityIdExhausted;
         }
@@ -254,11 +295,16 @@ private:
         if (sessions_.contains(connection.value())) {
             const auto snapshot_error = send_snapshot(connection);
             if (!snapshot_error && sessions_.contains(connection.value())) {
-                mycore::debug::log_info("dots.server.session",
-                                        "Client {} joined on connection {} controlling entity {}",
-                                        session.client_id.value(),
-                                        connection.value(),
-                                        session.player_id.value());
+                if (const auto position = world_.position(session.player_id)) {
+                    mycore::debug::log_info("dots.server.session",
+                                            "Client {} joined on connection {} controlling entity "
+                                            "{} at ({:.1f}, {:.1f})",
+                                            session.client_id.value(),
+                                            connection.value(),
+                                            session.player_id.value(),
+                                            position->x,
+                                            position->y);
+                }
             }
             return snapshot_error;
         }
@@ -353,6 +399,7 @@ private:
     mycore::net_transport::Endpoint& endpoint_;
     simulation::World world_;
     std::unordered_map<std::uint32_t, Session> sessions_;
+    std::uint32_t next_spawn_ordinal_{};
     std::uint32_t next_client_id_{};
     std::size_t rejected_packet_count_{};
 };

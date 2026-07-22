@@ -103,8 +103,8 @@ struct DebugWorldStats {
         std::uint32_t local_input_tick{};
         dots::client_runtime::PredictionStatistics prediction;
         dots::presentation::RemotePresentationStatistics remote_presentation;
-        std::optional<dots::protocol::EntityId> selected_remote_entity;
-        dots::presentation::RemoteEntityEndpoints selected_remote_endpoints;
+        std::optional<dots::protocol::EntityId> representative_remote_entity;
+        dots::presentation::RemoteEntityEndpoints representative_remote_endpoints;
         Vector2 latest_authoritative_sample;
         Vector2 predicted_position;
         Vector2 presentation_position;
@@ -120,8 +120,7 @@ constexpr auto kFaultCompletionReceiptDuration = std::chrono::seconds{2};
 struct PredictionDebugControls {
     bool show_prediction_layers{true};
     bool show_replay_path{true};
-    bool draw_all_remote_brackets{};
-    std::uint32_t requested_remote_entity_id{};
+    bool show_remote_endpoint_layers{true};
     std::optional<Vector2> requested_prediction_error;
     bool drop_input_packets_requested{};
     bool clear_correction_visuals_requested{};
@@ -428,6 +427,7 @@ void draw_prediction_debug_tab(const DebugWorldStats& world) {
 }
 
 void draw_interpolation_debug_tab(const DebugWorldStats& world) {
+    ImGui::TextUnformatted("Remote interpolation");
     if (!world.network_session) {
         ImGui::TextDisabled("Interpolation diagnostics require a network session.");
         return;
@@ -463,26 +463,28 @@ void draw_interpolation_debug_tab(const DebugWorldStats& world) {
     ImGui::Text("Rate corrections / rebases: %llu / %llu",
                 static_cast<unsigned long long>(remote.rate_correction_count),
                 static_cast<unsigned long long>(remote.hard_rebase_count));
-    if (session.selected_remote_entity) {
-        ImGui::Text("Selected remote entity: %u", session.selected_remote_entity->value());
-        if (session.selected_remote_endpoints.older) {
-            const auto& older = *session.selected_remote_endpoints.older;
+    if (session.representative_remote_entity) {
+        ImGui::Text("Example remote entity: %u", session.representative_remote_entity->value());
+        if (session.representative_remote_endpoints.older) {
+            const auto& older = *session.representative_remote_endpoints.older;
             ImGui::Text("Older endpoint: (%.3f, %.3f), mass %.3f",
                         older.position.x,
                         older.position.y,
                         older.mass);
         }
-        if (session.selected_remote_endpoints.newer) {
-            const auto& newer = *session.selected_remote_endpoints.newer;
+        if (session.representative_remote_endpoints.newer) {
+            const auto& newer = *session.representative_remote_endpoints.newer;
             ImGui::Text("Newer endpoint: (%.3f, %.3f), mass %.3f",
                         newer.position.x,
                         newer.position.y,
                         newer.mass);
         }
     } else {
-        ImGui::TextUnformatted("Selected remote entity: unavailable");
+        ImGui::TextUnformatted("Example remote entity: unavailable");
     }
-    ImGui::TextDisabled("Remote fill: delayed known authority; no extrapolation.");
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::TextWrapped("Remote fill: delayed known authority; no extrapolation.");
+    ImGui::PopStyleColor();
 }
 
 void draw_prediction_tools_tab(const DebugWorldStats& world,
@@ -550,17 +552,15 @@ void draw_prediction_tools_tab(const DebugWorldStats& world,
     ImGui::TextUnformatted("Visual layers");
     ImGui::Checkbox("Show prediction layers", &prediction_controls->show_prediction_layers);
     ImGui::Checkbox("Show correction replay", &prediction_controls->show_replay_path);
-    ImGui::Checkbox("Draw brackets for all remotes",
-                    &prediction_controls->draw_all_remote_brackets);
-    ImGui::InputScalar("Selected remote entity (0 = automatic)",
-                       ImGuiDataType_U32,
-                       &prediction_controls->requested_remote_entity_id);
+    ImGui::Checkbox("Show remote endpoint outlines",
+                    &prediction_controls->show_remote_endpoint_layers);
     if (ImGui::Button("Clear correction ghosts")) {
         prediction_controls->clear_correction_visuals_requested = true;
     }
     ImGui::TextDisabled("White: predicted position");
     ImGui::TextDisabled("Orange: latest authoritative sample");
     ImGui::TextDisabled("Magenta: pre-correction; Purple: replay");
+    ImGui::TextDisabled("Cyan / Blue: older / newer remote snapshot");
     ImGui::TextDisabled("Fill: presentation position");
 }
 
@@ -575,19 +575,19 @@ void draw_debug_overlay(const ClientConfig& config,
     const auto available_width = std::max(viewport->WorkSize.x - (2.0F * kMargin), 1.0F);
     const auto available_height = std::max(viewport->WorkSize.y - (2.0F * kMargin), 1.0F);
     const auto overlay_width = std::min(kPreferredOverlayWidth, available_width);
-    ImGui::SetNextWindowPos({viewport->WorkPos.x + viewport->WorkSize.x - kMargin,
-                             viewport->WorkPos.y + viewport->WorkSize.y - kMargin},
-                            ImGuiCond_Always,
-                            {1.0F, 1.0F});
-    ImGui::SetNextWindowSizeConstraints({overlay_width, 0.0F}, {overlay_width, available_height});
-    ImGui::SetNextWindowBgAlpha(0.82F);
-
     constexpr auto kWindowFlags =
         ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
         ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoSavedSettings |
         ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
-    if (ImGui::Begin("Dots observability", nullptr, kWindowFlags)) {
-        if (ImGui::BeginTabBar("Dots observability tabs")) {
+
+    ImGui::SetNextWindowPos(
+        {viewport->WorkPos.x + kMargin, viewport->WorkPos.y + viewport->WorkSize.y - kMargin},
+        ImGuiCond_Always,
+        {0.0F, 1.0F});
+    ImGui::SetNextWindowSizeConstraints({overlay_width, 0.0F}, {overlay_width, available_height});
+    ImGui::SetNextWindowBgAlpha(0.82F);
+    if (ImGui::Begin("Dots session", nullptr, kWindowFlags)) {
+        if (ImGui::BeginTabBar("Dots session tabs")) {
             if (ImGui::BeginTabItem("Runtime")) {
                 draw_runtime_debug_tab(config, world, frame_metrics, simulation_metrics);
                 ImGui::EndTabItem();
@@ -596,6 +596,19 @@ void draw_debug_overlay(const ClientConfig& config,
                 draw_network_debug_tab(world);
                 ImGui::EndTabItem();
             }
+            ImGui::EndTabBar();
+        }
+    }
+    ImGui::End();
+
+    ImGui::SetNextWindowPos({viewport->WorkPos.x + viewport->WorkSize.x - kMargin,
+                             viewport->WorkPos.y + viewport->WorkSize.y - kMargin},
+                            ImGuiCond_Always,
+                            {1.0F, 1.0F});
+    ImGui::SetNextWindowSizeConstraints({overlay_width, 0.0F}, {overlay_width, available_height});
+    ImGui::SetNextWindowBgAlpha(0.82F);
+    if (ImGui::Begin("Dots diagnostics", nullptr, kWindowFlags)) {
+        if (ImGui::BeginTabBar("Dots diagnostics tabs")) {
             if (ImGui::BeginTabItem("Prediction")) {
                 draw_prediction_debug_tab(world);
                 ImGui::EndTabItem();
@@ -750,8 +763,6 @@ int run_networked_game(const ClientConfig& config,
     dots::presentation::LocalPredictionPresentation local_prediction_presentation;
     PredictionDebugControls prediction_debug_controls;
     std::optional<Vector2> last_nonzero_movement_input;
-    std::optional<dots::protocol::EntityId> selected_remote_entity;
-
     while (true) {
         MYCORE_PROFILE_FRAME();
         MYCORE_PROFILE_ZONE("Dots networked client frame");
@@ -883,38 +894,17 @@ int run_networked_game(const ClientConfig& config,
         };
         update_local_prediction_presentation();
         const auto remote_frame = remote_snapshot_buffer.sample(client.controlled_entity_id());
-        const auto selected_remote_available =
-            selected_remote_entity &&
-            std::any_of(remote_frame.entities.begin(),
-                        remote_frame.entities.end(),
-                        [selected = *selected_remote_entity](const auto& entity) {
-                            return entity.entity_id == selected;
-                        });
-        const auto requested_remote =
-            prediction_debug_controls.requested_remote_entity_id == 0
-                ? std::optional<dots::protocol::EntityId>{}
-                : std::optional{dots::protocol::EntityId{
-                      prediction_debug_controls.requested_remote_entity_id}};
-        const auto requested_remote_available =
-            requested_remote && std::any_of(remote_frame.entities.begin(),
-                                            remote_frame.entities.end(),
-                                            [requested = *requested_remote](const auto& entity) {
-                                                return entity.entity_id == requested;
-                                            });
-        if (requested_remote_available) {
-            selected_remote_entity = requested_remote;
-        } else if (!selected_remote_available) {
-            const auto selected = std::find_if(
-                remote_frame.entities.begin(), remote_frame.entities.end(), [](const auto& entity) {
-                    return entity.kind == dots::protocol::EntityKind::Player;
-                });
-            selected_remote_entity = selected == remote_frame.entities.end()
-                                         ? std::nullopt
-                                         : std::optional{selected->entity_id};
-        }
-        const auto selected_remote_endpoints =
-            selected_remote_entity ? remote_snapshot_buffer.endpoints(*selected_remote_entity)
-                                   : dots::presentation::RemoteEntityEndpoints{};
+        const auto representative = std::find_if(
+            remote_frame.entities.begin(), remote_frame.entities.end(), [](const auto& entity) {
+                return entity.kind == dots::protocol::EntityKind::Player;
+            });
+        const auto representative_remote_entity = representative == remote_frame.entities.end()
+                                                      ? std::nullopt
+                                                      : std::optional{representative->entity_id};
+        const auto representative_remote_endpoints =
+            representative_remote_entity
+                ? remote_snapshot_buffer.endpoints(*representative_remote_entity)
+                : dots::presentation::RemoteEntityEndpoints{};
         if (config.debug.enabled) {
             draw_debug_overlay(
                 config,
@@ -937,8 +927,8 @@ int run_networked_game(const ClientConfig& config,
                             .local_input_tick = client_tick,
                             .prediction = prediction_statistics,
                             .remote_presentation = remote_presentation_statistics,
-                            .selected_remote_entity = selected_remote_entity,
-                            .selected_remote_endpoints = selected_remote_endpoints,
+                            .representative_remote_entity = representative_remote_entity,
+                            .representative_remote_endpoints = representative_remote_endpoints,
                             .latest_authoritative_sample = {controlled->position_x,
                                                             controlled->position_y},
                             .predicted_position =
@@ -979,14 +969,14 @@ int run_networked_game(const ClientConfig& config,
         const auto correction_visual_active =
             local_prediction_presentation.correction_visual_active();
         std::vector<dots::presentation::RemoteEntityEndpoints> remote_endpoint_layers;
-        if (config.debug.enabled && prediction_debug_controls.draw_all_remote_brackets) {
+        if (config.debug.enabled && prediction_debug_controls.show_remote_endpoint_layers) {
             remote_endpoint_layers.reserve(remote_frame.entities.size());
             for (const auto& entity : remote_frame.entities) {
-                remote_endpoint_layers.push_back(
-                    remote_snapshot_buffer.endpoints(entity.entity_id));
+                if (entity.kind == dots::protocol::EntityKind::Player) {
+                    remote_endpoint_layers.push_back(
+                        remote_snapshot_buffer.endpoints(entity.entity_id));
+                }
             }
-        } else if (config.debug.enabled && selected_remote_entity) {
-            remote_endpoint_layers.push_back(selected_remote_endpoints);
         }
         const auto frame = dots::presentation::extract_remote_interpolated_predicted_frame(
             client.world(),

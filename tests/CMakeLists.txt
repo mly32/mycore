@@ -90,6 +90,16 @@ target_link_libraries(
 mycore_configure_test_executable(dots_protocol_tests)
 catch_discover_tests(dots_protocol_tests)
 
+add_executable(dots_app_cli_tests dots_app_cli_tests.cpp)
+target_link_libraries(
+    dots_app_cli_tests
+    PRIVATE
+        Dots::AppCli
+        Catch2::Catch2WithMain
+)
+mycore_configure_test_executable(dots_app_cli_tests)
+catch_discover_tests(dots_app_cli_tests)
+
 add_executable(dots_replication_tests dots_replication_tests.cpp)
 target_link_libraries(
     dots_replication_tests
@@ -184,6 +194,9 @@ set_tests_properties(
 
 add_test(NAME dots_server_help COMMAND dots_server --help)
 set_tests_properties(dots_server_help PROPERTIES PASS_REGULAR_EXPRESSION "authoritative Dots")
+
+add_test(NAME dots_bot_help COMMAND dots_bot --help)
+set_tests_properties(dots_bot_help PROPERTIES PASS_REGULAR_EXPRESSION "wide rectangle")
 
 add_test(NAME dots_server_ticks_smoke COMMAND dots_server --listen 127.0.0.1:0 --ticks 2)
 

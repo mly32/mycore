@@ -3,6 +3,7 @@
 #include "dots/server/server_runtime.hpp"
 #include "mycore/net_transport/net_transport.hpp"
 
+#include <algorithm>
 #include <array>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -172,6 +173,13 @@ TEST_CASE("Two in-memory clients receive authoritative identities and snapshots"
     REQUIRE(first.controlled_entity_id() != second.controlled_entity_id());
     REQUIRE(server.client_count() == 2);
     REQUIRE(server.world().player_count() == 2);
+    const auto first_spawn = server.world().position(server.world().player_ids()[0]);
+    const auto second_spawn = server.world().position(server.world().player_ids()[1]);
+    REQUIRE(first_spawn.has_value());
+    REQUIRE(second_spawn.has_value());
+    CHECK(*first_spawn != *second_spawn);
+    CHECK(*first_spawn != mycore::math::Vector2{});
+    CHECK(*second_spawn != mycore::math::Vector2{});
     REQUIRE(first.world().player_count() == 1);
     REQUIRE(second.world().player_count() == 2);
 }
@@ -199,8 +207,8 @@ TEST_CASE("Authoritative input moves only the owning player and is acknowledged"
     const auto* second_entity = first.world().find(second.controlled_entity_id());
     REQUIRE(first_entity != nullptr);
     REQUIRE(second_entity != nullptr);
-    CHECK(first_entity->position_x == Catch::Approx(0.4F));
-    CHECK(second_entity->position_x == Catch::Approx(0.0F));
+    CHECK(first_entity->position_x == Catch::Approx(-59.6F));
+    CHECK(second_entity->position_x == Catch::Approx(4.0F));
     CHECK(first.world().last_processed_input_id() == dots::protocol::InputSequenceId{0});
     CHECK_FALSE(second.world().last_processed_input_id().is_valid());
 }
@@ -285,25 +293,27 @@ TEST_CASE("Server queues reordered redundant inputs and consumes one per tick",
 
     REQUIRE(server.world().player_ids().size() == 1);
     const auto player = server.world().player_ids().front();
+    const auto spawn_position = server.world().position(player);
+    REQUIRE(spawn_position.has_value());
     REQUIRE_FALSE(server.step().has_value());
     REQUIRE(server.world().position(player).has_value());
-    CHECK(server.world().position(player)->x == Catch::Approx(0.2F));
-    CHECK(server.world().position(player)->y == Catch::Approx(0.0F));
+    CHECK(server.world().position(player)->x == Catch::Approx(spawn_position->x + 0.2F));
+    CHECK(server.world().position(player)->y == Catch::Approx(spawn_position->y));
 
     REQUIRE_FALSE(server.step().has_value());
-    CHECK(server.world().position(player)->x == Catch::Approx(0.2F));
-    CHECK(server.world().position(player)->y == Catch::Approx(0.2F));
+    CHECK(server.world().position(player)->x == Catch::Approx(spawn_position->x + 0.2F));
+    CHECK(server.world().position(player)->y == Catch::Approx(spawn_position->y + 0.2F));
     const auto queued_snapshot = find_snapshot(client.poll());
     REQUIRE(queued_snapshot.has_value());
     CHECK(queued_snapshot->last_processed_input_id == dots::protocol::InputSequenceId{1});
     CHECK(queued_snapshot->pending_input_count == 1);
 
     REQUIRE_FALSE(server.step().has_value());
-    CHECK(server.world().position(player)->x == Catch::Approx(0.0F));
-    CHECK(server.world().position(player)->y == Catch::Approx(0.2F));
+    CHECK(server.world().position(player)->x == Catch::Approx(spawn_position->x));
+    CHECK(server.world().position(player)->y == Catch::Approx(spawn_position->y + 0.2F));
     REQUIRE_FALSE(server.step().has_value());
-    CHECK(server.world().position(player)->x == Catch::Approx(-0.2F));
-    CHECK(server.world().position(player)->y == Catch::Approx(0.2F));
+    CHECK(server.world().position(player)->x == Catch::Approx(spawn_position->x - 0.2F));
+    CHECK(server.world().position(player)->y == Catch::Approx(spawn_position->y + 0.2F));
     const auto drained_snapshot = find_snapshot(client.poll());
     REQUIRE(drained_snapshot.has_value());
     CHECK(drained_snapshot->last_processed_input_id == dots::protocol::InputSequenceId{2});
@@ -331,6 +341,8 @@ TEST_CASE("Server input queue overflow disconnects only the offending session",
     CHECK(server.client_count() == 1);
     CHECK(server.world().player_count() == 1);
     CHECK(healthy.state() == dots::client_runtime::State::Ready);
+    const auto healthy_spawn = server.world().position(server.world().player_ids().front());
+    REQUIRE(healthy_spawn.has_value());
 
     REQUIRE(healthy.send_input(0, {0.0F, 1.0F}) == dots::client_runtime::InputSendResult::Sent);
     REQUIRE_FALSE(server.process_events().has_value());
@@ -338,7 +350,8 @@ TEST_CASE("Server input queue overflow disconnects only the offending session",
     REQUIRE(server.world().player_ids().size() == 1);
     const auto position = server.world().position(server.world().player_ids().front());
     REQUIRE(position.has_value());
-    CHECK(position->y == Catch::Approx(0.2F));
+    CHECK(position->x == Catch::Approx(healthy_spawn->x));
+    CHECK(position->y == Catch::Approx(healthy_spawn->y + 0.2F));
 }
 
 TEST_CASE("Server rejects conflicting data for a queued input sequence",
@@ -375,6 +388,39 @@ TEST_CASE("Disconnect cleanup removes only the owned authoritative player", "[do
     CHECK(server.client_count() == 1);
     CHECK(server.world().player_count() == 1);
     CHECK(second.state() == dots::client_runtime::State::Ready);
+}
+
+TEST_CASE("Server replicates a disconnected player removal to remaining clients",
+          "[dots][session]") {
+    mycore::net_transport::InMemoryNetwork network;
+    dots::server::Runtime server{network.server_endpoint()};
+    dots::client_runtime::Runtime observer{network.connect_client()};
+    dots::client_runtime::Runtime departing{network.connect_client()};
+    complete_handshake(observer, server);
+    complete_handshake(departing, server);
+
+    const auto departing_entity_id = departing.controlled_entity_id();
+    REQUIRE_FALSE(server.step().has_value());
+    REQUIRE_FALSE(server.step().has_value());
+    const auto before_disconnect = observer.process_events();
+    REQUIRE_FALSE(before_disconnect.error.has_value());
+    REQUIRE(observer.world().find(departing_entity_id) != nullptr);
+
+    REQUIRE(departing.disconnect());
+    REQUIRE_FALSE(server.process_events().has_value());
+    REQUIRE_FALSE(server.step().has_value());
+    REQUIRE_FALSE(server.step().has_value());
+
+    const auto after_disconnect = observer.process_events();
+    REQUIRE_FALSE(after_disconnect.error.has_value());
+    REQUIRE_FALSE(after_disconnect.accepted_snapshots.empty());
+    const auto& removal_snapshot = after_disconnect.accepted_snapshots.back().snapshot;
+    CHECK(std::none_of(removal_snapshot.entities.begin(),
+                       removal_snapshot.entities.end(),
+                       [departing_entity_id](const auto& entity) {
+                           return entity.entity_id == departing_entity_id;
+                       }));
+    CHECK(observer.world().find(departing_entity_id) == nullptr);
 }
 
 TEST_CASE("Invalid packets disconnect one client without stopping another", "[dots][session]") {

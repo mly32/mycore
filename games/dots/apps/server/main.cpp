@@ -1,11 +1,10 @@
+#include "dots/app_cli/app_cli.hpp"
 #include "dots/server/server_runtime.hpp"
 #include "dots/simulation/world_setup.hpp"
 #include "mycore/debug/log.hpp"
 #include "mycore/net_transport/net_transport.hpp"
 
-#include <charconv>
 #include <chrono>
-#include <cmath>
 #include <csignal>
 #include <cstdint>
 #include <iostream>
@@ -13,7 +12,6 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <thread>
 #include <utility>
 
@@ -50,25 +48,6 @@ struct Options {
     bool help{};
 };
 
-std::uint32_t parse_unsigned(std::string_view value, std::string_view option) {
-    std::uint32_t result{};
-    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), result);
-    if (error != std::errc{} || end != value.data() + value.size()) {
-        throw std::runtime_error{std::string{option} + " requires a non-negative integer"};
-    }
-    return result;
-}
-
-float parse_percent(std::string_view value, std::string_view option) {
-    float result{};
-    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), result);
-    if (error != std::errc{} || end != value.data() + value.size() || !std::isfinite(result) ||
-        result < 0.0F || result > 100.0F) {
-        throw std::runtime_error{std::string{option} + " requires a number in the range 0..100"};
-    }
-    return result;
-}
-
 Options parse_arguments(int argc, char** argv) {
     Options options;
     for (int index = 1; index < argc; ++index) {
@@ -78,38 +57,19 @@ Options parse_arguments(int argc, char** argv) {
             continue;
         }
         if (argument == "--listen") {
-            if (index + 1 >= argc) {
-                throw std::runtime_error{"--listen requires an address"};
-            }
-            options.listen_address = argv[++index];
+            options.listen_address =
+                dots::app_cli::require_option_value(index, argc, argv, argument);
             continue;
         }
-        if (argument == "--fake-lag-ms") {
-            if (index + 1 >= argc) {
-                throw std::runtime_error{"--fake-lag-ms requires a value"};
-            }
-            options.impairment.outgoing_lag_milliseconds =
-                parse_unsigned(argv[++index], "--fake-lag-ms");
+        if (dots::app_cli::consume_network_impairment_option(
+                argument, index, argc, argv, options.impairment)) {
             continue;
         }
-        if (argument == "--fake-loss-percent") {
-            if (index + 1 >= argc) {
-                throw std::runtime_error{"--fake-loss-percent requires a value"};
-            }
-            options.impairment.outgoing_loss_percent =
-                parse_percent(argv[++index], "--fake-loss-percent");
-            continue;
-        }
-        if (argument != "--ticks" || options.ticks || index + 1 >= argc) {
+        if (argument != "--ticks" || options.ticks) {
             throw std::runtime_error{"invalid argument: " + std::string{argument}};
         }
-        const std::string_view value{argv[++index]};
-        std::uint64_t ticks{};
-        const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), ticks);
-        if (error != std::errc{} || end != value.data() + value.size() || ticks == 0) {
-            throw std::runtime_error{"--ticks requires a positive integer"};
-        }
-        options.ticks = ticks;
+        options.ticks = dots::app_cli::parse_positive_u64(
+            dots::app_cli::require_option_value(index, argc, argv, argument), argument);
     }
     return options;
 }
@@ -130,12 +90,9 @@ int main(int argc, char** argv) {
             throw std::runtime_error{"Could not populate the authoritative Dots world"};
         }
         const auto listen_address =
-            mycore::net_transport::NetworkAddress::parse(options.listen_address);
-        if (!listen_address) {
-            throw std::runtime_error{"--listen requires a numeric IPv4 or bracketed IPv6 address"};
-        }
+            dots::app_cli::parse_listen_address(options.listen_address, "--listen");
         mycore::net_transport::GameNetworkingSocketsNetwork network{options.impairment};
-        const auto listening = network.listen(*listen_address);
+        const auto listening = network.listen(listen_address);
         dots::server::Runtime server{*listening.endpoint, std::move(world)};
 
         std::cout << "DOTS_SERVER_READY " << listening.address.value() << '\n' << std::flush;
