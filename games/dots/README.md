@@ -76,12 +76,17 @@ The [networked prediction and time reference](../../docs/networked_prediction_re
 defines the distinct authoritative, predicted, remote-presentation, and screen-presentation
 states used by that model.
 
-The server removes a ready client that has supplied no valid input packet for three seconds. This
-is a liveness fallback for lost connections; a normal disconnect removes the player immediately.
+The server removes a transport connection that does not complete its Dots handshake within ten
+seconds, and removes a ready client that supplies no valid input packet for three seconds. These
+are liveness fallbacks for lost connections; a normal disconnect removes the player immediately.
 Native graphical clients drain a normal close for 50 ms plus configured fake outgoing lag (capped
 at two seconds), allowing the close notification to leave before process teardown.
 When input samples are briefly missing, the server holds the last movement for five ticks and then
 stops that player while keeping the session alive.
+
+Temporarily losing the graphical drawable surface, such as while minimized, pauses rendering but
+not transport polling or fixed input production. Mouse steering becomes neutral until the
+viewport returns; keyboard input remains available.
 
 The authoritative server assigns each joining player a distinct, deterministically shuffled
 spawn slot near the food field. Spawn position is included in the welcome-following full snapshot;
