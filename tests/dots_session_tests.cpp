@@ -78,6 +78,25 @@ input_sample(std::uint32_t sequence_id, std::uint32_t client_tick, mycore::math:
     };
 }
 
+[[nodiscard]] dots::protocol::RecipientSessionState
+playing_session(dots::protocol::EntityId primary_entity_id = dots::protocol::EntityId{8}) {
+    return {
+        .mode = dots::protocol::SessionMode::Playing,
+        .owned_entity_ids = {primary_entity_id},
+        .primary_entity_id = primary_entity_id,
+    };
+}
+
+[[nodiscard]] dots::protocol::EntityState
+player_state(dots::protocol::EntityId entity_id = dots::protocol::EntityId{8}) {
+    return {
+        .entity_id = entity_id,
+        .kind = dots::protocol::EntityKind::Player,
+        .owner_id = dots::protocol::PlayerOwnerId{3},
+        .mass = 16.0F,
+    };
+}
+
 void send_input_packet(mycore::net_transport::Endpoint& endpoint,
                        mycore::net_transport::ConnectionHandle connection,
                        std::vector<dots::protocol::InputSample> samples) {
@@ -115,7 +134,6 @@ void complete_manual_handshake(ManualEndpoint& endpoint,
         .delivery = mycore::net_transport::DeliveryMode::Reliable,
         .payload = encode_bytes(dots::protocol::ServerWelcome{
             .client_id = dots::protocol::ClientId{2},
-            .controlled_entity_id = dots::protocol::EntityId{8},
         }),
     });
     endpoint.events.push_back(mycore::net_transport::PayloadReceived{
@@ -123,11 +141,8 @@ void complete_manual_handshake(ManualEndpoint& endpoint,
         .delivery = mycore::net_transport::DeliveryMode::Unreliable,
         .payload = encode_bytes(dots::protocol::FullSnapshot{
             .snapshot_id = dots::protocol::SnapshotId{0},
-            .entities = {{
-                .entity_id = dots::protocol::EntityId{8},
-                .kind = dots::protocol::EntityKind::Player,
-                .mass = 16.0F,
-            }},
+            .recipient = playing_session(),
+            .entities = {player_state()},
         }),
     });
     REQUIRE_FALSE(client.process_events().has_value());
@@ -173,10 +188,13 @@ TEST_CASE("Two in-memory clients receive authoritative identities and snapshots"
     REQUIRE(first.controlled_entity_id() != second.controlled_entity_id());
     REQUIRE(server.client_count() == 2);
     REQUIRE(server.world().player_count() == 2);
-    // Protocol v2 cannot represent defeat. Phase 13.1 keeps network sessions in a temporary
-    // shared ownership group until Feature 13.2 adds the durable spectator lifecycle.
-    CHECK(server.world().player_owner(server.world().player_ids()[0]) ==
+    CHECK(server.world().player_owner(server.world().player_ids()[0]) !=
           server.world().player_owner(server.world().player_ids()[1]));
+    const auto* first_owned = first.world().find(first.primary_entity_id());
+    const auto* second_owned = second.world().find(second.primary_entity_id());
+    REQUIRE(first_owned != nullptr);
+    REQUIRE(second_owned != nullptr);
+    CHECK(first_owned->owner_id != second_owned->owner_id);
     const auto first_spawn = server.world().position(server.world().player_ids()[0]);
     const auto second_spawn = server.world().position(server.world().player_ids()[1]);
     REQUIRE(first_spawn.has_value());
@@ -217,6 +235,213 @@ TEST_CASE("Authoritative input moves only the owning player and is acknowledged"
     CHECK_FALSE(second.world().last_processed_input_id().is_valid());
 }
 
+TEST_CASE("Respawn requests while playing are acknowledged and explicitly rejected",
+          "[dots][session][lifecycle]") {
+    mycore::net_transport::InMemoryNetwork network;
+    dots::server::Runtime server{network.server_endpoint()};
+    dots::client_runtime::Runtime client{network.connect_client()};
+    complete_handshake(client, server);
+    const auto original_player = client.primary_entity_id();
+
+    REQUIRE(client.send_input(0, {}, dots::protocol::kRespawnActionBit) ==
+            dots::client_runtime::InputSendResult::Sent);
+    REQUIRE_FALSE(server.process_events().has_value());
+    REQUIRE_FALSE(server.step().has_value());
+    REQUIRE_FALSE(server.step().has_value());
+    REQUIRE_FALSE(client.process_events().error.has_value());
+
+    CHECK(client.world().last_processed_input_id() == dots::protocol::InputSequenceId{0});
+    CHECK(client.latest_respawn_request_id() == dots::protocol::InputSequenceId{0});
+    CHECK(client.latest_respawn_result() == dots::protocol::RespawnResult::RejectedNotSpectating);
+    CHECK(client.session_mode() == dots::protocol::SessionMode::Playing);
+    CHECK(client.primary_entity_id() == original_player);
+    CHECK(server.world().player_count() == 1);
+}
+
+TEST_CASE("Defeat state survives snapshot loss and respawn remains server-authoritative",
+          "[dots][session][lifecycle]") {
+    dots::simulation::World initial_world;
+    REQUIRE(initial_world.spawn_food({}).has_value());
+    mycore::net_transport::InMemoryNetwork network;
+    auto& first_endpoint = network.connect_client();
+    auto& second_endpoint = network.connect_client();
+    dots::server::Runtime server{
+        network.server_endpoint(),
+        std::move(initial_world),
+        {.respawn_cooldown_ticks = 4},
+    };
+    dots::client_runtime::Runtime first{first_endpoint};
+    dots::client_runtime::Runtime second{second_endpoint};
+    complete_handshake(first, server);
+    complete_handshake(second, server);
+
+    const auto first_player = first.primary_entity_id();
+    const auto defeated_player = second.primary_entity_id();
+    const auto* defeated_before = second.world().find(defeated_player);
+    REQUIRE(defeated_before != nullptr);
+    const auto defeated_owner = defeated_before->owner_id;
+    CHECK(second.respawn_cooldown_ticks() == 4);
+
+    std::uint32_t client_tick{};
+    bool absorbed{};
+    for (; client_tick < 32 && !absorbed; ++client_tick) {
+        REQUIRE(first.send_input(client_tick, {1.0F, 0.0F}) ==
+                dots::client_runtime::InputSendResult::Sent);
+        REQUIRE(second.send_input(client_tick, {-1.0F, 0.0F}) ==
+                dots::client_runtime::InputSendResult::Sent);
+        REQUIRE_FALSE(server.process_events().has_value());
+        REQUIRE_FALSE(server.step().has_value());
+        REQUIRE_FALSE(first.process_events().error.has_value());
+        absorbed = !server.world().last_step_events().empty();
+        if (!absorbed) {
+            REQUIRE_FALSE(second.process_events().error.has_value());
+        }
+    }
+    REQUIRE(absorbed);
+
+    if ((server.world().tick().value() % 2U) != 0U) {
+        REQUIRE(first.send_input(client_tick, {1.0F, 0.0F}) ==
+                dots::client_runtime::InputSendResult::Sent);
+        REQUIRE(second.send_input(client_tick, {-1.0F, 0.0F}) ==
+                dots::client_runtime::InputSendResult::Sent);
+        ++client_tick;
+        REQUIRE_FALSE(server.process_events().has_value());
+        REQUIRE_FALSE(server.step().has_value());
+        REQUIRE_FALSE(first.process_events().error.has_value());
+    }
+
+    const auto lost_transition = second_endpoint.poll();
+    REQUIRE_FALSE(lost_transition.empty());
+    CHECK(second.session_mode() == dots::protocol::SessionMode::Playing);
+    CHECK(second.primary_entity_id() == defeated_player);
+
+    while (second.session_mode() == dots::protocol::SessionMode::Playing) {
+        REQUIRE(first.send_input(client_tick, {1.0F, 0.0F}) ==
+                dots::client_runtime::InputSendResult::Sent);
+        REQUIRE(second.send_input(client_tick, {-1.0F, 0.0F}) ==
+                dots::client_runtime::InputSendResult::Sent);
+        ++client_tick;
+        REQUIRE_FALSE(server.process_events().has_value());
+        REQUIRE_FALSE(server.step().has_value());
+        REQUIRE_FALSE(first.process_events().error.has_value());
+        REQUIRE_FALSE(second.process_events().error.has_value());
+    }
+
+    REQUIRE(second.session_mode() == dots::protocol::SessionMode::Spectating);
+    CHECK(server.client_count() == 2);
+    CHECK(server.world().player_count() == 1);
+    CHECK(second.owned_entity_ids().empty());
+    CHECK_FALSE(second.primary_entity_id().is_valid());
+    CHECK(second.follow_entity_id() == first_player);
+    REQUIRE(second.defeat_tick().has_value());
+    REQUIRE(second.respawn_available_tick().has_value());
+    CHECK(*second.respawn_available_tick() == *second.defeat_tick() + 4U);
+    REQUIRE(second.latest_absorption().has_value());
+    CHECK(second.latest_absorption()->absorber_entity_id == first_player);
+    CHECK(second.latest_absorption()->victim_entity_id == defeated_player);
+    CHECK(second.latest_absorption()->transferred_mass == Catch::Approx(16.0F));
+    CHECK_FALSE(second.predicted_position().has_value());
+
+    const auto early_request_tick = client_tick;
+    REQUIRE(second.send_input(client_tick, {}, dots::protocol::kRespawnActionBit) ==
+            dots::client_runtime::InputSendResult::Sent);
+    REQUIRE(first.send_input(client_tick, {}) == dots::client_runtime::InputSendResult::Sent);
+    ++client_tick;
+    REQUIRE_FALSE(server.process_events().has_value());
+    REQUIRE_FALSE(server.step().has_value());
+    REQUIRE_FALSE(first.process_events().error.has_value());
+    REQUIRE_FALSE(second.process_events().error.has_value());
+
+    while ((server.world().tick().value() % 2U) != 0U) {
+        REQUIRE(second.send_input(client_tick, {}) == dots::client_runtime::InputSendResult::Sent);
+        REQUIRE(first.send_input(client_tick, {}) == dots::client_runtime::InputSendResult::Sent);
+        ++client_tick;
+        REQUIRE_FALSE(server.process_events().has_value());
+        REQUIRE_FALSE(server.step().has_value());
+        REQUIRE_FALSE(first.process_events().error.has_value());
+        REQUIRE_FALSE(second.process_events().error.has_value());
+    }
+
+    CHECK(second.session_mode() == dots::protocol::SessionMode::Spectating);
+    CHECK(second.latest_respawn_request_id() ==
+          dots::protocol::InputSequenceId{early_request_tick});
+    CHECK(second.latest_respawn_result() == dots::protocol::RespawnResult::RejectedCooldown);
+    CHECK(second.world().last_processed_input_id() >=
+          dots::protocol::InputSequenceId{early_request_tick});
+    CHECK(server.world().tick().value() >= *second.respawn_available_tick());
+    CHECK(server.world().player_count() == 1);
+
+    const auto accepted_request_tick = client_tick;
+    REQUIRE(second.send_input(client_tick, {}, dots::protocol::kRespawnActionBit) ==
+            dots::client_runtime::InputSendResult::Sent);
+    REQUIRE(first.send_input(client_tick, {}) == dots::client_runtime::InputSendResult::Sent);
+    ++client_tick;
+    REQUIRE_FALSE(server.process_events().has_value());
+    REQUIRE_FALSE(server.step().has_value());
+    REQUIRE_FALSE(first.process_events().error.has_value());
+    REQUIRE_FALSE(second.process_events().error.has_value());
+
+    while (second.session_mode() == dots::protocol::SessionMode::Spectating) {
+        REQUIRE(second.send_input(client_tick, {}) == dots::client_runtime::InputSendResult::Sent);
+        REQUIRE(first.send_input(client_tick, {}) == dots::client_runtime::InputSendResult::Sent);
+        ++client_tick;
+        REQUIRE_FALSE(server.process_events().has_value());
+        REQUIRE_FALSE(server.step().has_value());
+        REQUIRE_FALSE(first.process_events().error.has_value());
+        REQUIRE_FALSE(second.process_events().error.has_value());
+    }
+
+    CHECK(second.session_mode() == dots::protocol::SessionMode::Playing);
+    CHECK(second.latest_respawn_request_id() ==
+          dots::protocol::InputSequenceId{accepted_request_tick});
+    CHECK(second.latest_respawn_result() == dots::protocol::RespawnResult::Accepted);
+    CHECK(second.owned_entity_ids().size() == 1);
+    CHECK(second.primary_entity_id() != defeated_player);
+    CHECK_FALSE(second.follow_entity_id().is_valid());
+    CHECK_FALSE(second.defeat_tick().has_value());
+    CHECK_FALSE(second.respawn_available_tick().has_value());
+    REQUIRE(second.predicted_position().has_value());
+    const auto* respawned = second.world().find(second.primary_entity_id());
+    REQUIRE(respawned != nullptr);
+    CHECK(respawned->owner_id == defeated_owner);
+    CHECK(server.client_count() == 2);
+    CHECK(server.world().player_count() == 2);
+}
+
+TEST_CASE("Disconnecting a spectator preserves unrelated authoritative players",
+          "[dots][session][lifecycle]") {
+    dots::simulation::World initial_world;
+    const auto survivor = initial_world.spawn_player(dots::simulation::PlayerOwnerId{99}, {});
+    REQUIRE(survivor.has_value());
+    REQUIRE(initial_world.spawn_food({}).has_value());
+    REQUIRE(initial_world.step());
+    REQUIRE(initial_world.mass(*survivor) == 17.0F);
+
+    mycore::net_transport::InMemoryNetwork network;
+    dots::server::Runtime server{network.server_endpoint(), std::move(initial_world)};
+    dots::client_runtime::Runtime client{network.connect_client()};
+    complete_handshake(client, server);
+
+    for (std::uint32_t tick = 0;
+         tick < 32 && client.session_mode() != dots::protocol::SessionMode::Spectating;
+         ++tick) {
+        REQUIRE(client.send_input(tick, {-1.0F, 0.0F}) ==
+                dots::client_runtime::InputSendResult::Sent);
+        REQUIRE_FALSE(server.process_events().has_value());
+        REQUIRE_FALSE(server.step().has_value());
+        REQUIRE_FALSE(client.process_events().error.has_value());
+    }
+
+    REQUIRE(client.session_mode() == dots::protocol::SessionMode::Spectating);
+    CHECK(server.client_count() == 1);
+    CHECK(server.world().player_count() == 1);
+    REQUIRE(client.disconnect());
+    REQUIRE_FALSE(server.process_events().has_value());
+    CHECK(server.client_count() == 0);
+    CHECK(server.world().player_count() == 1);
+    CHECK(server.world().contains(*survivor));
+}
+
 TEST_CASE("Client input redundancy includes only bounded unacknowledged samples",
           "[dots][session][input][redundancy]") {
     ManualEndpoint endpoint;
@@ -249,11 +474,8 @@ TEST_CASE("Client input redundancy includes only bounded unacknowledged samples"
         .payload = encode_bytes(dots::protocol::FullSnapshot{
             .snapshot_id = dots::protocol::SnapshotId{1},
             .last_processed_input_id = dots::protocol::InputSequenceId{3},
-            .entities = {{
-                .entity_id = dots::protocol::EntityId{8},
-                .kind = dots::protocol::EntityKind::Player,
-                .mass = 16.0F,
-            }},
+            .recipient = playing_session(),
+            .entities = {player_state()},
         }),
     });
     REQUIRE_FALSE(client.process_events().has_value());
@@ -525,11 +747,8 @@ TEST_CASE("Client accepts an initial snapshot before its welcome", "[dots][sessi
         .delivery = mycore::net_transport::DeliveryMode::Unreliable,
         .payload = encode_bytes(dots::protocol::FullSnapshot{
             .snapshot_id = dots::protocol::SnapshotId{0},
-            .entities = {{
-                .entity_id = dots::protocol::EntityId{8},
-                .kind = dots::protocol::EntityKind::Player,
-                .mass = 16.0F,
-            }},
+            .recipient = playing_session(),
+            .entities = {player_state()},
         }),
     });
     REQUIRE_FALSE(client.process_events().has_value());
@@ -540,7 +759,6 @@ TEST_CASE("Client accepts an initial snapshot before its welcome", "[dots][sessi
         .delivery = mycore::net_transport::DeliveryMode::Reliable,
         .payload = encode_bytes(dots::protocol::ServerWelcome{
             .client_id = dots::protocol::ClientId{2},
-            .controlled_entity_id = dots::protocol::EntityId{8},
         }),
     });
     REQUIRE_FALSE(client.process_events().has_value());
@@ -562,6 +780,8 @@ TEST_CASE("Client reports accepted snapshot age and rolling receive rate",
         .delivery = mycore::net_transport::DeliveryMode::Unreliable,
         .payload = encode_bytes(dots::protocol::FullSnapshot{
             .snapshot_id = dots::protocol::SnapshotId{0},
+            .recipient = playing_session(),
+            .entities = {player_state()},
         }),
     });
     REQUIRE_FALSE(client.process_events(base + 100ms).has_value());

@@ -160,7 +160,7 @@ public:
                     return result;
                 }
                 client_id_ = welcome->client_id;
-                controlled_entity_id_ = welcome->controlled_entity_id;
+                respawn_cooldown_ticks_ = welcome->respawn_cooldown_ticks;
                 if (const auto error = update_ready_state()) {
                     result.error = error;
                     return result;
@@ -198,8 +198,16 @@ public:
     }
 
     [[nodiscard]] InputSendResult send_input(std::uint32_t client_tick,
-                                             mycore::math::Vector2 movement) {
-        if (state_ != State::Ready || !predicted_position_) {
+                                             mycore::math::Vector2 movement,
+                                             std::uint16_t action_bits) {
+        if (state_ != State::Ready) {
+            return InputSendResult::NotReady;
+        }
+        if ((action_bits & static_cast<std::uint16_t>(~protocol::kKnownInputActionBits)) != 0U) {
+            return InputSendResult::InvalidAction;
+        }
+        const auto playing = world_.recipient().mode == protocol::SessionMode::Playing;
+        if (playing && !predicted_position_) {
             return InputSendResult::NotReady;
         }
         if (next_input_id_ == protocol::InputSequenceId::kInvalidValue) {
@@ -216,6 +224,7 @@ public:
             .client_tick = client_tick,
             .movement_x = movement.x,
             .movement_y = movement.y,
+            .action_bits = action_bits,
         };
         auto packet = make_input_packet(sample);
         auto encoded = protocol::encode(packet);
@@ -224,7 +233,7 @@ public:
             return InputSendResult::InvalidMovement;
         }
 
-        if (input_history_.full()) {
+        if (playing && input_history_.full()) {
             if (!hard_resync(std::chrono::steady_clock::now())) {
                 static_cast<void>(fail(RuntimeError::MissingControlledEntity));
                 return InputSendResult::NotReady;
@@ -237,11 +246,6 @@ public:
             }
         }
 
-        if (!predicted_position_) {
-            return InputSendResult::NotReady;
-        }
-        const auto current_prediction = *predicted_position_;
-
         if (pending_injected_input_drop_count_ > 0) {
             --pending_injected_input_drop_count_;
             ++injected_input_drop_count_;
@@ -250,6 +254,16 @@ public:
             state_ = State::Disconnected;
             return InputSendResult::TransportFailure;
         }
+
+        last_sent_client_tick_ = client_tick;
+        ++next_input_id_;
+        if (!playing) {
+            return InputSendResult::Sent;
+        }
+        if (!predicted_position_) {
+            return InputSendResult::NotReady;
+        }
+        const auto current_prediction = *predicted_position_;
 
         const auto resulting_position = advance_prediction(current_prediction, sample);
         if (!input_history_.push_back({
@@ -261,8 +275,6 @@ public:
         }
         predicted_position_ = resulting_position;
         history_high_water_mark_ = std::max(history_high_water_mark_, input_history_.size());
-        last_sent_client_tick_ = client_tick;
-        ++next_input_id_;
         report_history_health(std::chrono::steady_clock::now());
         return InputSendResult::Sent;
     }
@@ -293,7 +305,47 @@ public:
     }
 
     [[nodiscard]] protocol::EntityId controlled_entity_id() const noexcept {
-        return controlled_entity_id_;
+        return primary_entity_id();
+    }
+
+    [[nodiscard]] protocol::SessionMode session_mode() const noexcept {
+        return world_.recipient().mode;
+    }
+
+    [[nodiscard]] std::span<const protocol::EntityId> owned_entity_ids() const noexcept {
+        return world_.recipient().owned_entity_ids;
+    }
+
+    [[nodiscard]] protocol::EntityId primary_entity_id() const noexcept {
+        return world_.recipient().primary_entity_id;
+    }
+
+    [[nodiscard]] protocol::EntityId follow_entity_id() const noexcept {
+        return world_.recipient().follow_entity_id;
+    }
+
+    [[nodiscard]] std::optional<std::uint32_t> defeat_tick() const noexcept {
+        return world_.recipient().defeat_tick;
+    }
+
+    [[nodiscard]] std::optional<std::uint32_t> respawn_available_tick() const noexcept {
+        return world_.recipient().respawn_available_tick;
+    }
+
+    [[nodiscard]] std::uint32_t respawn_cooldown_ticks() const noexcept {
+        return respawn_cooldown_ticks_;
+    }
+
+    [[nodiscard]] std::optional<protocol::PlayerAbsorbed> latest_absorption() const noexcept {
+        return world_.recipient().latest_absorption;
+    }
+
+    [[nodiscard]] protocol::InputSequenceId latest_respawn_request_id() const noexcept {
+        return world_.recipient().latest_respawn_request_id;
+    }
+
+    [[nodiscard]] protocol::RespawnResult latest_respawn_result() const noexcept {
+        return world_.recipient().latest_respawn_result;
     }
 
     [[nodiscard]] mycore::net_transport::ConnectionHandle connection_handle() const noexcept {
@@ -453,26 +505,38 @@ private:
         if (!valid_acknowledgement(candidate_world.last_processed_input_id())) {
             return {.error = RuntimeError::InvalidInputAcknowledgement};
         }
-
-        const protocol::EntityState* controlled{};
-        if (controlled_entity_id_.is_valid()) {
-            controlled = candidate_world.find(controlled_entity_id_);
-            if (controlled == nullptr || controlled->kind != protocol::EntityKind::Player) {
-                return {.error = RuntimeError::MissingControlledEntity};
-            }
+        if (client_id_.is_valid() && !valid_respawn_deadline(candidate_world.recipient())) {
+            return {.error = RuntimeError::InvalidSnapshot};
         }
 
-        if (state_ == State::Ready) {
-            if (controlled == nullptr || !predicted_position_) {
-                return {.error = RuntimeError::MissingControlledEntity};
-            }
+        if (candidate_world.recipient().mode == protocol::SessionMode::Spectating) {
+            world_ = std::move(candidate_world);
+            clear_prediction_state();
+            record_server_pending_input(world_.pending_input_count());
+            return {.error = {}, .applied = true};
+        }
+
+        const auto primary_entity_id = candidate_world.recipient().primary_entity_id;
+        const auto* controlled = candidate_world.find(primary_entity_id);
+        if (controlled == nullptr || controlled->kind != protocol::EntityKind::Player) {
+            return {.error = RuntimeError::MissingControlledEntity};
+        }
+
+        const auto can_reconcile = state_ == State::Ready && predicted_position_ &&
+                                   world_.recipient().mode == protocol::SessionMode::Playing &&
+                                   world_.recipient().primary_entity_id == primary_entity_id;
+        if (can_reconcile) {
             const auto controlled_state = *controlled;
             const auto previous_prediction = *predicted_position_;
             return reconcile_snapshot(
                 std::move(candidate_world), controlled_state, previous_prediction, now);
         }
 
+        const mycore::math::Vector2 authoritative_position{controlled->position_x,
+                                                           controlled->position_y};
         world_ = std::move(candidate_world);
+        clear_prediction_state();
+        predicted_position_ = authoritative_position;
         record_server_pending_input(world_.pending_input_count());
         return {.error = {}, .applied = true};
     }
@@ -487,6 +551,19 @@ private:
             return false;
         }
         return !previous.is_valid() || acknowledgement >= previous;
+    }
+
+    [[nodiscard]] bool
+    valid_respawn_deadline(const protocol::RecipientSessionState& session) const noexcept {
+        if (session.mode != protocol::SessionMode::Spectating) {
+            return true;
+        }
+        if (!session.defeat_tick || !session.respawn_available_tick ||
+            respawn_cooldown_ticks_ >
+                std::numeric_limits<std::uint32_t>::max() - *session.defeat_tick) {
+            return false;
+        }
+        return *session.respawn_available_tick == *session.defeat_tick + respawn_cooldown_ticks_;
     }
 
     [[nodiscard]] SnapshotProcessResult
@@ -547,7 +624,7 @@ private:
     }
 
     [[nodiscard]] bool hard_resync(std::chrono::steady_clock::time_point now) {
-        const auto* controlled = world_.find(controlled_entity_id_);
+        const auto* controlled = world_.find(world_.recipient().primary_entity_id);
         if (controlled == nullptr || controlled->kind != protocol::EntityKind::Player) {
             return false;
         }
@@ -625,6 +702,16 @@ private:
             std::max(server_pending_input_high_water_mark_, pending_input_count);
     }
 
+    void clear_prediction_state() noexcept {
+        input_history_.clear();
+        predicted_position_.reset();
+        pre_correction_position_.reset();
+        latest_replay_path_.clear();
+        latest_correction_replay_path_.clear();
+        accumulated_correction_displacement_ = {};
+        correction_sequence_since_hard_resync_ = 0;
+    }
+
     void prune_correction_times(std::chrono::steady_clock::time_point now) {
         const auto retention_start = now - std::chrono::minutes{1};
         while (!correction_times_.empty() && correction_times_.front() < retention_start) {
@@ -643,18 +730,26 @@ private:
         if (!client_id_.is_valid() || !world_.snapshot_id().is_valid()) {
             return std::nullopt;
         }
-        const auto* controlled = world_.find(controlled_entity_id_);
-        if (controlled == nullptr || controlled->kind != protocol::EntityKind::Player) {
+        const auto session_mode = world_.recipient().mode;
+        if (!valid_respawn_deadline(world_.recipient())) {
+            return fail(RuntimeError::InvalidSnapshot);
+        }
+        const auto primary_entity_id = world_.recipient().primary_entity_id;
+        const auto* controlled = world_.find(primary_entity_id);
+        if (session_mode == protocol::SessionMode::Playing &&
+            (controlled == nullptr || controlled->kind != protocol::EntityKind::Player)) {
             return fail(RuntimeError::MissingControlledEntity);
         }
         if (state_ != State::Ready) {
-            predicted_position_ = {controlled->position_x, controlled->position_y};
+            if (controlled != nullptr) {
+                predicted_position_ = {controlled->position_x, controlled->position_y};
+            }
             input_history_.clear();
             state_ = State::Ready;
             mycore::debug::log_info("dots.client.session",
-                                    "Session ready as client {} controlling entity {}",
+                                    "Session ready as client {} with primary entity {}",
                                     client_id_.value(),
-                                    controlled_entity_id_.value());
+                                    primary_entity_id.value());
         }
         return std::nullopt;
     }
@@ -679,7 +774,7 @@ private:
     mycore::net_transport::ConnectionHandle connection_;
     State state_{State::Connecting};
     protocol::ClientId client_id_;
-    protocol::EntityId controlled_entity_id_;
+    std::uint32_t respawn_cooldown_ticks_{};
     replication::ReplicatedWorld world_;
     std::uint32_t next_input_id_{};
     std::optional<std::uint32_t> last_sent_client_tick_;
@@ -732,8 +827,10 @@ ProcessEventsResult Runtime::process_events(std::chrono::steady_clock::time_poin
     return impl_->process_events(now);
 }
 
-InputSendResult Runtime::send_input(std::uint32_t client_tick, mycore::math::Vector2 movement) {
-    return impl_->send_input(client_tick, movement);
+InputSendResult Runtime::send_input(std::uint32_t client_tick,
+                                    mycore::math::Vector2 movement,
+                                    std::uint16_t action_bits) {
+    return impl_->send_input(client_tick, movement, action_bits);
 }
 
 bool Runtime::disconnect() {
@@ -754,6 +851,46 @@ protocol::ClientId Runtime::client_id() const noexcept {
 
 protocol::EntityId Runtime::controlled_entity_id() const noexcept {
     return impl_->controlled_entity_id();
+}
+
+protocol::SessionMode Runtime::session_mode() const noexcept {
+    return impl_->session_mode();
+}
+
+std::span<const protocol::EntityId> Runtime::owned_entity_ids() const noexcept {
+    return impl_->owned_entity_ids();
+}
+
+protocol::EntityId Runtime::primary_entity_id() const noexcept {
+    return impl_->primary_entity_id();
+}
+
+protocol::EntityId Runtime::follow_entity_id() const noexcept {
+    return impl_->follow_entity_id();
+}
+
+std::optional<std::uint32_t> Runtime::defeat_tick() const noexcept {
+    return impl_->defeat_tick();
+}
+
+std::optional<std::uint32_t> Runtime::respawn_available_tick() const noexcept {
+    return impl_->respawn_available_tick();
+}
+
+std::uint32_t Runtime::respawn_cooldown_ticks() const noexcept {
+    return impl_->respawn_cooldown_ticks();
+}
+
+std::optional<protocol::PlayerAbsorbed> Runtime::latest_absorption() const noexcept {
+    return impl_->latest_absorption();
+}
+
+protocol::InputSequenceId Runtime::latest_respawn_request_id() const noexcept {
+    return impl_->latest_respawn_request_id();
+}
+
+protocol::RespawnResult Runtime::latest_respawn_result() const noexcept {
+    return impl_->latest_respawn_result();
 }
 
 mycore::net_transport::ConnectionHandle Runtime::connection_handle() const noexcept {

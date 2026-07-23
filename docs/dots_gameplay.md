@@ -5,10 +5,10 @@ future mechanics outlined in feature plans. The server is authoritative for ever
 
 ## Current objective
 
-Dots is an early Agar.io-like movement and growth slice. Players move through a shared field and
-consume food to gain mass. There is currently no score, win condition, player-versus-player
-absorption, defeat, respawn, split, merge, or separate energy system. Food is the current resource
-that fills the role an energy pickup might later fill.
+Dots is an early Agar.io-like movement and growth slice. Players move through a shared field,
+consume food, and can absorb smaller opponents. There is currently no score, win condition,
+split, merge, or separate energy system. Food is the current resource that fills the role an
+energy pickup might later fill.
 
 ## World and food
 
@@ -16,14 +16,18 @@ that fills the role an energy pickup might later fill.
 - Each player starts with mass `16`; radius is `sqrt(mass)`.
 - Food has mass `1`. When a player's circle overlaps food, the food is removed and its mass is
   added to that player.
+- A player can absorb an overlapping opponent only when its mass is strictly larger. Equal-mass
+  and same-owner players cannot absorb one another. The victim's full mass transfers to the
+  winner before contested food is resolved, using deterministic mass/entity ordering.
 - The default field contains 272 food entities in an 8-world-unit grid from `x = -80..80` and
   `y = -48..48`, excluding the origin. Food does not currently respawn.
 
 ## Joining and spawning
 
-The authoritative server chooses player spawns. It cycles through a deterministic shuffled set of
-77 nearby slots in an 11-by-7 layout, skips occupied slots, and includes the assigned position in
-the first full snapshot after `ServerWelcome`. Clients never choose or predict their own spawn.
+The authoritative server chooses player spawns. It searches an unbounded deterministic square
+spiral centered at the origin on a 12-world-unit lattice and selects the first initial-size circle
+that does not touch a live player. Food does not block a spawn. The chosen entity and position are
+included in the first full snapshot after `ServerWelcome`; clients never choose or predict them.
 
 Offline play starts its local player at the origin; the food field deliberately leaves that point
 empty. Native and in-memory multiplayer use server-assigned spawns.
@@ -39,11 +43,32 @@ session connected. If the server receives no valid input packet for 90 ticks (th
 logs a liveness warning, closes the connection, and removes the player. A normal transport
 disconnect removes the player promptly instead.
 
+## Defeat and respawn lifecycle
+
+Each network session has a distinct player owner and a confirmed `Playing` or `Spectating` mode.
+When the server reports that a session's last piece was absorbed, the session remains connected,
+owns no player, and continues receiving full snapshots. Those snapshots repeat its confirmed
+killer/follow entity, defeat tick, and respawn deadline, so losing the first transition snapshot
+cannot lose the lifecycle state.
+
+Respawn is optional and never automatic. The default deadline is 90 server ticks after defeat;
+`dots_server --respawn-cooldown-ticks <count>` changes the immutable value announced during the
+handshake. A respawn action before the deadline is consumed and acknowledged but records
+`RejectedCooldown`. Requests while playing record `RejectedNotSpectating`; an eligible request
+uses the same safe server-owned spawn search and records `Accepted` or `RejectedNoSafeSpawn`.
+An input acknowledgement means only that the sample was consumed—the repeated result field
+communicates whether the gameplay action succeeded.
+
 ## What each client sees
 
-The local controlled player is responsive through client-side prediction: the client applies its
-own input immediately, then reconciles with the server's acknowledged snapshot and smooths only
-the visual correction.
+While `Playing`, the local primary player is responsive through client-side prediction: the
+client applies its own input immediately, then reconciles with the server's acknowledged snapshot
+and smooths only the visual correction.
+
+The network client runtime accepts confirmed spectating snapshots without requiring a permanent
+controlled entity and continues sending session input/heartbeats. Follow-killer and free-camera
+presentation plus respawn controls are the next Feature 13 checkpoint and are not implemented in
+the graphical client yet.
 
 Remote players are not extrapolated from guessed inputs. The client stores authoritative snapshots
 and renders remotes about six server ticks (200 ms) behind the newest known server state,
@@ -57,7 +82,6 @@ color.
 
 ## Planned gameplay, not current rules
 
-Future plans may add player interactions, defeat/spectating, respawn, scoring or winning,
-split/merge actions, cooldowns, and richer resource/energy mechanics. These must be specified in
-this guide when they become implemented gameplay rules; feature plans remain design documents
-until then.
+Future plans may add spectator presentation, scoring or winning, split/merge actions, additional
+cooldowns, and richer resource/energy mechanics. These must be specified in this guide when they
+become implemented gameplay rules; feature plans remain design documents until then.

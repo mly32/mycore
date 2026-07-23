@@ -60,9 +60,9 @@ The Dots protocol is a game-owned contract. It defines four messages today:
 | Message | Direction | Delivery | Purpose |
 |---|---|---|---|
 | `ClientHello` | Client to server | Reliable | Request a session using the supported protocol version. |
-| `ServerWelcome` | Server to client | Reliable | Assign the client ID and controlled entity ID. |
-| `InputPacket` | Client to server | Unreliable | Submit one to three sequenced movement samples and acknowledge the latest received snapshot. |
-| `FullSnapshot` | Server to client | Unreliable | Replace the client's replicated view with authoritative entity state. |
+| `ServerWelcome` | Server to client | Reliable | Assign the client ID and immutable respawn cooldown. |
+| `InputPacket` | Client to server | Unreliable | Submit one to three sequenced movement/action samples and acknowledge the latest received snapshot. |
+| `FullSnapshot` | Server to client | Unreliable | Atomically replace replicated entities plus recipient lifecycle state. |
 
 Every encoded message starts with a 12-byte header containing:
 
@@ -70,11 +70,12 @@ Every encoded message starts with a 12-byte header containing:
 magic "DOTS" + protocol version + message kind + flags + payload length
 ```
 
-The current protocol version is 2. Version 1, used by Features 8--10, carried one input sample
-and no pending-input depth. Version 2 keeps input message-kind value `3`, replaces that payload
-with one to three ordered samples, and adds per-client queue depth to full snapshots. There is no
-dual-version negotiation: a version-1 binary receives `UnsupportedVersion` rather than having its
-payload interpreted as version 2.
+The current protocol version is 3. Version 1, used by Features 8--10, carried one input sample
+and no pending-input depth. Version 2 added one-to-three-sample redundancy and per-client queue
+depth. Version 3 adds player owner IDs, respawn actions/configuration, and a recipient-specific
+session block containing mode, owned/primary/follow entities, defeat/deadline ticks, latest
+absorption, and explicit respawn result. There is no dual-version negotiation: older binaries
+receive `UnsupportedVersion` rather than having their payload interpreted as version 3.
 
 Integers and floating-point bit patterns have defined widths and use big-endian network byte
 order. Fields are encoded individually; the implementation never copies a C++ struct directly
@@ -82,9 +83,10 @@ onto the wire. This keeps the format independent of compiler padding, machine by
 the server's in-memory component layout.
 
 The decoder treats every packet as hostile input. It checks framing, lengths, version, enums,
-IDs, finite numbers, movement ranges, entity uniqueness, and size limits before accepting a
-message. A malformed packet produces a typed codec error. At the server boundary, malformed or
-wrong-direction messages disconnect only the offending peer.
+IDs, finite numbers, movement ranges, known action bits, entity/ownership uniqueness, lifecycle
+combinations, deadline ordering, and size limits before accepting a message. A malformed packet
+produces a typed codec error. At the server boundary, malformed or wrong-direction messages
+disconnect only the offending peer.
 
 ### Why reliable and unreliable are both useful
 
@@ -229,8 +231,8 @@ log "Client ... joined"                install identity and snapshot
 `DOTS_SERVER_READY` only means that the server is listening. A renderer log before a client
 transport log is also normal because local presentation is initialized first. The server can log
 that a client joined before the client logs that its session is ready: the server has accepted the
-hello at that point, while the client still needs both the welcome and a snapshot containing its
-controlled player. Those two messages may arrive in either order. If the first unreliable
+hello at that point, while the client still needs both the welcome and a snapshot containing a
+valid recipient session block. Those two messages may arrive in either order. If the first unreliable
 snapshot is lost, a later 15 Hz full snapshot can still complete the client handshake.
 
 The client starts one 10-second deadline when its networked runtime is created. That deadline
@@ -252,6 +254,8 @@ After startup, lifecycle events are handled as follows:
 | Server closes | Logs the transport close and stops the networked client. | The server process exits. |
 | Connection fails | Logs the transport failure and stops the networked client. | Removes the session and player when it observes the failure. |
 | Malformed or wrong-direction packet | The offending client is disconnected. | Rejects and removes only the offending session; the server and other clients continue. |
+| Last owned player is absorbed | Installs repeated `Spectating` state without treating the missing primary as a protocol failure. | Keeps the connection alive and repeats killer, defeat, deadline, and action-result state. |
+| Respawn action | Continues until a snapshot reports the authoritative result. An input ACK alone is not success. | Rejects early/non-spectator requests or safely spawns a new owned player after the deadline. |
 | Client process is killed or loses connectivity | Cannot send a graceful request. | Detects the transport failure later, then removes the session and player. |
 
 The local `dots_session.py` launcher treats an unexpected nonzero client exit or any server exit
@@ -287,7 +291,7 @@ The current messages behave under impairment like this:
 | Transport connection establishment | Transport-managed | May retry, take much longer, or fail before the Dots handshake starts. |
 | `ClientHello` and `ServerWelcome` | Reliable | Transport retransmits while viable; delay increases, but Dots does not repeatedly call `send`. |
 | `InputPacket` at 30 Hz | Unreliable | The next one or two packets can recover a lost current sample while it remains inside the default two-sample redundancy window. Three consecutive losses, or any loss with redundancy disabled, can skip a sample. |
-| `FullSnapshot` at 15 Hz | Unreliable | Replicated/remotely rendered state holds until a newer snapshot. Owned movement keeps predicting, increasing ACK lead and later replay work. |
+| `FullSnapshot` at 15 Hz | Unreliable | Entity and lifecycle state hold until a newer snapshot. Durable session fields repeat, so a lost defeat/respawn transition is recovered by a later snapshot. Owned movement keeps predicting only while Playing. |
 | Disconnect | Transport lifecycle | Graceful requests are reported promptly when delivered; abrupt loss is reported after failure detection. |
 
 Owned movement responds locally despite lag, but authority and its ACK arrive later, increasing
@@ -412,7 +416,7 @@ allow it to be amplified with fake lag and loss: owned movement responds immedia
 authoritative samples and remote entities remain delayed. Feature 12 makes remote motion smooth
 by presenting historical known samples rather than guessing remote input or velocity.
 
-Input samples have sequence IDs, protocol-v2 packets provide bounded redundancy, the server
+Input samples have sequence IDs, protocol-v3 packets retain bounded redundancy, the server
 schedules at most one queued sample per client per tick, snapshots acknowledge
 `last_processed_input`, and inputs report the latest received snapshot. The client runtime now
 retains a fixed 256-entry input/result history and atomically replays the unacknowledged suffix

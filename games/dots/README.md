@@ -64,7 +64,7 @@ Run an executable with `--help` for its complete CLI.
 | `dots_server` | Headless authoritative 30 Hz native server |
 | `dots_bot` | Headless native client that repeatedly moves in a wide rectangle |
 
-Networked clients send protocol-v2 input packets at 30 Hz and receive authoritative snapshots at
+Networked clients send protocol-v3 input packets at 30 Hz and receive authoritative snapshots at
 15 Hz. Each input packet can repeat up to two unacknowledged samples by default. The controlled
 player responds from bounded movement prediction immediately, reconciles against server ACKs,
 and smooths only visible corrections over 100 ms. Remote players use six-tick delayed
@@ -83,9 +83,20 @@ at two seconds), allowing the close notification to leave before process teardow
 When input samples are briefly missing, the server holds the last movement for five ticks and then
 stops that player while keeping the session alive.
 
-The authoritative server assigns each joining player a distinct, deterministically shuffled
-spawn slot near the food field. Spawn position is included in the welcome-following full snapshot;
-clients never choose it locally.
+The authoritative server assigns each joining or respawning player the first clear point in a
+deterministic 12-world-unit square spiral. Spawn position and owner are included in the
+welcome-following full snapshot; clients never choose them locally. Player absorption and
+Playing/Spectating lifecycle are server-owned and repeated in snapshots. The graphical spectator
+camera and controls land in the next Feature 13 checkpoint.
+
+The default respawn cooldown is 90 server ticks. Override it when starting the server, including
+zero for immediate eligibility:
+
+```bash
+./build/macos-clang-debug/bin/dots_server \
+    --listen 127.0.0.1:27020 \
+    --respawn-cooldown-ticks 90
+```
 
 ## Controls and configuration
 

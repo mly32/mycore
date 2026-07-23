@@ -4,13 +4,14 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <variant>
 #include <vector>
 
 namespace dots::protocol {
 
-inline constexpr std::uint16_t kProtocolVersion = 2;
+inline constexpr std::uint16_t kProtocolVersion = 3;
 inline constexpr std::size_t kPacketHeaderBytes = 12;
 inline constexpr std::size_t kMaximumEncodedInputPacketBytes = 71;
 inline constexpr std::size_t kTargetTransportPayloadBytes = 1'200;
@@ -38,6 +39,7 @@ using EncodedMessage = std::vector<std::byte>;
 using EncodeResult = std::variant<EncodedMessage, CodecError>;
 using DecodeResult = std::variant<Message, CodecError>;
 
+[[nodiscard]] std::optional<CodecError> validate(const Message& message);
 [[nodiscard]] EncodeResult encode(const Message& message);
 [[nodiscard]] DecodeResult decode(std::span<const std::byte> bytes);
 

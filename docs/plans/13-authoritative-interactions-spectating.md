@@ -139,6 +139,10 @@ The durable session state repeats in unreliable snapshots, so one lost transitio
 strand the client. `last_processed_input_id` means that the sample was consumed; snapshot session
 state reveals whether respawn succeeded.
 
+The message model groups those recipient-specific fields in one `RecipientSessionState` value.
+Replication validates and commits that value with the entity list, giving Feature 14 one atomic
+authoritative topology-and-lifecycle checkpoint instead of inferring defeat from a missing entity.
+
 Codec validation rejects unknown modes/bits, invalid owner/session combinations, impossible
 deadline ordering, duplicate owned entities, non-finite gameplay values, and malformed optional
 IDs.
@@ -205,13 +209,13 @@ Do not start a checkpoint until the preceding checkpoint is reviewed and approve
 - [x] Keep protocol-v2 server sessions in a temporary shared-owner compatibility group so the
   simulation checkpoint cannot remove a client's permanent controlled entity. Phase 13.2
   replaces this gate with distinct owners and durable lifecycle replication.
-- [ ] Phase 13.1 approved.
+- [x] Phase 13.1 approved.
 
 ### Phase 13.2: Protocol and session lifecycle
 
-- [ ] Add protocol version 3, session/config fields, and respawn action validation.
-- [ ] Keep defeated sessions connected and repeat their durable state in snapshots.
-- [ ] Add optional server-configured respawn and safe authoritative re-entry.
+- [x] Add protocol version 3, session/config fields, and respawn action validation.
+- [x] Keep defeated sessions connected and repeat their durable state in snapshots.
+- [x] Add optional server-configured respawn and safe authoritative re-entry.
 - [ ] Phase 13.2 approved.
 
 ### Phase 13.3: Spectator presentation

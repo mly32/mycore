@@ -1,5 +1,6 @@
 #include "dots/replication/replication.hpp"
 
+#include "dots/protocol/codec.hpp"
 #include "dots/simulation/world.hpp"
 
 #include <algorithm>
@@ -16,14 +17,21 @@ namespace {
 [[nodiscard]] bool valid_entity(const protocol::EntityState& entity) noexcept {
     const auto known_kind =
         entity.kind == protocol::EntityKind::Player || entity.kind == protocol::EntityKind::Food;
-    return entity.entity_id.is_valid() && known_kind && std::isfinite(entity.position_x) &&
-           std::isfinite(entity.position_y) && std::isfinite(entity.mass) && entity.mass > 0.0F;
+    const auto valid_owner =
+        (entity.kind == protocol::EntityKind::Player) == entity.owner_id.is_valid();
+    return entity.entity_id.is_valid() && known_kind && valid_owner &&
+           std::isfinite(entity.position_x) && std::isfinite(entity.position_y) &&
+           std::isfinite(entity.mass) && entity.mass > 0.0F;
 }
 
 } // namespace
 
 protocol::EntityId to_protocol(simulation::EntityId id) noexcept {
     return protocol::EntityId{id.value()};
+}
+
+protocol::PlayerOwnerId to_protocol(simulation::PlayerOwnerId id) noexcept {
+    return protocol::PlayerOwnerId{id.value()};
 }
 
 simulation::InputCommandId to_simulation(protocol::InputSequenceId id) noexcept {
@@ -33,7 +41,8 @@ simulation::InputCommandId to_simulation(protocol::InputSequenceId id) noexcept 
 SnapshotBuildResult build_full_snapshot(const simulation::World& world,
                                         protocol::SnapshotId snapshot_id,
                                         protocol::InputSequenceId last_processed,
-                                        std::uint8_t pending_input_count) {
+                                        std::uint8_t pending_input_count,
+                                        protocol::RecipientSessionState recipient) {
     if (!snapshot_id.is_valid()) {
         return SnapshotBuildError::InvalidSnapshotId;
     }
@@ -49,6 +58,7 @@ SnapshotBuildResult build_full_snapshot(const simulation::World& world,
         .server_tick = static_cast<std::uint32_t>(world.tick().value()),
         .last_processed_input_id = last_processed,
         .pending_input_count = pending_input_count,
+        .recipient = std::move(recipient),
         .entities = {},
     };
     snapshot.entities.reserve(world.player_count() + world.food_count());
@@ -57,13 +67,16 @@ SnapshotBuildResult build_full_snapshot(const simulation::World& world,
         for (const auto id : ids) {
             const auto position = world.position(id);
             const auto mass = world.mass(id);
+            const auto owner = world.player_owner(id);
             if (!position || !mass || !std::isfinite(position->x) || !std::isfinite(position->y) ||
-                !std::isfinite(*mass) || *mass <= 0.0F) {
+                !std::isfinite(*mass) || *mass <= 0.0F ||
+                (kind == protocol::EntityKind::Player && !owner)) {
                 return false;
             }
             snapshot.entities.push_back({
                 .entity_id = to_protocol(id),
                 .kind = kind,
+                .owner_id = owner ? to_protocol(*owner) : protocol::PlayerOwnerId::invalid(),
                 .position_x = position->x,
                 .position_y = position->y,
                 .mass = *mass,
@@ -80,6 +93,9 @@ SnapshotBuildResult build_full_snapshot(const simulation::World& world,
               [](const protocol::EntityState& lhs, const protocol::EntityState& rhs) {
                   return lhs.entity_id < rhs.entity_id;
               });
+    if (protocol::validate(snapshot)) {
+        return SnapshotBuildError::InvalidWorldState;
+    }
     return snapshot;
 }
 
@@ -92,6 +108,9 @@ SnapshotApplyResult ReplicatedWorld::apply(const protocol::FullSnapshot& snapsho
         return SnapshotApplyResult::Stale;
     }
     if (snapshot_id_.is_valid() && snapshot.server_tick < server_tick_) {
+        return SnapshotApplyResult::Invalid;
+    }
+    if (protocol::validate(snapshot)) {
         return SnapshotApplyResult::Invalid;
     }
 
@@ -107,6 +126,7 @@ SnapshotApplyResult ReplicatedWorld::apply(const protocol::FullSnapshot& snapsho
     server_tick_ = snapshot.server_tick;
     last_processed_input_id_ = snapshot.last_processed_input_id;
     pending_input_count_ = snapshot.pending_input_count;
+    recipient_ = snapshot.recipient;
     entities_ = snapshot.entities;
     std::sort(entities_.begin(),
               entities_.end(),
@@ -159,6 +179,10 @@ protocol::InputSequenceId ReplicatedWorld::last_processed_input_id() const noexc
 
 std::uint8_t ReplicatedWorld::pending_input_count() const noexcept {
     return pending_input_count_;
+}
+
+const protocol::RecipientSessionState& ReplicatedWorld::recipient() const noexcept {
+    return recipient_;
 }
 
 } // namespace dots::replication

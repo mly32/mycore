@@ -12,6 +12,15 @@ clock_time(std::chrono::steady_clock::duration offset) noexcept {
     return std::chrono::steady_clock::time_point{offset};
 }
 
+[[nodiscard]] dots::protocol::RecipientSessionState
+playing_session(dots::protocol::EntityId primary_entity_id) {
+    return {
+        .mode = dots::protocol::SessionMode::Playing,
+        .owned_entity_ids = {primary_entity_id},
+        .primary_entity_id = primary_entity_id,
+    };
+}
+
 } // namespace
 
 TEST_CASE("Dots presentation extracts live food before players", "[dots][presentation]") {
@@ -73,11 +82,13 @@ TEST_CASE("Remote endpoint diagnostics include a visible interpolation connector
     dots::replication::ReplicatedWorld world;
     REQUIRE(world.apply({
                 .snapshot_id = dots::protocol::SnapshotId{1},
+                .recipient = playing_session(dots::protocol::EntityId{1}),
                 .entities =
                     {
                         {
                             .entity_id = dots::protocol::EntityId{1},
                             .kind = dots::protocol::EntityKind::Player,
+                            .owner_id = dots::protocol::PlayerOwnerId{4},
                             .position_x = 0.0F,
                             .position_y = 0.0F,
                             .mass = 16.0F,
@@ -147,11 +158,13 @@ TEST_CASE("Dots presentation extracts replicated state around its controlled pla
     dots::replication::ReplicatedWorld world;
     REQUIRE(world.apply({
                 .snapshot_id = dots::protocol::SnapshotId{1},
+                .recipient = playing_session(dots::protocol::EntityId{3}),
                 .entities =
                     {
                         {
                             .entity_id = dots::protocol::EntityId{3},
                             .kind = dots::protocol::EntityKind::Player,
+                            .owner_id = dots::protocol::PlayerOwnerId{4},
                             .position_x = 5.0F,
                             .position_y = -2.0F,
                             .mass = 16.0F,
@@ -445,11 +458,13 @@ TEST_CASE("Predicted replicated extraction separates presentation and known stat
     dots::replication::ReplicatedWorld world;
     REQUIRE(world.apply({
                 .snapshot_id = dots::protocol::SnapshotId{1},
+                .recipient = playing_session(dots::protocol::EntityId{3}),
                 .entities =
                     {
                         {
                             .entity_id = dots::protocol::EntityId{3},
                             .kind = dots::protocol::EntityKind::Player,
+                            .owner_id = dots::protocol::PlayerOwnerId{4},
                             .position_x = 5.0F,
                             .position_y = -2.0F,
                             .mass = 16.0F,

@@ -30,12 +30,14 @@ enum class SnapshotApplyResult : std::uint8_t {
 };
 
 [[nodiscard]] protocol::EntityId to_protocol(simulation::EntityId id) noexcept;
+[[nodiscard]] protocol::PlayerOwnerId to_protocol(simulation::PlayerOwnerId id) noexcept;
 [[nodiscard]] simulation::InputCommandId to_simulation(protocol::InputSequenceId id) noexcept;
 
 [[nodiscard]] SnapshotBuildResult build_full_snapshot(const simulation::World& world,
                                                       protocol::SnapshotId snapshot_id,
                                                       protocol::InputSequenceId last_processed,
-                                                      std::uint8_t pending_input_count);
+                                                      std::uint8_t pending_input_count,
+                                                      protocol::RecipientSessionState recipient);
 
 class ReplicatedWorld {
 public:
@@ -48,12 +50,14 @@ public:
     [[nodiscard]] protocol::SnapshotId snapshot_id() const noexcept;
     [[nodiscard]] protocol::InputSequenceId last_processed_input_id() const noexcept;
     [[nodiscard]] std::uint8_t pending_input_count() const noexcept;
+    [[nodiscard]] const protocol::RecipientSessionState& recipient() const noexcept;
 
 private:
     protocol::SnapshotId snapshot_id_;
     std::uint32_t server_tick_{};
     protocol::InputSequenceId last_processed_input_id_;
     std::uint8_t pending_input_count_{};
+    protocol::RecipientSessionState recipient_;
     std::vector<protocol::EntityState> entities_;
 };
 

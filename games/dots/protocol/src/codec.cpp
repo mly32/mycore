@@ -8,6 +8,7 @@
 #include <optional>
 #include <span>
 #include <type_traits>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <variant>
@@ -24,8 +25,10 @@ constexpr std::uint8_t kSupportedFlags = 0;
 constexpr std::size_t kServerWelcomePayloadBytes = 12;
 constexpr std::size_t kInputPacketPrefixBytes = 5;
 constexpr std::size_t kInputSampleBytes = 18;
-constexpr std::size_t kFullSnapshotHeaderBytes = 15;
-constexpr std::size_t kEntityStateBytes = 17;
+constexpr std::size_t kFullSnapshotBaseBytes = 40;
+constexpr std::size_t kOwnedEntityIdBytes = 4;
+constexpr std::size_t kPlayerAbsorbedBytes = 24;
+constexpr std::size_t kEntityStateBytes = 21;
 constexpr float kMaximumMovementLengthSquared = 1.0001F;
 
 static_assert(sizeof(float) == sizeof(std::uint32_t));
@@ -138,6 +141,27 @@ private:
     return false;
 }
 
+[[nodiscard]] bool is_known(SessionMode mode) noexcept {
+    switch (mode) {
+    case SessionMode::Playing:
+    case SessionMode::Spectating:
+        return true;
+    }
+    return false;
+}
+
+[[nodiscard]] bool is_known(RespawnResult result) noexcept {
+    switch (result) {
+    case RespawnResult::None:
+    case RespawnResult::Accepted:
+    case RespawnResult::RejectedCooldown:
+    case RespawnResult::RejectedNotSpectating:
+    case RespawnResult::RejectedNoSafeSpawn:
+        return true;
+    }
+    return false;
+}
+
 [[nodiscard]] bool valid_movement(float x, float y) noexcept {
     return std::isfinite(x) && std::isfinite(y) && x >= -1.0F && x <= 1.0F && y >= -1.0F &&
            y <= 1.0F && ((x * x) + (y * y)) <= kMaximumMovementLengthSquared;
@@ -148,7 +172,7 @@ private:
 }
 
 [[nodiscard]] std::optional<CodecError> validate(const ServerWelcome& message) noexcept {
-    if (!message.client_id.is_valid() || !message.controlled_entity_id.is_valid()) {
+    if (!message.client_id.is_valid()) {
         return CodecError::InvalidId;
     }
     return std::nullopt;
@@ -158,7 +182,7 @@ private:
     if (!sample.sequence_id.is_valid()) {
         return CodecError::InvalidId;
     }
-    if (sample.action_bits != 0) {
+    if ((sample.action_bits & static_cast<std::uint16_t>(~kKnownInputActionBits)) != 0) {
         return CodecError::OutOfRange;
     }
     if (!std::isfinite(sample.movement_x) || !std::isfinite(sample.movement_y)) {
@@ -206,9 +230,53 @@ private:
     if (message.entities.size() > std::numeric_limits<std::uint16_t>::max()) {
         return CodecError::TooManyEntities;
     }
+    if (message.recipient.owned_entity_ids.size() > std::numeric_limits<std::uint16_t>::max()) {
+        return CodecError::TooManyEntities;
+    }
+    if (!is_known(message.recipient.mode) || !is_known(message.recipient.latest_respawn_result)) {
+        return CodecError::InvalidEnum;
+    }
+    const auto invalid_optional_tick = [](const std::optional<std::uint32_t>& tick) {
+        return tick && *tick == std::numeric_limits<std::uint32_t>::max();
+    };
+    if (invalid_optional_tick(message.recipient.defeat_tick) ||
+        invalid_optional_tick(message.recipient.respawn_available_tick)) {
+        return CodecError::OutOfRange;
+    }
+    const auto has_respawn_request = message.recipient.latest_respawn_request_id.is_valid();
+    if (has_respawn_request != (message.recipient.latest_respawn_result != RespawnResult::None)) {
+        return CodecError::InvalidId;
+    }
+    if (has_respawn_request &&
+        (!message.last_processed_input_id.is_valid() ||
+         message.recipient.latest_respawn_request_id > message.last_processed_input_id)) {
+        return CodecError::InvalidInputOrdering;
+    }
+    if (message.recipient.latest_absorption) {
+        const auto& event = *message.recipient.latest_absorption;
+        if (!event.absorber_entity_id.is_valid() || !event.victim_entity_id.is_valid() ||
+            !event.absorber_owner_id.is_valid() || !event.victim_owner_id.is_valid()) {
+            return CodecError::InvalidId;
+        }
+        if (event.absorber_entity_id == event.victim_entity_id ||
+            event.absorber_owner_id == event.victim_owner_id) {
+            return CodecError::InvalidId;
+        }
+        if (!std::isfinite(event.transferred_mass)) {
+            return CodecError::InvalidNumber;
+        }
+        if (event.transferred_mass <= 0.0F) {
+            return CodecError::OutOfRange;
+        }
+        if (event.server_tick > message.server_tick) {
+            return CodecError::OutOfRange;
+        }
+    }
 
     std::unordered_set<std::uint32_t> entity_ids;
+    std::unordered_map<std::uint32_t, const EntityState*> entities_by_id;
     entity_ids.reserve(message.entities.size());
+    entities_by_id.reserve(message.entities.size());
     for (const auto& entity : message.entities) {
         if (!entity.entity_id.is_valid()) {
             return CodecError::InvalidId;
@@ -223,9 +291,68 @@ private:
         if (entity.mass <= 0.0F) {
             return CodecError::OutOfRange;
         }
+        if ((entity.kind == EntityKind::Player) != entity.owner_id.is_valid()) {
+            return CodecError::InvalidId;
+        }
         if (!entity_ids.insert(entity.entity_id.value()).second) {
             return CodecError::DuplicateEntity;
         }
+        entities_by_id.emplace(entity.entity_id.value(), &entity);
+    }
+
+    std::unordered_set<std::uint32_t> owned_ids;
+    owned_ids.reserve(message.recipient.owned_entity_ids.size());
+    PlayerOwnerId owned_owner;
+    for (const auto entity_id : message.recipient.owned_entity_ids) {
+        if (!entity_id.is_valid()) {
+            return CodecError::InvalidId;
+        }
+        if (!owned_ids.insert(entity_id.value()).second) {
+            return CodecError::DuplicateEntity;
+        }
+        const auto entity = entities_by_id.find(entity_id.value());
+        if (entity == entities_by_id.end() || entity->second->kind != EntityKind::Player) {
+            return CodecError::InvalidId;
+        }
+        if (owned_owner.is_valid() && entity->second->owner_id != owned_owner) {
+            return CodecError::InvalidId;
+        }
+        owned_owner = entity->second->owner_id;
+    }
+    if (message.recipient.follow_entity_id.is_valid()) {
+        const auto follow = entities_by_id.find(message.recipient.follow_entity_id.value());
+        if (follow == entities_by_id.end() || follow->second->kind != EntityKind::Player) {
+            return CodecError::InvalidId;
+        }
+    }
+    if (message.recipient.latest_absorption) {
+        const auto& event = *message.recipient.latest_absorption;
+        const auto absorber = entities_by_id.find(event.absorber_entity_id.value());
+        if (absorber != entities_by_id.end() &&
+            (absorber->second->kind != EntityKind::Player ||
+             absorber->second->owner_id != event.absorber_owner_id)) {
+            return CodecError::InvalidId;
+        }
+        if (entities_by_id.contains(event.victim_entity_id.value())) {
+            return CodecError::InvalidId;
+        }
+    }
+
+    if (message.recipient.mode == SessionMode::Playing) {
+        if (message.recipient.owned_entity_ids.empty() ||
+            !message.recipient.primary_entity_id.is_valid() ||
+            !owned_ids.contains(message.recipient.primary_entity_id.value()) ||
+            message.recipient.follow_entity_id.is_valid() || message.recipient.defeat_tick ||
+            message.recipient.respawn_available_tick) {
+            return CodecError::InvalidId;
+        }
+    } else if (!message.recipient.owned_entity_ids.empty() ||
+               message.recipient.primary_entity_id.is_valid() || !message.recipient.defeat_tick ||
+               !message.recipient.respawn_available_tick) {
+        return CodecError::InvalidId;
+    } else if (*message.recipient.defeat_tick > message.server_tick ||
+               *message.recipient.respawn_available_tick < *message.recipient.defeat_tick) {
+        return CodecError::OutOfRange;
     }
     return std::nullopt;
 }
@@ -247,7 +374,7 @@ private:
         message);
 }
 
-[[nodiscard]] std::optional<CodecError> validate(const Message& message) {
+[[nodiscard]] std::optional<CodecError> validate_message(const Message& message) {
     return std::visit(
         [](const auto& value) {
             return validate(value);
@@ -266,7 +393,10 @@ private:
             } else if constexpr (std::is_same_v<Value, InputPacket>) {
                 return kInputPacketPrefixBytes + (value.samples.size() * kInputSampleBytes);
             } else {
-                return kFullSnapshotHeaderBytes + (value.entities.size() * kEntityStateBytes);
+                return kFullSnapshotBaseBytes +
+                       (value.recipient.owned_entity_ids.size() * kOwnedEntityIdBytes) +
+                       (value.recipient.latest_absorption ? kPlayerAbsorbedBytes : 0U) +
+                       (value.entities.size() * kEntityStateBytes);
             }
         },
         message);
@@ -276,8 +406,8 @@ void encode_payload(Writer&, const ClientHello&) {}
 
 void encode_payload(Writer& writer, const ServerWelcome& message) {
     writer.write_u32(message.client_id.value());
-    writer.write_u32(message.controlled_entity_id.value());
     writer.write_u32(message.server_tick);
+    writer.write_u32(message.respawn_cooldown_ticks);
 }
 
 void encode_payload(Writer& writer, const InputPacket& message) {
@@ -297,10 +427,34 @@ void encode_payload(Writer& writer, const FullSnapshot& message) {
     writer.write_u32(message.server_tick);
     writer.write_u32(message.last_processed_input_id.value());
     writer.write_u8(message.pending_input_count);
+    writer.write_u8(static_cast<std::uint8_t>(message.recipient.mode));
+    writer.write_u32(message.recipient.primary_entity_id.value());
+    writer.write_u32(message.recipient.follow_entity_id.value());
+    writer.write_u32(
+        message.recipient.defeat_tick.value_or(std::numeric_limits<std::uint32_t>::max()));
+    writer.write_u32(message.recipient.respawn_available_tick.value_or(
+        std::numeric_limits<std::uint32_t>::max()));
+    writer.write_u32(message.recipient.latest_respawn_request_id.value());
+    writer.write_u8(static_cast<std::uint8_t>(message.recipient.latest_respawn_result));
+    writer.write_u16(static_cast<std::uint16_t>(message.recipient.owned_entity_ids.size()));
+    writer.write_u8(message.recipient.latest_absorption ? 1U : 0U);
+    for (const auto entity_id : message.recipient.owned_entity_ids) {
+        writer.write_u32(entity_id.value());
+    }
+    if (message.recipient.latest_absorption) {
+        const auto& event = *message.recipient.latest_absorption;
+        writer.write_u32(event.server_tick);
+        writer.write_u32(event.absorber_entity_id.value());
+        writer.write_u32(event.victim_entity_id.value());
+        writer.write_u32(event.absorber_owner_id.value());
+        writer.write_u32(event.victim_owner_id.value());
+        writer.write_float(event.transferred_mass);
+    }
     writer.write_u16(static_cast<std::uint16_t>(message.entities.size()));
     for (const auto& entity : message.entities) {
         writer.write_u32(entity.entity_id.value());
         writer.write_u8(static_cast<std::uint8_t>(entity.kind));
+        writer.write_u32(entity.owner_id.value());
         writer.write_float(entity.position_x);
         writer.write_float(entity.position_y);
         writer.write_float(entity.mass);
@@ -316,17 +470,15 @@ void encode_payload(Writer& writer, const FullSnapshot& message) {
 
 [[nodiscard]] DecodeResult decode_server_welcome(Reader& reader) {
     std::uint32_t client_id{};
-    std::uint32_t controlled_entity_id{};
     ServerWelcome message;
-    if (!reader.read_u32(client_id) || !reader.read_u32(controlled_entity_id) ||
-        !reader.read_u32(message.server_tick)) {
+    if (!reader.read_u32(client_id) || !reader.read_u32(message.server_tick) ||
+        !reader.read_u32(message.respawn_cooldown_ticks)) {
         return CodecError::Truncated;
     }
     if (reader.remaining() != 0) {
         return CodecError::TrailingBytes;
     }
     message.client_id = ClientId{client_id};
-    message.controlled_entity_id = EntityId{controlled_entity_id};
     if (const auto error = validate(message)) {
         return *error;
     }
@@ -378,11 +530,74 @@ void encode_payload(Writer& writer, const FullSnapshot& message) {
     std::uint32_t snapshot_id{};
     std::uint32_t last_processed_input_id{};
     std::uint8_t pending_input_count{};
+    std::uint8_t session_mode{};
+    std::uint32_t primary_entity_id{};
+    std::uint32_t follow_entity_id{};
+    std::uint32_t defeat_tick{};
+    std::uint32_t respawn_available_tick{};
+    std::uint32_t latest_respawn_request_id{};
+    std::uint8_t latest_respawn_result{};
+    std::uint16_t owned_entity_count{};
+    std::uint8_t has_latest_absorption{};
     std::uint16_t entity_count{};
     FullSnapshot message;
     if (!reader.read_u32(snapshot_id) || !reader.read_u32(message.server_tick) ||
         !reader.read_u32(last_processed_input_id) || !reader.read_u8(pending_input_count) ||
-        !reader.read_u16(entity_count)) {
+        !reader.read_u8(session_mode) || !reader.read_u32(primary_entity_id) ||
+        !reader.read_u32(follow_entity_id) || !reader.read_u32(defeat_tick) ||
+        !reader.read_u32(respawn_available_tick) || !reader.read_u32(latest_respawn_request_id) ||
+        !reader.read_u8(latest_respawn_result) || !reader.read_u16(owned_entity_count) ||
+        !reader.read_u8(has_latest_absorption)) {
+        return CodecError::Truncated;
+    }
+
+    if (has_latest_absorption > 1U) {
+        return CodecError::OutOfRange;
+    }
+    const auto session_tail_bytes =
+        (static_cast<std::size_t>(owned_entity_count) * kOwnedEntityIdBytes) +
+        (has_latest_absorption != 0U ? kPlayerAbsorbedBytes : 0U) + sizeof(std::uint16_t);
+    if (reader.remaining() < session_tail_bytes) {
+        return CodecError::Truncated;
+    }
+
+    message.recipient.mode = static_cast<SessionMode>(session_mode);
+    message.recipient.primary_entity_id = EntityId{primary_entity_id};
+    message.recipient.follow_entity_id = EntityId{follow_entity_id};
+    if (defeat_tick != std::numeric_limits<std::uint32_t>::max()) {
+        message.recipient.defeat_tick = defeat_tick;
+    }
+    if (respawn_available_tick != std::numeric_limits<std::uint32_t>::max()) {
+        message.recipient.respawn_available_tick = respawn_available_tick;
+    }
+    message.recipient.latest_respawn_request_id = InputSequenceId{latest_respawn_request_id};
+    message.recipient.latest_respawn_result = static_cast<RespawnResult>(latest_respawn_result);
+    message.recipient.owned_entity_ids.reserve(owned_entity_count);
+    for (std::uint16_t index = 0; index < owned_entity_count; ++index) {
+        std::uint32_t entity_id{};
+        if (!reader.read_u32(entity_id)) {
+            return CodecError::Truncated;
+        }
+        message.recipient.owned_entity_ids.emplace_back(entity_id);
+    }
+    if (has_latest_absorption != 0U) {
+        PlayerAbsorbed event;
+        std::uint32_t absorber_entity_id{};
+        std::uint32_t victim_entity_id{};
+        std::uint32_t absorber_owner_id{};
+        std::uint32_t victim_owner_id{};
+        if (!reader.read_u32(event.server_tick) || !reader.read_u32(absorber_entity_id) ||
+            !reader.read_u32(victim_entity_id) || !reader.read_u32(absorber_owner_id) ||
+            !reader.read_u32(victim_owner_id) || !reader.read_float(event.transferred_mass)) {
+            return CodecError::Truncated;
+        }
+        event.absorber_entity_id = EntityId{absorber_entity_id};
+        event.victim_entity_id = EntityId{victim_entity_id};
+        event.absorber_owner_id = PlayerOwnerId{absorber_owner_id};
+        event.victim_owner_id = PlayerOwnerId{victim_owner_id};
+        message.recipient.latest_absorption = event;
+    }
+    if (!reader.read_u16(entity_count)) {
         return CodecError::Truncated;
     }
 
@@ -401,14 +616,16 @@ void encode_payload(Writer& writer, const FullSnapshot& message) {
     for (std::uint16_t index = 0; index < entity_count; ++index) {
         std::uint32_t entity_id{};
         std::uint8_t entity_kind{};
+        std::uint32_t owner_id{};
         EntityState entity;
         if (!reader.read_u32(entity_id) || !reader.read_u8(entity_kind) ||
-            !reader.read_float(entity.position_x) || !reader.read_float(entity.position_y) ||
-            !reader.read_float(entity.mass)) {
+            !reader.read_u32(owner_id) || !reader.read_float(entity.position_x) ||
+            !reader.read_float(entity.position_y) || !reader.read_float(entity.mass)) {
             return CodecError::Truncated;
         }
         entity.entity_id = EntityId{entity_id};
         entity.kind = static_cast<EntityKind>(entity_kind);
+        entity.owner_id = PlayerOwnerId{owner_id};
         message.entities.push_back(entity);
     }
 
@@ -421,7 +638,7 @@ void encode_payload(Writer& writer, const FullSnapshot& message) {
 } // namespace
 
 EncodeResult encode(const Message& message) {
-    if (const auto error = validate(message)) {
+    if (const auto error = validate_message(message)) {
         return *error;
     }
 
@@ -449,6 +666,10 @@ EncodeResult encode(const Message& message) {
     message_writer.write_u32(static_cast<std::uint32_t>(payload.size()));
     message_writer.append(payload);
     return message_writer.take_bytes();
+}
+
+std::optional<CodecError> validate(const Message& message) {
+    return validate_message(message);
 }
 
 DecodeResult decode(std::span<const std::byte> bytes) {

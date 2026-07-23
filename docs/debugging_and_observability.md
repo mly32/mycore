@@ -16,10 +16,9 @@ but this guide must clearly distinguish implemented behavior from planned behavi
 
 This document uses three status labels:
 
-- **Current:** Feature 11 owned prediction/reconciliation and Feature 12 remote
-  interpolation-and-hold are implemented on `feature/12-remote-interpolation`.
-- **Feature 13 planned:** authoritative interactions, spectating, and Gameplay output specified
-  in [`plans/13-authoritative-interactions-spectating.md`](plans/13-authoritative-interactions-spectating.md).
+- **Current:** Feature 11 owned prediction/reconciliation, Feature 12 remote
+  interpolation-and-hold, and Feature 13's authoritative absorption/session lifecycle are
+  implemented. Feature 13's spectator presentation and Gameplay tab remain planned checkpoints.
 - **Feature 14 planned:** complete selectable rollback and Rollback output specified in
   [`plans/14-selectable-world-rollback.md`](plans/14-selectable-world-rollback.md) and
   [`rollback_prediction_design.md`](rollback_prediction_design.md).
