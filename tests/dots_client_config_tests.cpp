@@ -68,11 +68,19 @@ TEST_CASE("Client configuration defaults match the playable client", "[dots][cli
     REQUIRE(config.controls.mouse_dead_zone_pixels == 12.0F);
     REQUIRE(config.controls.bindings.up ==
             std::vector{mycore::platform_sdl::Key::W, mycore::platform_sdl::Key::Up});
+    REQUIRE(config.controls.bindings.follow == std::vector{mycore::platform_sdl::Key::F});
+    REQUIRE(config.controls.bindings.respawn ==
+            std::vector{mycore::platform_sdl::Key::R, mycore::platform_sdl::Key::Enter});
+    REQUIRE(config.controls.bindings.zoom_in == std::vector{mycore::platform_sdl::Key::PageUp});
+    REQUIRE(config.controls.bindings.zoom_out == std::vector{mycore::platform_sdl::Key::PageDown});
     REQUIRE(config.controls.bindings.quit == std::vector{mycore::platform_sdl::Key::Escape});
     REQUIRE(config.simulation.max_frame_delta_ms == 250);
     REQUIRE(config.simulation.max_steps_per_frame == 5);
     REQUIRE(config.view.pixels_per_world_unit == 20.0F);
     REQUIRE(config.view.draw_grid);
+    REQUIRE(config.spectator.pan_speed_world_units_per_second == 12.0F);
+    REQUIRE(config.spectator.minimum_pixels_per_world_unit == 5.0F);
+    REQUIRE(config.spectator.maximum_pixels_per_world_unit == 80.0F);
     REQUIRE(config.debug.enabled);
     REQUIRE(config.debug.presentation_mode == dots::client::PresentationMode::Interpolated);
     REQUIRE(config.colors.player == dots::client::RgbColor{0x4C, 0xC9, 0xF0});
@@ -122,6 +130,10 @@ up = ["I"]
 down = ["K"]
 left = ["J"]
 right = ["L"]
+follow = ["F1"]
+respawn = ["F2"]
+zoom_in = ["F3"]
+zoom_out = ["F4"]
 quit = ["Q"]
 
 [simulation]
@@ -132,6 +144,11 @@ max_steps_per_frame = 3
 pixels_per_world_unit = 32.0
 draw_grid = false
 grid_spacing_world_units = 4.0
+
+[spectator]
+pan_speed_world_units_per_second = 18.0
+minimum_pixels_per_world_unit = 6.0
+maximum_pixels_per_world_unit = 70.0
 
 [debug]
 enabled = false
@@ -159,11 +176,15 @@ food = "#FEDCBA"
     REQUIRE(config.controls.mode == dots::client::InputMode::Keyboard);
     REQUIRE(config.controls.mouse_dead_zone_pixels == 4.5F);
     REQUIRE(config.controls.bindings.up == std::vector{mycore::platform_sdl::Key::I});
+    REQUIRE(config.controls.bindings.follow == std::vector{mycore::platform_sdl::Key::F1});
     REQUIRE(config.simulation.max_frame_delta_ms == 100);
     REQUIRE(config.simulation.max_steps_per_frame == 3);
     REQUIRE(config.view.pixels_per_world_unit == 32.0F);
     REQUIRE_FALSE(config.view.draw_grid);
     REQUIRE(config.view.grid_spacing_world_units == 4.0F);
+    REQUIRE(config.spectator.pan_speed_world_units_per_second == 18.0F);
+    REQUIRE(config.spectator.minimum_pixels_per_world_unit == 6.0F);
+    REQUIRE(config.spectator.maximum_pixels_per_world_unit == 70.0F);
     REQUIRE_FALSE(config.debug.enabled);
     REQUIRE(config.debug.presentation_mode == dots::client::PresentationMode::Comparison);
     REQUIRE(config.colors.background == dots::client::RgbColor{0x01, 0x02, 0x03});
@@ -212,19 +233,23 @@ TEST_CASE("Client configuration supports portable physical key categories",
 [bindings]
 up = ["Z", "0", "Digit1", "Up", "Tab", "LeftShift", "RightControl"]
 down = ["2", "Down", "Space", "RightShift", "LeftControl"]
-left = ["3", "Left", "LeftAlt", "RightGui", "Insert", "Home", "PageUp", "F1", "F12"]
-right = ["4", "Right", "RightAlt", "LeftGui", "Delete", "End", "PageDown", "F2", "F11"]
-quit = ["Escape", "Enter", "Backspace", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10"]
+left = ["3", "Left", "LeftAlt", "RightGui", "Insert", "Home", "F1", "F12"]
+right = ["4", "Right", "RightAlt", "LeftGui", "Delete", "End", "F2", "F11"]
+follow = ["PageUp"]
+respawn = ["Enter"]
+zoom_in = ["PageDown"]
+zoom_out = ["F"]
+quit = ["Escape", "Backspace", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10"]
 )";
     const auto config = dots::client::parse_client_config(document, "keys.toml");
 
     REQUIRE(config.controls.bindings.up.front() == mycore::platform_sdl::Key::Z);
     REQUIRE(config.controls.bindings.up[1] == mycore::platform_sdl::Key::Digit0);
     REQUIRE(config.controls.bindings.up[2] == mycore::platform_sdl::Key::Digit1);
-    REQUIRE(config.controls.bindings.left[6] == mycore::platform_sdl::Key::PageUp);
     REQUIRE(config.controls.bindings.left.back() == mycore::platform_sdl::Key::F12);
     REQUIRE(config.controls.bindings.right[3] == mycore::platform_sdl::Key::LeftGui);
-    REQUIRE(config.controls.bindings.quit[1] == mycore::platform_sdl::Key::Enter);
+    REQUIRE(config.controls.bindings.follow.front() == mycore::platform_sdl::Key::PageUp);
+    REQUIRE(config.controls.bindings.respawn.front() == mycore::platform_sdl::Key::Enter);
 }
 
 TEST_CASE("Explicit config replaces automatic config and missing automatic config uses defaults",
@@ -281,10 +306,16 @@ TEST_CASE("Invalid client TOML reports the source and field", "[dots][client][co
         InvalidDocument{"[bindings]\nup = []", "bindings.up"},
         InvalidDocument{"[bindings]\nup = [\"NotAKey\"]", "bindings.up"},
         InvalidDocument{"[bindings]\nup = [\"S\"]", "bindings.up"},
+        InvalidDocument{"[bindings]\nfollow = [\"W\"]", "bindings.follow"},
         InvalidDocument{"[simulation]\nmax_frame_delta_ms = 0", "simulation.max_frame_delta_ms"},
         InvalidDocument{"[simulation]\nmax_steps_per_frame = 0", "simulation.max_steps_per_frame"},
         InvalidDocument{"[view]\npixels_per_world_unit = 0", "view.pixels_per_world_unit"},
         InvalidDocument{"[view]\ngrid_spacing_world_units = -2", "view.grid_spacing_world_units"},
+        InvalidDocument{"[spectator]\npan_speed_world_units_per_second = 0",
+                        "spectator.pan_speed_world_units_per_second"},
+        InvalidDocument{"[spectator]\nminimum_pixels_per_world_unit = 90\n"
+                        "maximum_pixels_per_world_unit = 80",
+                        "spectator.minimum_pixels_per_world_unit"},
         InvalidDocument{"[debug]\nenabled = 1", "debug.enabled"},
         InvalidDocument{"[debug]\npresentation_mode = \"predicted\"", "debug.presentation_mode"},
         InvalidDocument{"[debug]\nghost = true", "debug.ghost"},

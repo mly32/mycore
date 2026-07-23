@@ -254,8 +254,8 @@ After startup, lifecycle events are handled as follows:
 | Server closes | Logs the transport close and stops the networked client. | The server process exits. |
 | Connection fails | Logs the transport failure and stops the networked client. | Removes the session and player when it observes the failure. |
 | Malformed or wrong-direction packet | The offending client is disconnected. | Rejects and removes only the offending session; the server and other clients continue. |
-| Last owned player is absorbed | Installs repeated `Spectating` state without treating the missing primary as a protocol failure. | Keeps the connection alive and repeats killer, defeat, deadline, and action-result state. |
-| Respawn action | Continues until a snapshot reports the authoritative result. An input ACK alone is not success. | Rejects early/non-spectator requests or safely spawns a new owned player after the deadline. |
+| Last owned player is absorbed | Installs repeated `Spectating` state without treating the missing primary as a protocol failure, then follows the confirmed killer or uses a local free camera. | Keeps the connection alive and repeats killer, defeat, deadline, and action-result state. |
+| Respawn action | Sends one edge-triggered action and continues spectating until a snapshot reports the authoritative result. An input ACK alone is not success. | Rejects early/non-spectator requests or safely spawns a new owned player after the deadline. |
 | Client process is killed or loses connectivity | Cannot send a graceful request. | Detects the transport failure later, then removes the session and player. |
 
 The local `dots_session.py` launcher treats an unexpected nonzero client exit or any server exit
@@ -373,8 +373,9 @@ After the handshake, each current in-memory fixed step is composed in this order
    authoritative `World` by one 30 Hz tick.
 6. Every two ticks, the server builds and sends a 15 Hz full snapshot for each ready client.
 7. The client polls and atomically installs a newer snapshot.
-8. Presentation extracts circles from the replicated world and centers the camera on the
-   controlled protocol entity.
+8. While Playing, presentation composes the smoothed predicted primary with delayed remotes and
+   centers the camera on that primary. While Spectating, it draws the complete delayed remote
+   sample and uses confirmed-killer follow or a presentation-only free camera.
 
 Each full snapshot currently contains every player and food entity, sorted by protocol entity
 ID, plus:
@@ -646,7 +647,8 @@ for each due step:
     server sends a FullSnapshot if this is every second tick
     client polls and installs any delivered snapshot
 
-extract the owned player/camera from smoothed prediction and remotes from replicated state
+extract the owned player/camera from smoothed prediction, or update the confirmed spectator camera
+extract remotes from delayed replicated samples
 record and submit GPU rendering
 present through the swapchain
 ```

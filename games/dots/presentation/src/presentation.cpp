@@ -118,6 +118,23 @@ void LocalPredictionPresentation::update(const LocalPredictionSample& sample,
     }
 }
 
+void LocalPredictionPresentation::reset() noexcept {
+    predicted_position_ = {};
+    presentation_position_ = {};
+    smoothing_offset_ = {};
+    smoothing_start_offset_ = {};
+    last_correction_accumulator_ = {};
+    retained_pre_correction_position_.reset();
+    retained_correction_replay_path_.clear();
+    smoothing_start_time_ = {};
+    correction_visual_expiry_ = {};
+    last_correction_sequence_ = 0;
+    last_hard_resync_sequence_ = 0;
+    initialized_ = false;
+    smoothing_active_ = false;
+    correction_visual_active_ = false;
+}
+
 void LocalPredictionPresentation::clear_correction_visuals() noexcept {
     correction_visual_active_ = false;
     retained_pre_correction_position_.reset();
@@ -445,6 +462,78 @@ extract_remote_interpolated_predicted_frame(const replication::ReplicatedWorld& 
     if (controlled_player.show_replay_path) {
         for (const auto position : controlled_player.correction_replay_path) {
             append_ghost(position, CircleKind::ReplayMarker);
+        }
+    }
+    return frame;
+}
+
+FrameData
+extract_remote_interpolated_spectator_frame(const RemotePresentationFrame& remotes,
+                                            std::span<const RemoteEntityEndpoints> remote_endpoints,
+                                            mycore::math::Vector2 camera) {
+    if (!finite(camera)) {
+        throw std::runtime_error{"Dots spectator presentation encountered invalid camera geometry"};
+    }
+
+    FrameData frame{.camera = camera, .circles = {}};
+    frame.circles.reserve(remotes.entities.size() + (remote_endpoints.size() * 5U));
+    for (const auto& entity : remotes.entities) {
+        if (!finite(entity.position) || !std::isfinite(entity.mass) || entity.mass <= 0.0F) {
+            throw std::runtime_error{
+                "Dots spectator presentation encountered invalid remote geometry"};
+        }
+        frame.circles.push_back({
+            .position = entity.position,
+            .mass = entity.mass,
+            .radius = simulation::radius_for_mass(entity.mass),
+            .kind =
+                entity.kind == protocol::EntityKind::Food ? CircleKind::Food : CircleKind::Player,
+            .entity_id = entity.entity_id,
+        });
+    }
+
+    const auto append_remote_endpoint = [&frame](const RemoteEntitySample& entity,
+                                                 CircleKind kind) {
+        if (!finite(entity.position) || !std::isfinite(entity.mass) || entity.mass <= 0.0F) {
+            throw std::runtime_error{
+                "Dots spectator presentation encountered invalid endpoint geometry"};
+        }
+        frame.circles.push_back({
+            .position = entity.position,
+            .mass = entity.mass,
+            .radius = simulation::radius_for_mass(entity.mass),
+            .kind = kind,
+            .entity_id = entity.entity_id,
+        });
+    };
+    for (const auto& endpoints : remote_endpoints) {
+        const auto& older_endpoint = endpoints.older;
+        const auto& newer_endpoint = endpoints.newer;
+        if (older_endpoint) {
+            append_remote_endpoint(*older_endpoint, CircleKind::RemoteOlderEndpointGhost);
+        }
+        if (newer_endpoint) {
+            append_remote_endpoint(*newer_endpoint, CircleKind::RemoteNewerEndpointGhost);
+        }
+        if (older_endpoint && newer_endpoint) {
+            const auto& older = *older_endpoint;
+            const auto& newer = *newer_endpoint;
+            const auto displacement = newer.position - older.position;
+            constexpr std::array kConnectorFractions{0.25F, 0.5F, 0.75F};
+            constexpr std::array kConnectorKinds{
+                CircleKind::RemoteInterpolationConnectorStart,
+                CircleKind::RemoteInterpolationConnectorMiddle,
+                CircleKind::RemoteInterpolationConnectorEnd,
+            };
+            for (std::size_t index = 0; index < kConnectorFractions.size(); ++index) {
+                frame.circles.push_back({
+                    .position = older.position + (displacement * kConnectorFractions[index]),
+                    .mass = 1.0F,
+                    .radius = 0.0F,
+                    .kind = kConnectorKinds[index],
+                    .entity_id = older.entity_id,
+                });
+            }
         }
     }
     return frame;

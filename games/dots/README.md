@@ -87,7 +87,8 @@ The authoritative server assigns each joining or respawning player the first cle
 deterministic 12-world-unit square spiral. Spawn position and owner are included in the
 welcome-following full snapshot; clients never choose them locally. Player absorption and
 Playing/Spectating lifecycle are server-owned and repeated in snapshots. The graphical spectator
-camera and controls land in the next Feature 13 checkpoint.
+camera defaults to the confirmed killer's interpolated presentation sample. If that target
+disappears, it keeps the last valid camera position and switches to free-camera mode.
 
 The default respawn cooldown is 90 server ticks. Override it when starting the server, including
 zero for immediate eligibility:
@@ -101,11 +102,16 @@ zero for immediate eligibility:
 ## Controls and configuration
 
 The default hybrid mode uses WASD or the arrow keys while held and otherwise moves toward the
-mouse cursor. Press Escape to quit. Mouse steering pauses while the debug panel owns the mouse.
+mouse cursor. While spectating, WASD or the arrows pan the free camera, the mouse wheel or
+PageUp/PageDown zooms in 10 percent steps, `F` toggles confirmed-killer follow, and `R` or Enter
+requests an authoritative respawn. Respawn is edge-triggered: holding a key sends one request,
+not one request per input tick. Press Escape to quit. Mouse steering and spectator wheel zoom
+pause while the debug panel owns the mouse.
 
 [`config/dots-client.toml`](config/dots-client.toml) documents window, network, input, simulation,
-view, debug, and color settings. Its `#:schema` header connects the checked-in JSON schema for
-editor completion and early validation.
+view, spectator, debug, and color settings. Its `#:schema` header connects the checked-in JSON
+schema for editor completion and early validation. Spectator pan speed defaults to 12 world units
+per second; zoom is clamped to the configured 5--80 pixels-per-world-unit range.
 
 Configuration precedence is built-in defaults, then `dots-client.toml` in the working directory
 when present. `--config <path>` replaces that automatic path. CLI mode flags such as `--offline`,

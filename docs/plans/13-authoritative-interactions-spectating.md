@@ -216,13 +216,13 @@ Do not start a checkpoint until the preceding checkpoint is reviewed and approve
 - [x] Add protocol version 3, session/config fields, and respawn action validation.
 - [x] Keep defeated sessions connected and repeat their durable state in snapshots.
 - [x] Add optional server-configured respawn and safe authoritative re-entry.
-- [ ] Phase 13.2 approved.
+- [x] Phase 13.2 approved.
 
 ### Phase 13.3: Spectator presentation
 
-- [ ] Add confirmed follow-killer and free-camera modes.
-- [ ] Add pan, zoom, follow-toggle, and respawn controls plus configuration/schema updates.
-- [ ] Handle missing follow targets without changing authority.
+- [x] Add confirmed follow-killer and free-camera modes.
+- [x] Add pan, zoom, follow-toggle, and respawn controls plus configuration/schema updates.
+- [x] Handle missing follow targets without changing authority.
 - [ ] Phase 13.3 approved.
 
 ### Phase 13.4: Observability and validation

@@ -74,6 +74,7 @@ struct LocalPredictionSample {
 class LocalPredictionPresentation {
 public:
     void update(const LocalPredictionSample& sample, std::chrono::steady_clock::time_point now);
+    void reset() noexcept;
     void clear_correction_visuals() noexcept;
 
     [[nodiscard]] mycore::math::Vector2 predicted_position() const noexcept;
@@ -158,6 +159,11 @@ extract_remote_interpolated_predicted_frame(const replication::ReplicatedWorld& 
                                             const RemotePresentationFrame& remotes,
                                             std::span<const RemoteEntityEndpoints> remote_endpoints,
                                             const PredictedReplicatedPlayer& controlled_player);
+
+[[nodiscard]] FrameData
+extract_remote_interpolated_spectator_frame(const RemotePresentationFrame& remotes,
+                                            std::span<const RemoteEntityEndpoints> remote_endpoints,
+                                            mycore::math::Vector2 camera);
 
 [[nodiscard]] mycore::render_2d::DrawList build_draw_list(const FrameData& frame,
                                                           const Settings& settings);

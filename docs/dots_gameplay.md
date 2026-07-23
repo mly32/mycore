@@ -66,9 +66,17 @@ client applies its own input immediately, then reconciles with the server's ackn
 and smooths only the visual correction.
 
 The network client runtime accepts confirmed spectating snapshots without requiring a permanent
-controlled entity and continues sending session input/heartbeats. Follow-killer and free-camera
-presentation plus respawn controls are the next Feature 13 checkpoint and are not implemented in
-the graphical client yet.
+controlled entity and continues sending session input/heartbeats. The graphical client enters
+spectator presentation only from that confirmed mode. It follows the confirmed killer by default,
+using the same delayed interpolated sample for the camera and the killer's circle. `F` toggles a
+free camera when that target is available. If the killer disappears, the client switches to free
+camera at the last valid presentation position rather than choosing another entity.
+
+In free-camera mode, WASD or the arrows pan at 12 world units per second by default. The mouse
+wheel or PageUp/PageDown changes zoom in 10 percent steps, clamped to the configured 5--80
+pixels-per-world-unit range. `R` or Enter submits one edge-triggered respawn action; holding the
+key does not submit a request every input tick. Camera state and zoom are presentation-only and do
+not grant authority or alter server interest filtering.
 
 Remote players are not extrapolated from guessed inputs. The client stores authoritative snapshots
 and renders remotes about six server ticks (200 ms) behind the newest known server state,
@@ -82,6 +90,6 @@ color.
 
 ## Planned gameplay, not current rules
 
-Future plans may add spectator presentation, scoring or winning, split/merge actions, additional
-cooldowns, and richer resource/energy mechanics. These must be specified in this guide when they
-become implemented gameplay rules; feature plans remain design documents until then.
+Future plans may add scoring or winning, split/merge actions, additional cooldowns, and richer
+resource/energy mechanics. These must be specified in this guide when they become implemented
+gameplay rules; feature plans remain design documents until then.

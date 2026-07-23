@@ -18,7 +18,8 @@ This document uses three status labels:
 
 - **Current:** Feature 11 owned prediction/reconciliation, Feature 12 remote
   interpolation-and-hold, and Feature 13's authoritative absorption/session lifecycle are
-  implemented. Feature 13's spectator presentation and Gameplay tab remain planned checkpoints.
+  implemented. Feature 13's follow/free spectator presentation is also implemented; its Gameplay
+  tab remains the next planned checkpoint.
 - **Feature 14 planned:** complete selectable rollback and Rollback output specified in
   [`plans/14-selectable-world-rollback.md`](plans/14-selectable-world-rollback.md) and
   [`rollback_prediction_design.md`](rollback_prediction_design.md).
@@ -201,6 +202,19 @@ panel cannot be used to prove that a remote server is maintaining 30 Hz.
 These modes change only presentation. Collision, food consumption, and world state always use
 the fixed-step simulation position.
 
+## Current Spectator Presentation
+
+The graphical network client enters spectator presentation only after replicated session mode is
+`Spectating`. It follows the confirmed killer from the same delayed remote sample used to draw
+that player. Free-camera position and zoom are local presentation state. Missing follow geometry
+switches the camera to free mode at its last valid position; it never selects an unconfirmed
+replacement.
+
+While spectating, the **Network** and **Interpolation** tabs remain live. The controlled entity is
+shown as `none`, and **Prediction**/**Tools** explicitly report that local prediction is
+unavailable instead of displaying camera state as predicted gameplay. The dedicated Feature 13
+**Gameplay** tab described below is not implemented yet.
+
 ## Current Logs and Profiling
 
 Important log categories include:
@@ -350,7 +364,7 @@ different problems. Feature 12 keeps a delayed remote cursor centered in known s
 future tick-synchronization feature would map local input ticks to estimated server ticks and
 adjust command slack.
 
-## Authoritative Gameplay Output — Feature 13 Planned
+## Authoritative Gameplay Output — Feature 13.4 Planned
 
 Feature 13 adds a separate **Gameplay** tab. It reports server-confirmed lifecycle rather than
 extending movement prediction metrics:

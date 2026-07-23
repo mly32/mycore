@@ -31,6 +31,7 @@ TEST_CASE("Platform input snapshots default to released and idle", "[platform][i
     REQUIRE(snapshot.mouse.y() == 0.0F);
     REQUIRE_FALSE(snapshot.mouse.pressed(mycore::platform_sdl::MouseButton::Left));
     REQUIRE_FALSE(snapshot.mouse.pressed(mycore::platform_sdl::MouseButton::Count));
+    REQUIRE(snapshot.wheel_delta_y == 0.0F);
     REQUIRE_FALSE(snapshot.quit_requested);
 }
 
@@ -58,6 +59,23 @@ TEST_CASE("Platform snapshots retain pressed keys and mouse state", "[platform][
 TEST_CASE("Platform input snapshots report quit state", "[platform][input]") {
     const mycore::platform_sdl::InputSnapshot snapshot{.quit_requested = true};
     REQUIRE(snapshot.quit_requested);
+}
+
+TEST_CASE("Platform input snapshots accumulate and consume vertical wheel events",
+          "[platform][input]") {
+    mycore::platform_sdl::Runtime runtime;
+    mycore::platform_sdl::Window window{{.visible = false}};
+    SDL_Event first{};
+    first.type = SDL_EVENT_MOUSE_WHEEL;
+    first.wheel.windowID = SDL_GetWindowID(window.native_handle());
+    first.wheel.y = 1.5F;
+    SDL_Event second = first;
+    second.wheel.y = -0.25F;
+
+    REQUIRE(SDL_PushEvent(&first));
+    REQUIRE(SDL_PushEvent(&second));
+    CHECK(mycore::platform_sdl::poll_input(window).wheel_delta_y == 1.25F);
+    CHECK(mycore::platform_sdl::poll_input(window).wheel_delta_y == 0.0F);
 }
 
 TEST_CASE("Platform event observers receive events drained for an input snapshot",

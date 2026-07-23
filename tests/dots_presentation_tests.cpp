@@ -1,5 +1,7 @@
 #include "dots/presentation/presentation.hpp"
+#include "dots/presentation/spectator_camera.hpp"
 
+#include <algorithm>
 #include <array>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -151,6 +153,124 @@ TEST_CASE("Remote endpoint diagnostics include a visible interpolation connector
     CHECK(draw_list.circles[4].radius == Catch::Approx(0.075F));
     CHECK(draw_list.circles[4].color == mycore::render::Color{0.0F, 0.9F, 0.95F, 0.95F});
     CHECK(draw_list.circles[6].color == mycore::render::Color{0.2F, 0.45F, 1.0F, 0.95F});
+}
+
+TEST_CASE("Spectator camera follows the same interpolated sample used for drawing",
+          "[dots][presentation][spectator]") {
+    const dots::protocol::EntityId killer{9};
+    const dots::presentation::RemotePresentationFrame remotes{
+        .entities =
+            {
+                {
+                    .entity_id = killer,
+                    .kind = dots::protocol::EntityKind::Player,
+                    .position = {4.0F, -3.0F},
+                    .mass = 25.0F,
+                },
+                {
+                    .entity_id = dots::protocol::EntityId{10},
+                    .kind = dots::protocol::EntityKind::Food,
+                    .position = {8.0F, 2.0F},
+                    .mass = 1.0F,
+                },
+            },
+    };
+    dots::presentation::SpectatorCamera camera;
+    camera.enter({100.0F, 100.0F}, 20.0F, killer, remotes);
+
+    CHECK(camera.mode() == dots::presentation::SpectatorCameraMode::FollowKiller);
+    CHECK(camera.position() == mycore::math::Vector2{4.0F, -3.0F});
+    const auto frame = dots::presentation::extract_remote_interpolated_spectator_frame(
+        remotes, {}, camera.position());
+    const auto killer_circle =
+        std::find_if(frame.circles.begin(), frame.circles.end(), [killer](const auto& circle) {
+            return circle.entity_id == killer;
+        });
+    REQUIRE(killer_circle != frame.circles.end());
+    CHECK(killer_circle->position == frame.camera);
+}
+
+TEST_CASE("Spectator camera supports bounded zoom, free pan, and confirmed follow toggle",
+          "[dots][presentation][spectator]") {
+    const dots::protocol::EntityId killer{9};
+    const dots::presentation::RemotePresentationFrame remotes{
+        .entities =
+            {
+                {
+                    .entity_id = killer,
+                    .kind = dots::protocol::EntityKind::Player,
+                    .position = {4.0F, -3.0F},
+                    .mass = 25.0F,
+                },
+            },
+    };
+    dots::presentation::SpectatorCamera camera;
+    camera.enter({}, 20.0F, killer, remotes);
+    camera.update(remotes, killer, {.toggle_follow = true}, 0.0F);
+    REQUIRE(camera.mode() == dots::presentation::SpectatorCameraMode::Free);
+
+    camera.update(remotes, killer, {.pan = {1.0F, 0.0F}, .zoom_steps = 100}, 0.5F);
+    CHECK(camera.position() == mycore::math::Vector2{10.0F, -3.0F});
+    CHECK(camera.pixels_per_world_unit() == 80.0F);
+
+    camera.update(remotes, killer, {.zoom_steps = -100, .toggle_follow = true}, 0.0F);
+    CHECK(camera.mode() == dots::presentation::SpectatorCameraMode::FollowKiller);
+    CHECK(camera.position() == mycore::math::Vector2{4.0F, -3.0F});
+    CHECK(camera.pixels_per_world_unit() == 5.0F);
+}
+
+TEST_CASE("Spectator camera keeps its last valid position when the confirmed target disappears",
+          "[dots][presentation][spectator]") {
+    const dots::protocol::EntityId killer{9};
+    const dots::presentation::RemotePresentationFrame visible{
+        .entities =
+            {
+                {
+                    .entity_id = killer,
+                    .kind = dots::protocol::EntityKind::Player,
+                    .position = {4.0F, -3.0F},
+                    .mass = 25.0F,
+                },
+            },
+    };
+    dots::presentation::SpectatorCamera camera;
+    camera.enter({}, 20.0F, killer, visible);
+
+    camera.update({}, killer, {}, 1.0F);
+    CHECK(camera.mode() == dots::presentation::SpectatorCameraMode::Free);
+    CHECK(camera.position() == mycore::math::Vector2{4.0F, -3.0F});
+
+    camera.update({}, killer, {.toggle_follow = true}, 0.0F);
+    CHECK(camera.mode() == dots::presentation::SpectatorCameraMode::Free);
+    CHECK(camera.position() == mycore::math::Vector2{4.0F, -3.0F});
+}
+
+TEST_CASE("Spectator camera waits for its first confirmed follow sample",
+          "[dots][presentation][spectator]") {
+    const dots::protocol::EntityId killer{9};
+    dots::presentation::SpectatorCamera camera;
+    camera.enter({2.0F, 3.0F}, 20.0F, killer, {});
+
+    CHECK(camera.mode() == dots::presentation::SpectatorCameraMode::FollowKiller);
+    CHECK(camera.position() == mycore::math::Vector2{2.0F, 3.0F});
+
+    camera.update(
+        {
+            .entities =
+                {
+                    {
+                        .entity_id = killer,
+                        .kind = dots::protocol::EntityKind::Player,
+                        .position = {7.0F, 8.0F},
+                        .mass = 25.0F,
+                    },
+                },
+        },
+        killer,
+        {},
+        0.0F);
+    CHECK(camera.mode() == dots::presentation::SpectatorCameraMode::FollowKiller);
+    CHECK(camera.position() == mycore::math::Vector2{7.0F, 8.0F});
 }
 
 TEST_CASE("Dots presentation extracts replicated state around its controlled player",

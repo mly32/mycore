@@ -3,6 +3,7 @@
 #include "mycore/math/vector2.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <span>
 
 namespace dots::client {
@@ -11,6 +12,8 @@ namespace {
 using mycore::math::Vector2;
 using mycore::platform_sdl::Key;
 using mycore::platform_sdl::KeyboardSnapshot;
+
+constexpr float kMaximumPendingWheelSteps = 64.0F;
 
 bool any_pressed(const KeyboardSnapshot& keyboard, std::span<const Key> keys) noexcept {
     for (const auto key : keys) {
@@ -49,6 +52,36 @@ Vector2 mouse_movement(const mycore::platform_sdl::MouseSnapshot& mouse,
 }
 
 } // namespace
+
+SpectatorControlIntent
+SpectatorControlTracker::sample(const mycore::platform_sdl::InputSnapshot& input,
+                                const ClientControls& controls) noexcept {
+    const auto follow_pressed = any_pressed(input.keyboard, controls.bindings.follow);
+    const auto respawn_pressed = any_pressed(input.keyboard, controls.bindings.respawn);
+    const auto zoom_in_pressed = any_pressed(input.keyboard, controls.bindings.zoom_in);
+    const auto zoom_out_pressed = any_pressed(input.keyboard, controls.bindings.zoom_out);
+
+    if (std::isfinite(input.wheel_delta_y)) {
+        pending_wheel_delta_ = std::clamp(pending_wheel_delta_ + input.wheel_delta_y,
+                                          -kMaximumPendingWheelSteps,
+                                          kMaximumPendingWheelSteps);
+    }
+    const auto wheel_steps = static_cast<int>(std::trunc(pending_wheel_delta_));
+    pending_wheel_delta_ -= static_cast<float>(wheel_steps);
+
+    const SpectatorControlIntent intent{
+        .pan = keyboard_movement(input.keyboard, controls.bindings),
+        .zoom_steps = wheel_steps + static_cast<int>(zoom_in_pressed && !zoom_in_pressed_) -
+                      static_cast<int>(zoom_out_pressed && !zoom_out_pressed_),
+        .toggle_follow = follow_pressed && !follow_pressed_,
+        .request_respawn = respawn_pressed && !respawn_pressed_,
+    };
+    follow_pressed_ = follow_pressed;
+    respawn_pressed_ = respawn_pressed;
+    zoom_in_pressed_ = zoom_in_pressed;
+    zoom_out_pressed_ = zoom_out_pressed;
+    return intent;
+}
 
 std::string_view input_mode_name(InputMode mode) noexcept {
     switch (mode) {
