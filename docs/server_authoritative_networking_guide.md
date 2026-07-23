@@ -34,8 +34,8 @@ lossless, while the native backend supports realistic outgoing latency and loss 
 
 The runtime has **client-side movement prediction and reconciliation** without owning or stepping
 a gameplay `World`. The overlay says `NETWORKED PREDICTED` and separately displays the latest
-authoritative sample, corrected prediction, and smoothed presentation. Remote interpolation is
-still absent, so other players visibly advance at the 15 Hz snapshot rate.
+authoritative sample, corrected prediction, and smoothed presentation. Other players render from
+Feature 12's delayed interpolation history and hold known state when a newer bracket is absent.
 
 ## Three different responsibilities
 
@@ -507,13 +507,16 @@ tick_error      = desired_cursor - remote_presentation_cursor
 
 cursor_rate = 1.0                                      inside ±0.25 tick
 cursor_rate = clamp(1 + 0.02 * tick_error, 0.95, 1.05) outside the deadband
+cursor_rate = 0.0                                      while holding without a newer bracket
 ```
 
 A newer snapshot moves `newest_received_server_tick` and therefore the target. Jitter changes
 arrival spacing but not the server-tick coordinates stored in the buffer. During loss, the cursor
-can exhaust its newer bracket and hold; recovery resumes from accepted samples or performs the
-documented hard rebase. The six-tick target remains fixed in Feature 12—RTT and measured jitter do
-not automatically enlarge or shrink it.
+can exhaust its newer bracket and freeze. Late snapshots update the held known state without
+moving the cursor backward; normal advancement resumes once a newer endpoint exists. A hard
+rebase is forward-only when the cursor falls more than six ticks behind or its lower bracket has
+been evicted. The six-tick target remains fixed in Feature 12—RTT and measured jitter do not
+automatically enlarge or shrink it.
 
 #### If estimated live server time is implemented later
 
@@ -587,7 +590,7 @@ authoritative controlled-player sample and replays the remaining unacknowledged 
 | Accepted snapshot ID/latest-known server tick | Advance to the newer accepted sample. |
 | Owned predicted state | Rebuilt from the new authoritative base plus the retained input suffix. |
 | Local presentation position | Preserves continuity with a visual-only offset that decays over 100 ms. |
-| Feature 12 remote presentation cursor | Continues monotonically during normal sampling; a documented hard rebase is presentation recovery, not gameplay rollback. |
+| Feature 12 remote presentation cursor | Advances monotonically or freezes during a hold; a forward-only hard rebase is presentation recovery, not gameplay rollback. |
 
 | Clock or event | Current cadence | Approximate spacing | What happens |
 |---|---:|---:|---|

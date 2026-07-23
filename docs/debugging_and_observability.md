@@ -17,7 +17,7 @@ but this guide must clearly distinguish implemented behavior from planned behavi
 This document uses three status labels:
 
 - **Current:** Feature 11 owned prediction/reconciliation and Feature 12 remote
-  interpolation-and-hold are implemented on `feature/12-remote-interpolation`.
+  interpolation-and-hold are implemented.
 - **Feature 13 planned:** authoritative interactions, spectating, and Gameplay output specified
   in [`plans/13-authoritative-interactions-spectating.md`](plans/13-authoritative-interactions-spectating.md).
 - **Feature 14 planned:** complete selectable rollback and Rollback output specified in
@@ -83,7 +83,8 @@ Feature 12 also does not estimate or render server “now.” Its remote present
 uses server ticks and targets `newest received tick - 6`. It advances at 100% speed within a
 `±0.25`-tick deadband and otherwise uses
 `clamp(1 + 0.02 * tick_error, 0.95, 1.05)`. The target remains 200 ms; RTT and jitter metrics are
-observations, not inputs to an adaptive delay policy in Feature 12.
+observations, not inputs to an adaptive delay policy in Feature 12. When no newer bracket exists,
+the cursor freezes at rate `0.0` until a newer endpoint arrives.
 
 Feature 14's planned adaptive command buffer is also not a live-server-time estimator. It targets
 two queued server commands, filters reported queue depth with EWMA `alpha = 1/8`, leaves a
@@ -321,14 +322,15 @@ The **Interpolation** tab in the right-hand **Diagnostics** pane reports:
 | Buffer fill | Samples stored out of the fixed capacity. |
 | Coverage | Difference between oldest and newest buffered server ticks, shown in ticks and milliseconds. |
 | Target delay | Intentional six-tick separation between newest authority and remote presentation. |
-| Current delay | Actual newest-tick minus presentation-cursor distance. |
+| Current delay | Actual newest-tick minus presentation-cursor distance. It can be temporarily negative when an underrun freezes a cursor already beyond the newest known tick. |
 | Presentation tick | Fractional server-tick coordinate used to draw remotes. |
-| Cursor rate | Current 0.95–1.05 presentation-clock adjustment. This does not change local input rate. |
+| Cursor rate | Current 0.95–1.05 presentation-clock adjustment, or `0.0` while holding. This does not change local input rate. |
 | Brackets | Older/newer snapshot IDs and server ticks enclosing the cursor, plus alpha. |
 | Jitter | Latest and EWMA deviation between observed and server-implied snapshot spacing. |
 | Late snapshot | Snapshot arriving at or behind the current presentation cursor. |
-| Hold/underrun | Continuous period with no newer bracket; remotes hold rather than extrapolate. |
-| Hard rebase | Presentation cursor reset after recoverable bracketing is lost. |
+| Hold/underrun | Continuous period with no newer bracket; remotes hold rather than extrapolate. The overlay reports current state, episode/recovery counts, and current/last/maximum/total duration. |
+| Hard rebase | Forward-only presentation cursor reset after recoverable bracketing is lost or the cursor falls more than six ticks behind. |
+| Delayed creates/removes | Remote entity lifecycle transitions actually exposed by sampled presentation frames. |
 
 ### Feature 12 world-space legend
 
@@ -444,7 +446,8 @@ rather than retaining an unreplayable prediction.
 ### Remote cursor repeatedly holds
 
 The buffer lacks a newer endpoint. Compare buffer coverage, current delay, jitter, late samples,
-and packet loss. Holds are safer than inventing remote movement.
+and packet loss. The cursor rate is `0.0` during the hold and resumes only after a newer endpoint
+arrives. Holds are safer than inventing remote movement.
 
 ### Remote cursor rate remains at 0.95 or 1.05
 
