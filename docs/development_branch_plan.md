@@ -521,19 +521,9 @@ Exit criterion:
 - Complete interaction-closed Dots gameplay converges atomically to server truth, Dots exercises
   every generic consequence policy, and `MyCore::Rollback` contains no game or protocol policy.
 
-Deliver this program through the following reviewable branches in order:
-
-| Branch | Review boundary |
-|---|---|
-| `docs/14-rollback-programming-model` | Canonical design, detailed plan, roadmap, and observability agreement |
-| `feature/14a-engine-rollback-kernel` | Generic timeline/transaction/event/consequence API with toy-model tests |
-| `refactor/14b-replayable-dots-world` | Complete Dots checkpoints and shared atomic tick with current behavior preserved |
-| `feature/14c-dots-prediction-model` | Mechanic contracts, interaction closure, profiles, and current-mechanic rollback |
-| `feature/14d-split-merge-lifecycle` | Split/merge rules, predicted identity, and offline consequence examples |
-| `feature/14e-protocol-v4-rollback` | Complete wire checkpoint, digest, prediction key, and authority receipts |
-| `feature/14f-client-predicted-world` | Network client timeline integration and full state convergence |
-| `feature/14g-predicted-presentation` | Smoothing, consequence handlers, bounded extrapolation, and interpolation fallback |
-| `feature/14h-timing-observability-validation` | Adaptive timing, debugging, impairment tests, workloads, and exit decision |
+Implement Feature 14 incrementally, beginning with the game-neutral rollback kernel. Keep commits
+small enough to review independently; the roadmap does not require separate branches or approval
+gates for each implementation step.
 
 Detailed plan:
 [`plans/14-selectable-world-rollback.md`](plans/14-selectable-world-rollback.md).

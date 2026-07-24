@@ -376,73 +376,27 @@ Faults cover position/mass divergence, split rejection, predicted identity misma
 remote assumption divergence, repeated rollback of one event key, receipt duplication, and
 receipt conflict. Fault receipts remain separate from transport statistics.
 
-## Reviewable Delivery Branches
+## Implementation Sequence
 
-Do not start a branch until the preceding branch is reviewed.
+Keep commits focused and reviewable, but do not add approval gates between these steps:
 
-### `docs/14-rollback-programming-model`
-
-- [ ] Record this design and align the roadmap, technology ownership, networking vocabulary, and
-  observability plan.
-- [ ] Documentation reviewed and committed before implementation.
-
-### `feature/14a-engine-rollback-kernel`
-
-- [ ] Add `MyCore::Rollback` timeline, scratch transaction, event transitions, consequence
-  router, and toy-model tests.
-- [ ] Add no Dots production behavior.
-- [ ] Kernel API reviewed before Dots integration.
-
-### `refactor/14b-replayable-dots-world`
-
-- [ ] Add complete checkpoints, owner state, atomic tick commands, stable event journals, and
-  prediction identity.
-- [ ] Share the tick between server and offline mode while preserving current behavior.
-- [ ] Checkpoint/tick API reviewed before prediction.
-
-### `feature/14c-dots-prediction-model`
-
-- [ ] Add `Dots::Prediction`, static mechanic contracts, closure construction, profiles, typed
-  diff/digest, and offline rollback.
-- [ ] Cover current movement, food, and absorption before adding new mechanics.
-- [ ] Closure/fallback behavior reviewed.
-
-### `feature/14d-split-merge-lifecycle`
-
-- [ ] Add split/launch/cooldown/cohesion/merge rules and predicted identity.
-- [ ] Add stable event keys and the consequence demonstrations that do not require networking.
-- [ ] Gameplay and lifecycle reviewed.
-
-### `feature/14e-protocol-v4-rollback`
-
-- [ ] Add complete checkpoint schema, immutable rules, digest, prediction keys, and sequenced
-  authority receipts.
-- [ ] Add hostile codec/validation and receipt loss/duplication tests.
-- [ ] Wire schema reviewed before client activation.
-
-### `feature/14f-client-predicted-world`
-
-- [ ] Replace the position ring with `Timeline<DotsRollbackModel>`.
-- [ ] Run interaction-closed prediction, split input, rollback/replay, identity mapping, and
-  confirmed session guarding.
-- [ ] End-to-end state convergence reviewed.
-
-### `feature/14g-predicted-presentation`
-
-- [ ] Add persistent presentation composition, consequence handlers, correction smoothing,
-  bounded extrapolation, and interpolation fallback.
-- [ ] Demonstrate and test every row in the consequence matrix.
-- [ ] Presentation behavior reviewed.
-
-### `feature/14h-timing-observability-validation`
-
-- [ ] Add adaptive command timing, complete Rollback diagnostics/faults, impairment scenarios,
-  entity-scale workloads, and documentation updates.
-- [ ] Record the measured same-frame/multi-frame decision.
-- [ ] Feature 14 approved before Feature 15.
-
-The program may pause after the engine kernel or any later reviewed branch. Remaining branches
-and invariants stay assigned to this plan rather than being re-decided during implementation.
+1. Add `MyCore::Rollback`, including the timeline, scratch transaction, event transitions,
+   consequence router, and non-Dots toy-model tests.
+2. Refactor Dots World around complete checkpoints, owner state, atomic tick commands, stable
+   event journals, and prediction identity while preserving current behavior.
+3. Add `Dots::Prediction`, static mechanic contracts, causal interaction closure, prediction
+   profiles, typed differences/digests, and offline rollback for movement, food, and absorption.
+4. Add split/launch/cooldown/cohesion/merge rules, predicted identity, and offline consequence
+   demonstrations.
+5. Add protocol version 4 checkpoint fields, immutable rules, digest, prediction keys, sequenced
+   authority receipts, and hostile validation.
+6. Replace the client position ring with the complete Dots timeline and integrate
+   interaction-closed prediction, split input, identity mapping, and confirmed session guarding.
+7. Add persistent presentation composition, consequence handlers, correction smoothing, bounded
+   extrapolation, interpolation fallback, and every consequence-matrix example.
+8. Add adaptive command timing, complete Rollback diagnostics/faults, impairment scenarios,
+   entity-scale workloads, documentation updates, and the measured same-frame/multi-frame
+   decision.
 
 ## Test Plan
 
