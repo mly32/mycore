@@ -123,8 +123,16 @@ Startup behavior:
 During normal rendering, advance the fractional cursor by local elapsed time expressed in 30 Hz
 server ticks. The desired cursor is always `newest_server_tick - 6`.
 
+If an advance exhausts the newer bracket, present the newest known state and enter a hold. Freeze
+the numeric cursor on subsequent frames until an accepted snapshot provides an endpoint newer than
+the cursor. A snapshot at or behind the frozen cursor is late: retain it as the newest known older
+endpoint, update the held presentation, and continue waiting for a newer bracket. This keeps the
+cursor and visible lifecycle monotonic without allowing a long outage to run the cursor arbitrarily
+far ahead of received authority.
+
 Apply bounded presentation-clock discipline:
 
+- While holding, set the effective cursor rate to `0.0`.
 - Deadband: `±0.25` server tick.
 - Outside the deadband:
 
@@ -133,8 +141,10 @@ Apply bounded presentation-clock discipline:
   ```
 
 - Advance at exactly `1.0` inside the deadband.
-- Hard-rebase to the desired cursor only if no valid bracket can be recovered or the absolute
-  cursor error exceeds six ticks.
+- Hard-rebase forward to the desired cursor only if no valid lower bracket can be recovered or the
+  cursor is more than six ticks behind the desired cursor.
+- Never hard-rebase backward. When the cursor is ahead of the desired delay after a hold, rebuild
+  the target delay through the bounded slow rate.
 
 This rate adjustment prevents long-term presentation-buffer drift without changing client input
 or prediction cadence.
@@ -183,6 +193,25 @@ A late snapshot is one whose authoritative tick is at or behind the presentation
 arrives. It may still be retained only when it can form a required bracket; it must never move
 the cursor backward.
 
+## Post-merge review remediation
+
+A review of the merged MC-20 implementation found that the first underrun frame held the newest
+entity sample but continued advancing the numeric cursor. On the following frame, the symmetric
+large-error rule rebased the cursor backward, visibly replaying old remote movement. The same
+review found that startup returned an empty remote frame instead of holding the first sample and
+that lifecycle/recovery metrics and tests did not fully match the completed checklist.
+
+The corrective implementation:
+
+- Presents the first accepted sample while the normal six-tick buffer warms up.
+- Freezes the cursor after it exhausts a newer bracket and resumes only from a newer endpoint.
+- Restricts hard rebases to forward recovery and tests cursor monotonicity across multiple hold
+  frames and late-snapshot recovery.
+- Records current, last, maximum, and total hold duration plus recovery count.
+- Counts remote entity create/remove transitions from frames actually exposed to presentation.
+- Covers packet-loss gaps, delayed creation/removal, and same-ID removal/recreation in
+  deterministic tests.
+
 ## Remote Debug Visualization
 
 For every remote player:
@@ -209,8 +238,9 @@ a later change should adapt the target between two and four snapshot intervals.
 
 RTT and jitter do not feed the target-delay formula in this feature. Network changes affect which
 samples are available, the cursor's error relative to `newest_server_tick - 6`, and whether the
-sampler holds or hard-rebases. The bounded 95–105% cursor rate corrects buffer position; it is not
-an estimated-live-server clock and does not look ahead of received authority.
+sampler holds or hard-rebases. During active sampling the bounded 95–105% cursor rate corrects
+buffer position; a hold freezes at `0.0`. Neither mode is an estimated-live-server clock or looks
+ahead of received authority.
 
 Deferred work includes:
 

@@ -458,12 +458,22 @@ void draw_interpolation_debug_tab(const DebugWorldStats& world) {
                 remote.ewma_jitter_milliseconds);
     ImGui::Text("Late snapshots: %llu",
                 static_cast<unsigned long long>(remote.late_snapshot_count));
-    ImGui::Text("Hold episodes / current: %llu / %lld ms",
+    ImGui::Text("Holding: %s", remote.holding ? "YES" : "NO");
+    ImGui::Text("Hold episodes / recoveries: %llu / %llu",
                 static_cast<unsigned long long>(remote.hold_episode_count),
-                static_cast<long long>(remote.current_hold_duration.count()));
+                static_cast<unsigned long long>(remote.hold_recovery_count));
+    ImGui::Text("Hold current / last: %lld / %lld ms",
+                static_cast<long long>(remote.current_hold_duration.count()),
+                static_cast<long long>(remote.last_hold_duration.count()));
+    ImGui::Text("Hold maximum / total: %lld / %lld ms",
+                static_cast<long long>(remote.maximum_hold_duration.count()),
+                static_cast<long long>(remote.total_hold_duration.count()));
     ImGui::Text("Rate corrections / rebases: %llu / %llu",
                 static_cast<unsigned long long>(remote.rate_correction_count),
                 static_cast<unsigned long long>(remote.hard_rebase_count));
+    ImGui::Text("Delayed creates / removes: %llu / %llu",
+                static_cast<unsigned long long>(remote.delayed_entity_create_count),
+                static_cast<unsigned long long>(remote.delayed_entity_remove_count));
     if (session.representative_remote_entity) {
         ImGui::Text("Example remote entity: %u", session.representative_remote_entity->value());
         if (session.representative_remote_endpoints.older) {
@@ -807,11 +817,8 @@ int run_networked_game(
 
         const auto output_size = window.pixel_size();
         const auto logical_size = window.size();
-        if (output_size.width <= 0 || output_size.height <= 0 || logical_size.width <= 0 ||
-            logical_size.height <= 0) {
-            previous_time = std::chrono::steady_clock::now();
-            continue;
-        }
+        const auto render_surface_available = output_size.width > 0 && output_size.height > 0 &&
+                                              logical_size.width > 0 && logical_size.height > 0;
 
         const auto now = std::chrono::steady_clock::now();
         if (process_client_events(now)) {
@@ -820,10 +827,11 @@ int run_networked_game(
         if (client.state() != dots::client_runtime::State::Ready) {
             throw StartupError{"The networked authoritative session disconnected"};
         }
-        if (config.debug.enabled) {
+        if (config.debug.enabled && render_surface_available) {
             debug_ui.begin_frame();
         }
-        const auto mouse_input_available = !config.debug.enabled || !debug_ui.wants_mouse_capture();
+        const auto mouse_input_available =
+            render_surface_available && (!config.debug.enabled || !debug_ui.wants_mouse_capture());
         const auto frame_duration =
             std::chrono::duration_cast<mycore::time::Duration>(now - previous_time);
         frame_metrics.add_sample(frame_duration);
@@ -840,16 +848,19 @@ int run_networked_game(
         if (controlled == nullptr) {
             throw StartupError{"The replicated local player disappeared"};
         }
-        auto viewport = InputViewport{
-            .width = static_cast<float>(output_size.width),
-            .height = static_cast<float>(output_size.height),
-            .mouse_scale_x =
-                static_cast<float>(output_size.width) / static_cast<float>(logical_size.width),
-            .mouse_scale_y =
-                static_cast<float>(output_size.height) / static_cast<float>(logical_size.height),
-            .player_radius_pixels = dots::simulation::radius_for_mass(controlled->mass) *
-                                    config.view.pixels_per_world_unit,
-        };
+        auto viewport = InputViewport{};
+        if (render_surface_available) {
+            viewport = {
+                .width = static_cast<float>(output_size.width),
+                .height = static_cast<float>(output_size.height),
+                .mouse_scale_x =
+                    static_cast<float>(output_size.width) / static_cast<float>(logical_size.width),
+                .mouse_scale_y = static_cast<float>(output_size.height) /
+                                 static_cast<float>(logical_size.height),
+                .player_radius_pixels = dots::simulation::radius_for_mass(controlled->mass) *
+                                        config.view.pixels_per_world_unit,
+            };
+        }
 
         const auto simulation_start = std::chrono::steady_clock::now();
         {
@@ -896,8 +907,13 @@ int run_networked_game(
         });
         const auto simulation_snapshot = simulation_metrics.snapshot();
         simulation_health_reporter.update(simulation_snapshot, std::chrono::steady_clock::now());
+        if (!render_surface_available) {
+            std::this_thread::sleep_for(1ms);
+            continue;
+        }
 
         remote_snapshot_buffer.advance(now);
+        const auto remote_frame = remote_snapshot_buffer.sample(client.controlled_entity_id());
         const auto remote_presentation_statistics = remote_snapshot_buffer.statistics(now);
         auto prediction_statistics = client.prediction_statistics(now);
         prediction_debug_controls.observe_input_drop_burst(prediction_statistics, now);
@@ -920,7 +936,6 @@ int run_networked_game(
                 now);
         };
         update_local_prediction_presentation();
-        const auto remote_frame = remote_snapshot_buffer.sample(client.controlled_entity_id());
         const auto representative = std::find_if(
             remote_frame.entities.begin(), remote_frame.entities.end(), [](const auto& entity) {
                 return entity.kind == dots::protocol::EntityKind::Player;

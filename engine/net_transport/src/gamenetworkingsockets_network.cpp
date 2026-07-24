@@ -178,6 +178,13 @@ public:
                 events.push_back(std::move(events_.front()));
                 events_.pop_front();
             }
+            if (listen_socket_ != k_HSteamListenSocket_Invalid) {
+                for (const auto& event : events) {
+                    if (const auto* disconnected = std::get_if<Disconnected>(&event)) {
+                        connections_.erase(disconnected->connection.value());
+                    }
+                }
+            }
             return events;
         }
 

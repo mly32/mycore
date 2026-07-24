@@ -296,6 +296,20 @@ catch-up, and immediate recovery. It did not stall server authority, grow predic
 without bound, cause a hard resync, or persist after the frame; retain the observation for future
 frame-pacing work rather than treating it as a networking failure.
 
+## Post-merge review remediation
+
+A 2026-07-23 review confirmed the bounded history, transactional ACK validation, scratch replay,
+and correction-smoothing contracts. It also found two runtime integration gaps:
+
+- A failed input send stopped prediction but did not request transport disconnect. The client now
+  closes the connection before entering its terminal disconnected state, and a regression test
+  verifies that prediction, history, sequence state, and cleanup remain atomic.
+- The graphical client skipped all networking and fixed input steps while its drawable surface
+  was unavailable. A minimized or temporarily zero-sized window could therefore trigger the
+  server's liveness timeout. Network polling and fixed input production now continue without a
+  render surface; mouse steering resolves neutral while the viewport is unavailable, keyboard
+  state remains usable, and rendering resumes when the surface returns.
+
 ## Exit Criteria
 
 - Local movement responds on the client input tick without waiting for a server snapshot.

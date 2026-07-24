@@ -22,10 +22,12 @@ enum class RuntimeError : std::uint8_t {
 };
 
 inline constexpr std::uint32_t kDefaultLivenessTimeoutTicks = 90;
+inline constexpr std::uint32_t kDefaultHandshakeTimeoutTicks = 300;
 inline constexpr std::uint32_t kDefaultInputHoldTicks = 5;
 
 struct RuntimeSettings {
     std::uint32_t liveness_timeout_ticks{kDefaultLivenessTimeoutTicks};
+    std::uint32_t handshake_timeout_ticks{kDefaultHandshakeTimeoutTicks};
     std::uint32_t input_hold_ticks{kDefaultInputHoldTicks};
 };
 
