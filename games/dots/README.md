@@ -88,12 +88,14 @@ Temporarily losing the graphical drawable surface, such as while minimized, paus
 not transport polling or fixed input production. Mouse steering and spectator wheel zoom become
 neutral until the viewport returns; keyboard input remains available.
 
-The authoritative server assigns each joining or respawning player the first clear point in a
-deterministic 12-world-unit square spiral. Spawn position and owner are included in the
-welcome-following full snapshot; clients never choose them locally. Player absorption and
-Playing/Spectating lifecycle are server-owned and repeated in snapshots. The graphical spectator
-camera defaults to the confirmed killer's interpolated presentation sample. If that target
-disappears, it keeps the last valid camera position and switches to free-camera mode.
+The authoritative server assigns each joining or respawning player through a deterministic,
+active-player-count-indexed square-ring search on a 12-world-unit lattice. Every candidate is
+checked against current live player circles; food does not block placement. Spawn position and
+owner are included in the welcome-following full snapshot, and clients never choose them locally.
+Player absorption and Playing/Spectating lifecycle are server-owned and repeated in snapshots.
+The graphical spectator camera defaults to the confirmed killer's interpolated presentation
+sample. If that target disappears, it keeps the last valid camera position and switches to
+free-camera mode.
 
 The default respawn cooldown is 90 server ticks. Override it when starting the server, including
 zero for immediate eligibility:

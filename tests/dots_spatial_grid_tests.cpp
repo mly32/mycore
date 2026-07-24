@@ -50,6 +50,40 @@ TEST_CASE("Spatial grid deduplicates multi-cell entities and handles negative ce
     REQUIRE(grid.entity_count() == 2);
 }
 
+TEST_CASE("Spatial grid candidate visits can stop without materializing a query",
+          "[dots][simulation][grid]") {
+    dots::simulation::SpatialGrid grid{10.0F};
+    const dots::simulation::EntityId first{5};
+    const dots::simulation::EntityId second{6};
+    REQUIRE(grid.insert(first, {.center = {}, .radius = 2.0F}));
+    REQUIRE(grid.insert(second, {.center = {1.0F, 1.0F}, .radius = 2.0F}));
+
+    std::size_t visit_count{};
+    const auto stopped = grid.visit_candidates({.center = {}, .radius = 2.0F},
+                                               [&visit_count](dots::simulation::EntityId) {
+                                                   ++visit_count;
+                                                   return false;
+                                               });
+    CHECK(stopped == dots::simulation::SpatialGrid::VisitResult::Stopped);
+    CHECK(visit_count == 1);
+
+    visit_count = 0;
+    const auto completed = grid.visit_candidates({.center = {100.0F, 100.0F}, .radius = 1.0F},
+                                                 [&visit_count](dots::simulation::EntityId) {
+                                                     ++visit_count;
+                                                     return true;
+                                                 });
+    CHECK(completed == dots::simulation::SpatialGrid::VisitResult::Completed);
+    CHECK(visit_count == 0);
+
+    const auto invalid =
+        grid.visit_candidates({.center = {}, .radius = std::numeric_limits<float>::max()},
+                              [](dots::simulation::EntityId) {
+                                  return true;
+                              });
+    CHECK(invalid == dots::simulation::SpatialGrid::VisitResult::InvalidBounds);
+}
+
 TEST_CASE("Spatial grid rejects invalid configuration, IDs, and ranges",
           "[dots][simulation][grid][validation]") {
     REQUIRE_THROWS_AS(dots::simulation::SpatialGrid{0.0F}, std::invalid_argument);

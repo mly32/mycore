@@ -451,7 +451,43 @@ TEST_CASE("Absorption growth affects new overlaps on the following tick",
     CHECK_FALSE(world.contains(*later_victim));
 }
 
-TEST_CASE("Safe player spawning follows an unbounded deterministic spiral",
+TEST_CASE("Indexed spawn candidates follow compact deterministic square rings",
+          "[dots][simulation][spawn]") {
+    constexpr std::array expected{
+        mycore::math::Vector2{0.0F, 0.0F},     mycore::math::Vector2{12.0F, 0.0F},
+        mycore::math::Vector2{12.0F, 12.0F},   mycore::math::Vector2{0.0F, 12.0F},
+        mycore::math::Vector2{-12.0F, 12.0F},  mycore::math::Vector2{-12.0F, 0.0F},
+        mycore::math::Vector2{-12.0F, -12.0F}, mycore::math::Vector2{0.0F, -12.0F},
+        mycore::math::Vector2{12.0F, -12.0F},  mycore::math::Vector2{24.0F, -12.0F},
+        mycore::math::Vector2{24.0F, 0.0F},    mycore::math::Vector2{24.0F, 12.0F},
+        mycore::math::Vector2{24.0F, 24.0F},   mycore::math::Vector2{12.0F, 24.0F},
+        mycore::math::Vector2{0.0F, 24.0F},    mycore::math::Vector2{-12.0F, 24.0F},
+        mycore::math::Vector2{-24.0F, 24.0F},  mycore::math::Vector2{-24.0F, 12.0F},
+        mycore::math::Vector2{-24.0F, 0.0F},   mycore::math::Vector2{-24.0F, -12.0F},
+        mycore::math::Vector2{-24.0F, -24.0F}, mycore::math::Vector2{-12.0F, -24.0F},
+        mycore::math::Vector2{0.0F, -24.0F},   mycore::math::Vector2{12.0F, -24.0F},
+        mycore::math::Vector2{24.0F, -24.0F},
+    };
+
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        CHECK(dots::simulation::initial_player_spawn_candidate(index) == expected[index]);
+    }
+
+    constexpr std::array<std::uint64_t, 5> kRings{1, 2, 16, 1'024, 32'768};
+    for (const auto ring : kRings) {
+        const auto inner_diameter = (ring * 2U) - 1U;
+        const auto outer_diameter = (ring * 2U) + 1U;
+        const auto ring_start = inner_diameter * inner_diameter;
+        const auto ring_end = (outer_diameter * outer_diameter) - 1U;
+        const auto world_ring = static_cast<float>(ring * 12U);
+        CHECK(dots::simulation::initial_player_spawn_candidate(ring_start) ==
+              mycore::math::Vector2{world_ring, -world_ring + 12.0F});
+        CHECK(dots::simulation::initial_player_spawn_candidate(ring_end) ==
+              mycore::math::Vector2{world_ring, -world_ring});
+    }
+}
+
+TEST_CASE("Safe player spawning uses active-count indexed rings without overlap",
           "[dots][simulation][spawn]") {
     dots::simulation::World first_world;
     dots::simulation::World second_world;
@@ -466,6 +502,8 @@ TEST_CASE("Safe player spawning follows an unbounded deterministic spiral",
         REQUIRE(first_id != nullptr);
         REQUIRE(second_id != nullptr);
         CHECK(first_world.position(*first_id) == second_world.position(*second_id));
+        CHECK(first_world.position(*first_id) ==
+              dots::simulation::initial_player_spawn_candidate(index));
     }
 
     CHECK(first_world.player_count() == kPlayerCount);
@@ -483,6 +521,50 @@ TEST_CASE("Safe player spawning follows an unbounded deterministic spiral",
         }
     }
     CHECK_FALSE(overlap_found);
+}
+
+TEST_CASE("Safe player spawning classifies exact collisions and ignores food",
+          "[dots][simulation][spawn]") {
+    dots::simulation::World world;
+    CHECK(world.classify_initial_player_spawn({}) ==
+          dots::simulation::InitialPlayerSpawnStatus::Clear);
+    REQUIRE(world.spawn_food({}).has_value());
+    CHECK(world.classify_initial_player_spawn({}) ==
+          dots::simulation::InitialPlayerSpawnStatus::Clear);
+
+    const auto first =
+        dots::simulation::spawn_player_safely(world, dots::simulation::PlayerOwnerId{0});
+    const auto* first_id = std::get_if<dots::simulation::EntityId>(&first);
+    REQUIRE(first_id != nullptr);
+    CHECK(world.position(*first_id) == mycore::math::Vector2{});
+    CHECK(world.classify_initial_player_spawn({8.0F, 0.0F}) ==
+          dots::simulation::InitialPlayerSpawnStatus::Blocked);
+    CHECK(world.classify_initial_player_spawn({8.1F, 0.0F}) ==
+          dots::simulation::InitialPlayerSpawnStatus::Clear);
+    CHECK(world.classify_initial_player_spawn({std::numeric_limits<float>::max(), 0.0F}) ==
+          dots::simulation::InitialPlayerSpawnStatus::OutsideRepresentableGrid);
+}
+
+TEST_CASE("Safe player spawning starts from active count after a removal",
+          "[dots][simulation][spawn]") {
+    dots::simulation::World world;
+    std::array<dots::simulation::EntityId, 3> players;
+    for (std::uint32_t index = 0; index < players.size(); ++index) {
+        const auto result =
+            dots::simulation::spawn_player_safely(world, dots::simulation::PlayerOwnerId{index});
+        const auto* player = std::get_if<dots::simulation::EntityId>(&result);
+        REQUIRE(player != nullptr);
+        players[index] = *player;
+    }
+
+    REQUIRE(world.remove_player(players[0]));
+    const auto replacement =
+        dots::simulation::spawn_player_safely(world, dots::simulation::PlayerOwnerId{3});
+    const auto* replacement_id = std::get_if<dots::simulation::EntityId>(&replacement);
+    REQUIRE(replacement_id != nullptr);
+    CHECK(world.position(*replacement_id) == dots::simulation::initial_player_spawn_candidate(3));
+    CHECK(world.classify_initial_player_spawn({}) ==
+          dots::simulation::InitialPlayerSpawnStatus::Clear);
 }
 
 TEST_CASE("Safe player spawning checks the live radius of grown players",

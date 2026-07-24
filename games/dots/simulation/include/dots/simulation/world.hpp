@@ -37,6 +37,12 @@ struct PlayerAbsorbed {
     auto operator<=>(const PlayerAbsorbed&) const = default;
 };
 
+enum class InitialPlayerSpawnStatus : std::uint8_t {
+    Clear,
+    Blocked,
+    OutsideRepresentableGrid,
+};
+
 // A fixed-step world using an explicit structure-of-arrays (SoA) data model: each player
 // component has a dense parallel array, and matching indices associate components with an ID.
 // SoA suits Dots while most entities share one schema and systems process one component in bulk.
@@ -61,8 +67,8 @@ public:
     [[nodiscard]] std::optional<float> mass(EntityId entity_id) const noexcept;
     [[nodiscard]] std::optional<float> radius(EntityId entity_id) const noexcept;
     [[nodiscard]] bool has_available_entity_id() const noexcept;
-    [[nodiscard]] bool can_index_initial_player(mycore::math::Vector2 position) const noexcept;
-    [[nodiscard]] bool is_initial_player_spawn_clear(mycore::math::Vector2 position) const;
+    [[nodiscard]] InitialPlayerSpawnStatus
+    classify_initial_player_spawn(mycore::math::Vector2 position) const;
     [[nodiscard]] mycore::time::Tick tick() const noexcept;
     [[nodiscard]] std::span<const PlayerAbsorbed> last_step_events() const noexcept;
 

@@ -201,26 +201,25 @@ bool World::has_available_entity_id() const noexcept {
     return next_entity_id().has_value();
 }
 
-bool World::can_index_initial_player(mycore::math::Vector2 position) const noexcept {
-    return spatial_grid_.can_index(
-        {.center = position, .radius = radius_for_mass(kInitialPlayerMass)});
-}
-
-bool World::is_initial_player_spawn_clear(mycore::math::Vector2 position) const {
+InitialPlayerSpawnStatus
+World::classify_initial_player_spawn(mycore::math::Vector2 position) const {
     const Circle candidate_circle{.center = position,
                                   .radius = radius_for_mass(kInitialPlayerMass)};
-    if (!spatial_grid_.can_index(candidate_circle)) {
-        return false;
+    const auto visit_result = spatial_grid_.visit_candidates(
+        candidate_circle, [this, candidate_circle](EntityId candidate) {
+            const auto player_index = find_index(candidate);
+            return !player_index || !circles_overlap(candidate_circle,
+                                                     {.center = positions_[*player_index],
+                                                      .radius = radii_[*player_index]});
+        });
+
+    if (visit_result == SpatialGrid::VisitResult::InvalidBounds) {
+        return InitialPlayerSpawnStatus::OutsideRepresentableGrid;
     }
-    for (const auto candidate : spatial_grid_.query(candidate_circle)) {
-        const auto player_index = find_index(candidate);
-        if (player_index && circles_overlap(candidate_circle,
-                                            {.center = positions_[*player_index],
-                                             .radius = radii_[*player_index]})) {
-            return false;
-        }
+    if (visit_result == SpatialGrid::VisitResult::Stopped) {
+        return InitialPlayerSpawnStatus::Blocked;
     }
-    return true;
+    return InitialPlayerSpawnStatus::Clear;
 }
 
 mycore::time::Tick World::tick() const noexcept {

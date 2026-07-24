@@ -456,6 +456,36 @@ Exit criterion:
 Detailed plan:
 [`plans/13-authoritative-interactions-spectating.md`](plans/13-authoritative-interactions-spectating.md).
 
+### `feature/13a-authoritative-spawn-search`
+
+Purpose: retain deterministic collision-safe authoritative placement without repeatedly scanning
+every normally occupied spawn candidate from the origin.
+
+Changes:
+
+- Add an allocation-free spatial-grid traversal that exits on the first exact player collision.
+- Classify a spawn candidate once as clear, blocked, or outside the representable grid.
+- Replace the origin restart with a directly indexed compact lattice sequence beginning at the
+  active player count.
+- Keep food non-blocking, preserve distinct failure causes, and add no mutable cursor or random
+  state that Feature 14 would need to checkpoint.
+
+Tests:
+
+- Golden indexed-ring coordinates and deterministic World-to-World placement.
+- Live-radius collision checks after movement, growth, removal, and respawn.
+- A 1,000-player fresh-World test with linear candidate-classification counts.
+- Entity-ID exhaustion, spatial-bound failure, and deterministic simultaneous request ordering.
+
+Exit criterion:
+
+- Join and respawn placement remains server-owned, deterministic, unbounded, and exactly
+  collision-safe while the normal fresh-World batch path performs one successful candidate
+  classification per player.
+
+Detailed plan:
+[`plans/authoritative-spawn-search.md`](plans/authoritative-spawn-search.md).
+
 ### `feature/14-selectable-world-rollback`
 
 Purpose: replace position-only prediction with complete, selectable Dots World rollback.

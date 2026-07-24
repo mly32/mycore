@@ -151,7 +151,7 @@ jobs:
         run: cmake --build --preset ${{ matrix.preset }}
 
       - name: Test
-        run: ctest --preset ${{ matrix.preset }}
+        run: ctest --preset ${{ matrix.preset }} --parallel
 
       - name: Package Dots client
         run: cmake --build --preset ${{ matrix.preset }} --target dots_client_package

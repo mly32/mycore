@@ -24,10 +24,16 @@ energy pickup might later fill.
 
 ## Joining and spawning
 
-The authoritative server chooses player spawns. It searches an unbounded deterministic square
-spiral centered at the origin on a 12-world-unit lattice and selects the first initial-size circle
-that does not touch a live player. Food does not block a spawn. The chosen entity and position are
-included in the first full snapshot after `ServerWelcome`; clients never choose or predict them.
+The authoritative server chooses player spawns from a directly indexed deterministic square-ring
+sequence on a 12-world-unit lattice. A search begins at the ordinal equal to the current live
+player count and advances until it finds an initial-size circle that does not touch a live player.
+Every candidate is checked against current player positions and radii through the spatial grid;
+food does not block a spawn. Movement, growth, or removal can leave a lower-order hole, but the
+server is not required to fill that hole before choosing a later clear point.
+
+The chosen entity and position are included in the first full snapshot after `ServerWelcome`;
+clients never choose or predict them. The implementation and alternatives are recorded in the
+[authoritative spawn search plan](plans/authoritative-spawn-search.md).
 
 Offline play starts its local player at the origin; the food field deliberately leaves that point
 empty. Native and in-memory multiplayer use server-assigned spawns.

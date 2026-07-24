@@ -44,6 +44,7 @@
 - [Prediction and reconciliation](plans/11-prediction-reconciliation.md)
 - [Remote interpolation](plans/12-remote-interpolation.md)
 - [Authoritative interactions and spectating](plans/13-authoritative-interactions-spectating.md)
+- [Authoritative spawn search](plans/authoritative-spawn-search.md)
 - [Selectable World rollback](plans/14-selectable-world-rollback.md)
 
 Plans record intended scope and acceptance criteria. Inspect the current code, tests, branch,

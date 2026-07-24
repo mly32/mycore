@@ -93,7 +93,7 @@ pieces but does not create a replacement.
 
 ## Safe Spawn and Respawn
 
-All initial joins and respawns use the same server-owned deterministic search:
+Feature 13 initially used the following server-owned deterministic search:
 
 1. Enumerate a square spiral centered at the origin on a 12-world-unit lattice.
 2. Choose the first point where the initial player circle does not touch or overlap any live
@@ -104,6 +104,11 @@ All initial joins and respawns use the same server-owned deterministic search:
 5. Fail explicitly and distinguish entity-ID exhaustion from no representable safe spawn.
 
 The client never proposes a spawn position.
+
+The implemented Feature 13 follow-up replaces the origin restart with the collision-safe,
+active-count indexed square-ring search in
+[`authoritative-spawn-search.md`](authoritative-spawn-search.md). The client-authority and failure
+contracts above remain unchanged.
 
 Feature 13 has no fixed simultaneous-session target. The search must not retain the current
 77-slot ceiling, and a deterministic test places 1,000 initial-size players without overlap, but
