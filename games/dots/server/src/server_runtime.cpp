@@ -337,6 +337,11 @@ private:
         session.latest_respawn_request_id = sequence_id;
         if (session.mode != protocol::SessionMode::Spectating) {
             session.latest_respawn_result = protocol::RespawnResult::RejectedNotSpectating;
+            mycore::debug::log_info("dots.server.session",
+                                    "Client {} respawn input {} rejected: session is not "
+                                    "spectating",
+                                    session.client_id.value(),
+                                    sequence_id.value());
             return std::nullopt;
         }
         if (!session.respawn_available_tick) {
@@ -344,6 +349,13 @@ private:
         }
         if (world_.tick().value() < *session.respawn_available_tick) {
             session.latest_respawn_result = protocol::RespawnResult::RejectedCooldown;
+            mycore::debug::log_info(
+                "dots.server.session",
+                "Client {} respawn input {} rejected at tick {}: cooldown ends at tick {}",
+                session.client_id.value(),
+                sequence_id.value(),
+                world_.tick().value(),
+                *session.respawn_available_tick);
             return std::nullopt;
         }
 
@@ -353,6 +365,11 @@ private:
             if (std::get<simulation::SafePlayerSpawnError>(spawn_result) ==
                 simulation::SafePlayerSpawnError::NoSafePosition) {
                 session.latest_respawn_result = protocol::RespawnResult::RejectedNoSafeSpawn;
+                mycore::debug::log_warning(
+                    "dots.server.session",
+                    "Client {} respawn input {} rejected: no safe spawn is available",
+                    session.client_id.value(),
+                    sequence_id.value());
                 return std::nullopt;
             }
             return RuntimeError::EntityIdExhausted;
@@ -429,6 +446,11 @@ private:
             static_cast<void>(unused);
             if (session.mode == protocol::SessionMode::Spectating &&
                 session.follow_player_id.is_valid() && !world_.position(session.follow_player_id)) {
+                mycore::debug::log_info(
+                    "dots.server.session",
+                    "Client {} follow entity {} is no longer present; clearing confirmed target",
+                    session.client_id.value(),
+                    session.follow_player_id.value());
                 session.follow_player_id = {};
             }
         }

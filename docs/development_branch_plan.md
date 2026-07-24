@@ -730,6 +730,40 @@ Exit criterion:
   native OS location, while command-line overrides and game-owned validation retain their
   current behavior.
 
+### `feature/23-client-input-observability`
+
+Purpose: make the Dots client's active configured controls and live local input context visible
+without confusing device state with authoritative gameplay input.
+
+Changes:
+
+- Add a Dots-owned input view that displays the configured input mode and resolved keyboard and
+  mouse bindings for the current Playing or Spectating context.
+- Show currently held movement keys, edge-triggered actions, wheel activity, derived movement
+  intent, and whether debug-UI capture suppressed mouse steering or spectator wheel zoom.
+- Keep the view client-only. Do not add protocol fields, transmit raw device state, or describe
+  spectator camera input as authoritative gameplay.
+- Keep input remapping and binding persistence out of scope; this branch observes the existing
+  configuration.
+- Choose during detailed planning between a **Dots session / Input** tab and a separately
+  toggleable compact streamer-style overlay. Use one presentation first rather than maintaining
+  duplicate views.
+
+Tests:
+
+- Build the displayed binding and action state from real `ClientConfig`, input snapshots, and
+  control intents.
+- Cover Playing and Spectating contexts, held versus edge-triggered actions, mouse/wheel input,
+  and debug-UI capture.
+- Verify the view does not change generated gameplay commands, spectator controls, or protocol
+  bytes.
+
+Exit criterion:
+
+- A developer can identify the active local bindings, device activity, derived intent, and UI
+  capture state in-game without consulting the TOML file or mistaking the display for server
+  authority.
+
 ## Research Branches
 
 Create these only after the bot/load harness or Lua rules branch provides a stable

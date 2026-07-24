@@ -44,6 +44,9 @@ and worktree before making changes.
   understand why the system has its current shape.
 - Keep the plan current when implementation changes a decision. Link new plans from
   `docs/README.md` and align their scope with `docs/development_branch_plan.md` when applicable.
+- Record every newly proposed future feature or unassigned follow-up in
+  `docs/development_branch_plan.md`. Canonical guides describe current behavior or work assigned
+  to an existing feature plan; do not use them as parking lots for standalone future work.
 - Routine fixes and small, local changes do not need standalone plan documents.
 
 ## Branches and Commits

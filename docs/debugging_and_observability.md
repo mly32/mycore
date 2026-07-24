@@ -18,8 +18,8 @@ This document uses three status labels:
 
 - **Current:** Feature 11 owned prediction/reconciliation, Feature 12 remote
   interpolation-and-hold, and Feature 13's authoritative absorption/session lifecycle are
-  implemented. Feature 13's follow/free spectator presentation is also implemented; its Gameplay
-  tab remains the next planned checkpoint.
+  implemented. Feature 13's follow/free spectator presentation and authoritative Gameplay output
+  are also implemented.
 - **Feature 14 planned:** complete selectable rollback and Rollback output specified in
   [`plans/14-selectable-world-rollback.md`](plans/14-selectable-world-rollback.md) and
   [`rollback_prediction_design.md`](rollback_prediction_design.md).
@@ -74,10 +74,16 @@ predicted state from a newer authoritative base and then smooths the visible cor
 
 ### Compensation clock status
 
-`Estimated live server time` is not currently implemented and does not drive Feature 11. Owned
-prediction uses local input steps and server ACKs; reconciliation replays the retained input
-suffix; correction smoothing decays a spatial offset over a fixed 100 ms of local steady time.
-Network conditions can change correction frequency and magnitude, but not that duration.
+Feature 13's Gameplay tab calculates one narrow deadline estimate from the latest replicated
+server tick plus local steady-clock time since that snapshot arrived. It is an unfiltered
+presentation countdown and does not add a general live-server clock. It never drives respawn
+eligibility, prediction, reconciliation, or simulation; the server's current tick remains the
+only eligibility decision.
+
+Feature 11 does not estimate live server time. Owned prediction uses local input steps and server
+ACKs; reconciliation replays the retained input suffix; correction smoothing decays a spatial
+offset over a fixed 100 ms of local steady time. Network conditions can change correction
+frequency and magnitude, but not that duration.
 
 Feature 12 also does not estimate or render server “now.” Its remote presentation cursor
 uses server ticks and targets `newest received tick - 6`. It advances at 100% speed within a
@@ -104,13 +110,15 @@ contains the formulas, network-change behavior, and the explicitly deferred live
 ## Current Dots Overlay
 
 The Dots-owned Dear ImGui UI has a compact **Dots game state** panel fixed at the top left, a
-left lower **Dots session** pane with **Runtime** and **Network** tabs, and a right lower **Dots
-diagnostics** pane with **Prediction**, **Interpolation**, and **Tools** tabs.
+left lower **Dots session** pane with **Runtime**, **Network**, and **Gameplay** tabs, and a right
+lower **Dots diagnostics** pane with **Prediction**, **Interpolation**, and **Tools** tabs.
 `[debug].enabled` defaults to `true`; set it to `false` to hide these panes, suppress world-space
 diagnostic layers, and prevent the UI from receiving input. Disabling debug does not change
 simulation or gameplay presentation. Fault injection and visual-layer controls live under Tools
 rather than extending the Prediction metrics view. `MyCore::DebugUI` owns ImGui integration, but
-the fields and their meanings remain Dots-owned.
+the fields and their meanings remain Dots-owned. Subdued explanatory descriptions and visual-layer
+legends wrap to their pane's available width; disabled or unavailable values remain distinct
+interaction/state output.
 
 ### World and presentation fields — Current
 
@@ -121,7 +129,7 @@ it is not the locally smoothed presentation position.
 | Label | Source and units | Meaning |
 |---|---|---|
 | `Input` | Client configuration | Active mouse, keyboard, or hybrid input mapping mode. |
-| `Presentation` | Client mode | Offline presentation mode, or `NETWORKED PREDICTED` when owned movement is predicted and corrections are smoothed. Remote entities use Feature 12's delayed known-authority presentation frame. |
+| `Presentation` | Client mode | Offline presentation mode, `NETWORKED PREDICTED` while playing, or `NETWORKED SPECTATOR` after a confirmed spectator transition. Remote entities use Feature 12's delayed known-authority presentation frame. |
 | `Tick` | Offline world tick or latest replicated server tick | In offline play this is the local world tick. In networked play it is the tick stored in the latest accepted server snapshot. |
 | `Players` | Current offline or replicated entity collection | Number of player entities visible to this client state. It is not the server's total connected-client count. |
 | `Food` | Current offline or replicated entity collection | Number of food entities visible to this client state. |
@@ -211,9 +219,12 @@ switches the camera to free mode at its last valid position; it never selects an
 replacement.
 
 While spectating, the **Network** and **Interpolation** tabs remain live. The controlled entity is
-shown as `none`, and **Prediction**/**Tools** explicitly report that local prediction is
-unavailable instead of displaying camera state as predicted gameplay. The dedicated Feature 13
-**Gameplay** tab described below is not implemented yet.
+shown as `none`, and **Prediction** reports that local prediction is unavailable instead of
+displaying camera state as predicted gameplay. **Tools** shows only its active remote-presentation
+section, endpoint-outline toggle, and applicable legend; it omits local prediction faults,
+prediction/replay layers, and correction controls. The **Gameplay** tab reports the confirmed
+lifecycle state; free-camera position, zoom, and camera mode remain presentation state and are not
+reported as authoritative gameplay.
 
 ## Current Logs and Profiling
 
@@ -222,11 +233,11 @@ Important log categories include:
 | Category | Meaning |
 |---|---|
 | `dots.client` | Client startup and general runtime information. |
-| `dots.client.session` | Client transport, handshake, assigned identity, and disconnect lifecycle. |
+| `dots.client.session` | Client transport, handshake, assigned identity, disconnect lifecycle, and newly confirmed absorption, session-mode, follow-target-loss, and respawn-result transitions. |
 | `dots.client.simulation` | Client fixed-step overload warnings, escalation, and recovery. |
 | `dots.client.prediction` | Prediction history pressure/recovery, hard resyncs, replay-budget warnings, and explicit debug fault injection. |
 | `dots.server` | Headless server startup, listen address, tick lifetime, and shutdown. |
-| `dots.server.session` | Connection acceptance, assigned players, rejected packets, liveness timeouts, and cleanup. |
+| `dots.server.session` | Connection acceptance, assigned players, authoritative defeat/respawn decisions, follow-target loss, rejected packets, liveness timeouts, and cleanup. |
 
 Feature 7 added Tracy zones for the client frame, fixed-step work, presentation extraction, and
 render submission. Phase 11.2 adds `Dots prediction reconciliation`, covering bounded scratch
@@ -364,7 +375,7 @@ different problems. Feature 12 keeps a delayed remote cursor centered in known s
 future tick-synchronization feature would map local input ticks to estimated server ticks and
 adjust command slack.
 
-## Authoritative Gameplay Output — Feature 13.4 Planned
+## Authoritative Gameplay Output — Current
 
 Feature 13 adds a separate **Gameplay** tab. It reports server-confirmed lifecycle rather than
 extending movement prediction metrics:
@@ -375,12 +386,18 @@ extending movement prediction metrics:
 | Owned pieces | Confirmed owned-piece count plus primary entity ID, if any. |
 | Killer/follow | Confirmed killer or current follow entity; absence must be explicit. |
 | Defeat tick | Server tick at which the last authoritative piece was absorbed. |
-| Respawn available | Server deadline tick and a presentation countdown. The countdown never decides eligibility. |
+| Respawn available | Server deadline tick and `Estimated countdown`. The countdown is latest snapshot tick plus snapshot receipt age, clamped at zero; it never decides eligibility. |
 | Latest absorption | Authoritative absorber, victim, transferred mass, and tick for an event involving this session. |
 | Respawn request | Latest request input sequence and confirmed accepted/rejected result. An input ACK alone is not success. |
 
 Spectator camera mode, free-camera position, zoom, and follow-target availability are presentation
 state. They do not imply control of an authoritative entity.
+
+Lifecycle fields are repeated in full snapshots and remain visible after their transition packet.
+Absent entity IDs, ticks, events, or requests display `none`; a countdown displays `unavailable`
+until both a deadline and snapshot-age anchor exist. The tab labels the estimate as
+presentation-only because a local `eligible` display can precede the server receiving or accepting
+a request.
 
 ## Complete Rollback Output — Feature 14 Planned
 

@@ -470,9 +470,10 @@ client estimate is suitable only for presentation.
 
 #### Which compensation uses which clock
 
-**Estimated live server time is vocabulary and a possible future UI/time-synchronization
-facility; Dots does not currently calculate or consume it.** It must not be mistaken for a hidden
-input-prediction or smoothing clock.
+Dots does not maintain a filtered general-purpose estimated-live-server clock. Feature 13's
+Gameplay tab does calculate a narrow, unfiltered deadline projection from the latest replicated
+server tick plus local steady time since that snapshot arrived. It must not be mistaken for a
+hidden input-prediction or smoothing clock, and it never decides respawn eligibility.
 
 | Mechanism | Status | Timeline/input it actually uses | Uses estimated live server time? |
 |---|---|---|---|
@@ -482,7 +483,8 @@ input-prediction or smoothing clock.
 | Remote presentation | Current, Feature 12 | Fractional cursor in historical server-tick coordinates, targeting six ticks behind the newest known snapshot; holds on underrun. | No. |
 | Complete-World rollback | Planned, Feature 14 | Authoritative checkpoint plus retained command replay and recorded remote assumptions. | No. |
 | Adaptive command buffer | Planned, Feature 14 | Reported server input-queue depth controls a bounded client command cadence. | No. |
-| Smooth world-time UI or deadline display | Deferred | A filtered mapping from local steady time to estimated server tick. | Potentially. |
+| Feature 13 respawn countdown | Current | Latest replicated server tick plus local steady time since snapshot receipt; unfiltered and presentation-only. | It is a limited estimate, never authority. |
+| Filtered smooth world-time UI | Deferred | A filtered mapping from local steady time to estimated server tick. | Potentially. |
 | Server-side rewind/lag compensation | Deferred | Server history plus a validated, bounded mapping of client action time into server ticks. | It would need a clock-mapping policy, but never trust the client's claim directly. |
 
 Calling prediction “lookahead” can obscure this distinction. Owned prediction advances known
@@ -868,7 +870,9 @@ separate, gameplay-specific authority policy.
 
 Feature 13 first adds deterministic authoritative absorption, defeat, spectating, and respawn.
 Those results remain unpredicted so the project has a trustworthy baseline for contested
-outcomes and session transitions.
+outcomes and session transitions. The Gameplay tab and session logs expose those repeated,
+recipient-specific results; its deadline countdown is presentation-only and does not participate
+in simulation or eligibility.
 
 Feature 14 then restores a complete Dots World from an authoritative checkpoint and atomically
 replays retained commands. The selectable set defaults to every replicated entity, but

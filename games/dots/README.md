@@ -132,17 +132,22 @@ not change simulation or gameplay presentation.
 ## Runtime visibility
 
 When `[debug].enabled` is true, the in-game debug UI uses two panes: left **Dots session** has
-**Runtime** and **Network** tabs; right **Dots diagnostics** has **Prediction**,
+**Runtime**, **Network**, and **Gameplay** tabs; right **Dots diagnostics** has **Prediction**,
 **Interpolation**, and **Tools** tabs. It reports
 server-assigned client/entity IDs, simulation and frame health, transport statistics, input ACK
-and history pressure, replay/correction metrics, and authoritative/predicted/presentation state.
+and history pressure, replay/correction metrics, authoritative/predicted/presentation state, and
+confirmed absorption, defeat, follow, respawn-deadline, and respawn-result state. The Gameplay
+countdown projects the latest server tick using snapshot receipt age for presentation only; the
+server tick decides eligibility.
 Tools can inject prediction errors or a three-packet drop burst without changing measured
 transport loss. Native connections expose RTT, loss, rates, and queues; unavailable in-memory
 measurements are labeled rather than displayed as zero. See the
 [debugging guide](../../docs/debugging_and_observability.md) for every field and visual layer.
 
 Logs use owner-qualified categories such as `dots.client.session` and `dots.server.session`, and
-on-demand Tracy zones cover the main client frame stages and prediction reconciliation.
+record newly confirmed client lifecycle state plus authoritative server defeat, follow-loss, and
+respawn decisions. On-demand Tracy zones cover the main client frame stages and prediction
+reconciliation.
 
 The [rendering guide](../../docs/sdl_gpu_rendering_guide.md) explains how Dots presentation data
 reaches SDL_GPU through MyCore's renderer.

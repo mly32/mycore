@@ -14,7 +14,9 @@ output.
 - **Authoritative lifecycle baseline:** Feature 13 now carries entity ownership and one atomic,
   recipient-specific Playing/Spectating block in every full snapshot. Defeat and respawn remain
   confirmed server results. Confirmed spectating selects follow-killer/free-camera presentation;
-  those camera modes never predict a lifecycle transition or authoritative entity.
+  those camera modes never predict a lifecycle transition or authoritative entity. The Gameplay
+  tab exposes the repeated confirmed state; its receipt-age respawn countdown is presentation-only
+  and never enters a checkpoint, replay, or eligibility decision.
 - **Committed direction:** Feature 14 replaces position-only replay with a complete Dots World
   rollback kernel and makes the prediction set selectable.
 - **Deferred research:** time-sliced resimulation may be reconsidered only from measured Feature

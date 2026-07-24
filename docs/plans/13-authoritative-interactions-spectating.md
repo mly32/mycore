@@ -223,14 +223,14 @@ Do not start a checkpoint until the preceding checkpoint is reviewed and approve
 - [x] Add confirmed follow-killer and free-camera modes.
 - [x] Add pan, zoom, follow-toggle, and respawn controls plus configuration/schema updates.
 - [x] Handle missing follow targets without changing authority.
-- [ ] Phase 13.3 approved.
+- [x] Phase 13.3 approved.
 
 ### Phase 13.4: Observability and validation
 
-- [ ] Add Gameplay tab fields, logs, and authoritative event visibility.
-- [ ] Run focused simulation/protocol/session/presentation tests.
-- [ ] Run two-client native and in-memory impairment scenarios.
-- [ ] Synchronize canonical documentation and README.
+- [x] Add Gameplay tab fields, logs, and authoritative event visibility.
+- [x] Run focused simulation/protocol/session/presentation tests.
+- [x] Run two-client native and in-memory impairment scenarios.
+- [x] Synchronize canonical documentation and README.
 - [ ] Feature 13 completion approved before Feature 14 implementation.
 
 ## Test Plan

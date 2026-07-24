@@ -45,6 +45,24 @@ disconnect_reason_name(mycore::net_transport::DisconnectReason reason) noexcept 
     return "unknown reason";
 }
 
+[[nodiscard]] constexpr std::string_view
+respawn_result_name(protocol::RespawnResult result) noexcept {
+    using protocol::RespawnResult;
+    switch (result) {
+    case RespawnResult::None:
+        return "none";
+    case RespawnResult::Accepted:
+        return "accepted";
+    case RespawnResult::RejectedCooldown:
+        return "rejected: cooldown";
+    case RespawnResult::RejectedNotSpectating:
+        return "rejected: not spectating";
+    case RespawnResult::RejectedNoSafeSpawn:
+        return "rejected: no safe spawn";
+    }
+    return "unknown";
+}
+
 [[nodiscard]] mycore::math::Vector2
 advance_prediction(mycore::math::Vector2 position, const protocol::InputSample& sample) noexcept {
     const auto movement =
@@ -508,11 +526,13 @@ private:
         if (client_id_.is_valid() && !valid_respawn_deadline(candidate_world.recipient())) {
             return {.error = RuntimeError::InvalidSnapshot};
         }
+        const auto previous_recipient = world_.recipient();
 
         if (candidate_world.recipient().mode == protocol::SessionMode::Spectating) {
             world_ = std::move(candidate_world);
             clear_prediction_state();
             record_server_pending_input(world_.pending_input_count());
+            log_recipient_changes(previous_recipient, snapshot.snapshot_id);
             return {.error = {}, .applied = true};
         }
 
@@ -528,8 +548,12 @@ private:
         if (can_reconcile) {
             const auto controlled_state = *controlled;
             const auto previous_prediction = *predicted_position_;
-            return reconcile_snapshot(
+            const auto result = reconcile_snapshot(
                 std::move(candidate_world), controlled_state, previous_prediction, now);
+            if (result.applied) {
+                log_recipient_changes(previous_recipient, snapshot.snapshot_id);
+            }
+            return result;
         }
 
         const mycore::math::Vector2 authoritative_position{controlled->position_x,
@@ -538,7 +562,76 @@ private:
         clear_prediction_state();
         predicted_position_ = authoritative_position;
         record_server_pending_input(world_.pending_input_count());
+        log_recipient_changes(previous_recipient, snapshot.snapshot_id);
         return {.error = {}, .applied = true};
+    }
+
+    void log_recipient_changes(const protocol::RecipientSessionState& previous,
+                               protocol::SnapshotId snapshot_id) const {
+        if (!client_id_.is_valid()) {
+            return;
+        }
+        const auto& current = world_.recipient();
+        if (current.latest_absorption != previous.latest_absorption && current.latest_absorption) {
+            const auto& event = *current.latest_absorption;
+            mycore::debug::log_info(
+                "dots.client.session",
+                "Snapshot {} confirmed absorption at tick {}: entity {} (owner {}) absorbed "
+                "entity {} (owner {}), transferring mass {:.3f}",
+                snapshot_id.value(),
+                event.server_tick,
+                event.absorber_entity_id.value(),
+                event.absorber_owner_id.value(),
+                event.victim_entity_id.value(),
+                event.victim_owner_id.value(),
+                event.transferred_mass);
+        }
+        if (current.mode != previous.mode) {
+            if (current.mode == protocol::SessionMode::Spectating && current.defeat_tick &&
+                current.respawn_available_tick) {
+                if (current.follow_entity_id.is_valid()) {
+                    mycore::debug::log_info(
+                        "dots.client.session",
+                        "Snapshot {} confirmed client {} SPECTATING at defeat tick {}; follow "
+                        "entity {}, respawn available tick {}",
+                        snapshot_id.value(),
+                        client_id_.value(),
+                        *current.defeat_tick,
+                        current.follow_entity_id.value(),
+                        *current.respawn_available_tick);
+                } else {
+                    mycore::debug::log_info(
+                        "dots.client.session",
+                        "Snapshot {} confirmed client {} SPECTATING at defeat tick {}; no follow "
+                        "entity, respawn available tick {}",
+                        snapshot_id.value(),
+                        client_id_.value(),
+                        *current.defeat_tick,
+                        *current.respawn_available_tick);
+                }
+            } else if (current.mode == protocol::SessionMode::Playing) {
+                mycore::debug::log_info(
+                    "dots.client.session",
+                    "Snapshot {} confirmed client {} PLAYING with primary entity {}",
+                    snapshot_id.value(),
+                    client_id_.value(),
+                    current.primary_entity_id.value());
+            }
+        } else if (previous.follow_entity_id.is_valid() && !current.follow_entity_id.is_valid()) {
+            mycore::debug::log_info("dots.client.session",
+                                    "Snapshot {} confirmed follow entity {} is no longer present",
+                                    snapshot_id.value(),
+                                    previous.follow_entity_id.value());
+        }
+        if (current.latest_respawn_request_id.is_valid() &&
+            current.latest_respawn_request_id != previous.latest_respawn_request_id) {
+            const auto result = respawn_result_name(current.latest_respawn_result);
+            mycore::debug::log_info("dots.client.session",
+                                    "Snapshot {} confirmed respawn input {}: {}",
+                                    snapshot_id.value(),
+                                    current.latest_respawn_request_id.value(),
+                                    result);
+        }
     }
 
     [[nodiscard]] bool

@@ -13,6 +13,7 @@
 #include "mycore/debug/metrics.hpp"
 #include "mycore/debug/profile.hpp"
 #include "mycore/debug_ui/context.hpp"
+#include "mycore/debug_ui/widgets.hpp"
 #include "mycore/math/vector2.hpp"
 #include "mycore/net_transport/net_transport.hpp"
 #include "mycore/platform_sdl/input.hpp"
@@ -115,6 +116,20 @@ struct DebugWorldStats {
         std::optional<Vector2> last_nonzero_movement_input;
     };
     std::optional<NetworkSession> network_session;
+    struct GameplaySession {
+        dots::protocol::ClientId client_id;
+        dots::protocol::SessionMode mode{dots::protocol::SessionMode::Playing};
+        std::size_t owned_piece_count{};
+        dots::protocol::EntityId primary_entity_id;
+        dots::protocol::EntityId follow_entity_id;
+        std::optional<std::uint32_t> defeat_tick;
+        std::optional<std::uint32_t> respawn_available_tick;
+        std::optional<double> respawn_seconds_remaining;
+        std::optional<dots::protocol::PlayerAbsorbed> latest_absorption;
+        dots::protocol::InputSequenceId latest_respawn_request_id;
+        dots::protocol::RespawnResult latest_respawn_result{dots::protocol::RespawnResult::None};
+    };
+    std::optional<GameplaySession> gameplay_session;
 };
 
 constexpr std::size_t kInjectedInputDropBurstSize = 3;
@@ -195,12 +210,109 @@ runtime_state_name(dots::client_runtime::State state) noexcept {
     return "UNKNOWN";
 }
 
+[[nodiscard]] constexpr std::string_view
+session_mode_name(dots::protocol::SessionMode mode) noexcept {
+    using dots::protocol::SessionMode;
+    switch (mode) {
+    case SessionMode::Playing:
+        return "PLAYING";
+    case SessionMode::Spectating:
+        return "SPECTATING";
+    }
+    return "UNKNOWN";
+}
+
+[[nodiscard]] constexpr std::string_view
+respawn_result_name(dots::protocol::RespawnResult result) noexcept {
+    using dots::protocol::RespawnResult;
+    switch (result) {
+    case RespawnResult::None:
+        return "NONE";
+    case RespawnResult::Accepted:
+        return "ACCEPTED";
+    case RespawnResult::RejectedCooldown:
+        return "REJECTED: COOLDOWN";
+    case RespawnResult::RejectedNotSpectating:
+        return "REJECTED: NOT SPECTATING";
+    case RespawnResult::RejectedNoSafeSpawn:
+        return "REJECTED: NO SAFE SPAWN";
+    }
+    return "UNKNOWN";
+}
+
 void draw_input_sequence(std::string_view label, dots::protocol::InputSequenceId value) {
     if (value.is_valid()) {
         ImGui::Text("%.*s: %u", static_cast<int>(label.size()), label.data(), value.value());
     } else {
         ImGui::Text("%.*s: none", static_cast<int>(label.size()), label.data());
     }
+}
+
+void draw_entity_id(std::string_view label, dots::protocol::EntityId value) {
+    if (value.is_valid()) {
+        ImGui::Text("%.*s: %u", static_cast<int>(label.size()), label.data(), value.value());
+    } else {
+        ImGui::Text("%.*s: none", static_cast<int>(label.size()), label.data());
+    }
+}
+
+void draw_gameplay_debug_tab(const DebugWorldStats& world) {
+    if (!world.gameplay_session) {
+        mycore::debug_ui::description("Authoritative gameplay state requires a network session.");
+        return;
+    }
+
+    const auto& gameplay = *world.gameplay_session;
+    const auto mode = session_mode_name(gameplay.mode);
+    ImGui::Text("Client ID: %u", gameplay.client_id.value());
+    ImGui::Text("Session mode: %.*s", static_cast<int>(mode.size()), mode.data());
+    ImGui::Text("Owned pieces: %zu", gameplay.owned_piece_count);
+    draw_entity_id("Primary entity", gameplay.primary_entity_id);
+    draw_entity_id("Killer / follow", gameplay.follow_entity_id);
+
+    ImGui::Separator();
+    if (gameplay.defeat_tick) {
+        ImGui::Text("Defeat tick: %u", *gameplay.defeat_tick);
+    } else {
+        ImGui::TextUnformatted("Defeat tick: none");
+    }
+    if (gameplay.respawn_available_tick) {
+        ImGui::Text("Respawn available tick: %u", *gameplay.respawn_available_tick);
+        if (gameplay.respawn_seconds_remaining && *gameplay.respawn_seconds_remaining > 0.0) {
+            ImGui::Text("Estimated countdown: %.1f s", *gameplay.respawn_seconds_remaining);
+        } else if (gameplay.respawn_seconds_remaining) {
+            ImGui::TextColored({0.35F, 0.9F, 0.45F, 1.0F}, "Estimated countdown: eligible");
+        } else {
+            ImGui::TextUnformatted("Estimated countdown: unavailable");
+        }
+    } else {
+        ImGui::TextUnformatted("Respawn available tick: none");
+        ImGui::TextUnformatted("Estimated countdown: unavailable");
+    }
+    mycore::debug_ui::description(
+        "Countdown is presentation only; the server tick decides eligibility.");
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Latest authoritative absorption");
+    if (gameplay.latest_absorption) {
+        const auto& absorption = *gameplay.latest_absorption;
+        ImGui::Text("Tick: %u", absorption.server_tick);
+        ImGui::Text("Absorber / victim: %u / %u",
+                    absorption.absorber_entity_id.value(),
+                    absorption.victim_entity_id.value());
+        ImGui::Text("Owners: %u / %u",
+                    absorption.absorber_owner_id.value(),
+                    absorption.victim_owner_id.value());
+        ImGui::Text("Transferred mass: %.3f", absorption.transferred_mass);
+    } else {
+        ImGui::TextDisabled("None");
+    }
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Latest authoritative respawn result");
+    draw_input_sequence("Request input", gameplay.latest_respawn_request_id);
+    const auto respawn_result = respawn_result_name(gameplay.latest_respawn_result);
+    ImGui::Text("Result: %.*s", static_cast<int>(respawn_result.size()), respawn_result.data());
 }
 
 void draw_snapshot_sequence(std::string_view label, dots::protocol::SnapshotId value) {
@@ -300,9 +412,9 @@ void draw_network_debug_tab(const DebugWorldStats& world) {
         ImGui::Text(
             "Snapshot / server tick: %u / %u", world.snapshot_id.value_or(0), session.server_tick);
         ImGui::Text("Local input tick (next): %u", session.local_input_tick);
-        ImGui::TextDisabled("Local and server ticks are not synchronized.");
+        mycore::debug_ui::description("Local and server ticks are not synchronized.");
     } else {
-        ImGui::TextDisabled("No network session in offline presentation mode.");
+        mycore::debug_ui::description("No network session in offline presentation mode.");
     }
 
     if (world.replication) {
@@ -368,7 +480,7 @@ void draw_network_debug_tab(const DebugWorldStats& world) {
 
 void draw_prediction_debug_tab(const DebugWorldStats& world) {
     if (!world.network_session) {
-        ImGui::TextDisabled("Prediction diagnostics require a network session.");
+        mycore::debug_ui::description("Prediction diagnostics require a network session.");
         return;
     }
 
@@ -376,7 +488,7 @@ void draw_prediction_debug_tab(const DebugWorldStats& world) {
     if (!session.local_prediction_available || !session.latest_authoritative_sample ||
         !session.predicted_position || !session.presentation_position ||
         !session.smoothing_offset) {
-        ImGui::TextDisabled("Prediction diagnostics are unavailable while spectating.");
+        mycore::debug_ui::description("Prediction diagnostics are unavailable while spectating.");
         return;
     }
     const auto& prediction = session.prediction;
@@ -442,7 +554,7 @@ void draw_prediction_debug_tab(const DebugWorldStats& world) {
 void draw_interpolation_debug_tab(const DebugWorldStats& world) {
     ImGui::TextUnformatted("Remote interpolation");
     if (!world.network_session) {
-        ImGui::TextDisabled("Interpolation diagnostics require a network session.");
+        mycore::debug_ui::description("Interpolation diagnostics require a network session.");
         return;
     }
     const auto& session = *world.network_session;
@@ -495,90 +607,93 @@ void draw_interpolation_debug_tab(const DebugWorldStats& world) {
     } else {
         ImGui::TextUnformatted("Example remote entity: unavailable");
     }
-    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-    ImGui::TextWrapped("Remote fill: delayed known authority; no extrapolation.");
-    ImGui::PopStyleColor();
+    mycore::debug_ui::description("Remote fill: delayed known authority; no extrapolation.");
 }
 
 void draw_prediction_tools_tab(const DebugWorldStats& world,
                                PredictionDebugControls* prediction_controls) {
     if (!world.network_session) {
-        ImGui::TextDisabled("Prediction tools require a network session.");
+        mycore::debug_ui::description("Prediction tools require a network session.");
         return;
     }
 
     if (prediction_controls == nullptr) {
-        ImGui::TextDisabled("Prediction tools are unavailable.");
+        mycore::debug_ui::description("Prediction tools are unavailable.");
         return;
     }
 
     const auto& session = *world.network_session;
-    if (!session.local_prediction_available) {
-        ImGui::TextDisabled("Prediction tools are unavailable while spectating.");
+    const auto& prediction = session.prediction;
+    if (session.local_prediction_available) {
+        ImGui::TextUnformatted("Fault injection");
+        if (prediction_controls->input_drop_count_at_burst_start) {
+            const auto dropped_since_start =
+                prediction.injected_input_drop_count -
+                std::min(prediction.injected_input_drop_count,
+                         *prediction_controls->input_drop_count_at_burst_start);
+            if (prediction.pending_injected_input_drop_count > 0) {
+                ImGui::TextColored({1.0F, 0.65F, 0.2F, 1.0F},
+                                   "Injected drop burst: %llu / %zu dropped (%zu remaining)",
+                                   static_cast<unsigned long long>(dropped_since_start),
+                                   kInjectedInputDropBurstSize,
+                                   prediction.pending_injected_input_drop_count);
+            } else if (prediction_controls->input_drop_burst_completed_at) {
+                ImGui::TextColored({0.35F, 0.9F, 0.45F, 1.0F},
+                                   "Last fault: dropped %zu input packets (complete)",
+                                   kInjectedInputDropBurstSize);
+            }
+        }
+        if (ImGui::Button("Inject +1 X error")) {
+            prediction_controls->requested_prediction_error = Vector2{1.0F, 0.0F};
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Inject +1 Y error")) {
+            prediction_controls->requested_prediction_error = Vector2{0.0F, 1.0F};
+        }
+        auto relative_error = std::optional<Vector2>{};
+        if (session.last_nonzero_movement_input) {
+            relative_error = mycore::math::normalized_or_zero(*session.last_nonzero_movement_input);
+        }
+        ImGui::BeginDisabled(!relative_error.has_value());
+        if (ImGui::Button("Force +1 position drift along last movement") && relative_error) {
+            prediction_controls->requested_prediction_error = *relative_error;
+        }
+        ImGui::EndDisabled();
+        if (session.last_nonzero_movement_input) {
+            ImGui::Text("Last nonzero input: (%.3f, %.3f)",
+                        session.last_nonzero_movement_input->x,
+                        session.last_nonzero_movement_input->y);
+        } else {
+            ImGui::TextDisabled("Last nonzero input: none yet");
+        }
+        ImGui::BeginDisabled(prediction.pending_injected_input_drop_count > 0);
+        if (ImGui::Button("Drop next 3 input packets")) {
+            prediction_controls->drop_input_packets_requested = true;
+        }
+        ImGui::EndDisabled();
+
+        ImGui::Separator();
+        ImGui::TextUnformatted("Visual layers");
+        ImGui::Checkbox("Show prediction layers", &prediction_controls->show_prediction_layers);
+        ImGui::Checkbox("Show correction replay", &prediction_controls->show_replay_path);
+        ImGui::Checkbox("Show remote endpoint outlines",
+                        &prediction_controls->show_remote_endpoint_layers);
+        if (ImGui::Button("Clear correction ghosts")) {
+            prediction_controls->clear_correction_visuals_requested = true;
+        }
+        mycore::debug_ui::description("White: predicted position");
+        mycore::debug_ui::description("Orange: latest authoritative sample");
+        mycore::debug_ui::description("Magenta: pre-correction; Purple: replay");
+        mycore::debug_ui::description("Cyan / Blue: older / newer remote snapshot");
+        mycore::debug_ui::description("Fill: presentation position");
         return;
     }
-    const auto& prediction = session.prediction;
-    ImGui::TextUnformatted("Fault injection");
-    if (prediction_controls->input_drop_count_at_burst_start) {
-        const auto dropped_since_start =
-            prediction.injected_input_drop_count -
-            std::min(prediction.injected_input_drop_count,
-                     *prediction_controls->input_drop_count_at_burst_start);
-        if (prediction.pending_injected_input_drop_count > 0) {
-            ImGui::TextColored({1.0F, 0.65F, 0.2F, 1.0F},
-                               "Injected drop burst: %llu / %zu dropped (%zu remaining)",
-                               static_cast<unsigned long long>(dropped_since_start),
-                               kInjectedInputDropBurstSize,
-                               prediction.pending_injected_input_drop_count);
-        } else if (prediction_controls->input_drop_burst_completed_at) {
-            ImGui::TextColored({0.35F, 0.9F, 0.45F, 1.0F},
-                               "Last fault: dropped %zu input packets (complete)",
-                               kInjectedInputDropBurstSize);
-        }
-    }
-    if (ImGui::Button("Inject +1 X error")) {
-        prediction_controls->requested_prediction_error = Vector2{1.0F, 0.0F};
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Inject +1 Y error")) {
-        prediction_controls->requested_prediction_error = Vector2{0.0F, 1.0F};
-    }
-    auto relative_error = std::optional<Vector2>{};
-    if (session.last_nonzero_movement_input) {
-        relative_error = mycore::math::normalized_or_zero(*session.last_nonzero_movement_input);
-    }
-    ImGui::BeginDisabled(!relative_error.has_value());
-    if (ImGui::Button("Force +1 position drift along last movement") && relative_error) {
-        prediction_controls->requested_prediction_error = *relative_error;
-    }
-    ImGui::EndDisabled();
-    if (session.last_nonzero_movement_input) {
-        ImGui::Text("Last nonzero input: (%.3f, %.3f)",
-                    session.last_nonzero_movement_input->x,
-                    session.last_nonzero_movement_input->y);
-    } else {
-        ImGui::TextDisabled("Last nonzero input: none yet");
-    }
-    ImGui::BeginDisabled(prediction.pending_injected_input_drop_count > 0);
-    if (ImGui::Button("Drop next 3 input packets")) {
-        prediction_controls->drop_input_packets_requested = true;
-    }
-    ImGui::EndDisabled();
 
-    ImGui::Separator();
-    ImGui::TextUnformatted("Visual layers");
-    ImGui::Checkbox("Show prediction layers", &prediction_controls->show_prediction_layers);
-    ImGui::Checkbox("Show correction replay", &prediction_controls->show_replay_path);
+    ImGui::TextUnformatted("Remote presentation");
     ImGui::Checkbox("Show remote endpoint outlines",
                     &prediction_controls->show_remote_endpoint_layers);
-    if (ImGui::Button("Clear correction ghosts")) {
-        prediction_controls->clear_correction_visuals_requested = true;
-    }
-    ImGui::TextDisabled("White: predicted position");
-    ImGui::TextDisabled("Orange: latest authoritative sample");
-    ImGui::TextDisabled("Magenta: pre-correction; Purple: replay");
-    ImGui::TextDisabled("Cyan / Blue: older / newer remote snapshot");
-    ImGui::TextDisabled("Fill: presentation position");
+    mycore::debug_ui::description("Cyan / Blue: older / newer remote snapshot");
+    mycore::debug_ui::description("Fill: delayed presentation position");
 }
 
 void draw_debug_overlay(const ClientConfig& config,
@@ -626,6 +741,10 @@ void draw_debug_overlay(const ClientConfig& config,
             }
             if (ImGui::BeginTabItem("Network")) {
                 draw_network_debug_tab(world);
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Gameplay")) {
+                draw_gameplay_debug_tab(world);
                 ImGui::EndTabItem();
             }
             ImGui::EndTabBar();
@@ -1031,6 +1150,20 @@ int run_networked_game(
             representative_remote_entity
                 ? remote_snapshot_buffer.endpoints(*representative_remote_entity)
                 : dots::presentation::RemoteEntityEndpoints{};
+        const auto replication_statistics = client.replication_statistics(now);
+        auto respawn_seconds_remaining = std::optional<double>{};
+        if (const auto deadline = client.respawn_available_tick();
+            deadline && replication_statistics.latest_snapshot_age) {
+            const auto estimated_server_tick =
+                static_cast<double>(client.world().server_tick()) +
+                (std::chrono::duration<double>{*replication_statistics.latest_snapshot_age}
+                     .count() *
+                 static_cast<double>(dots::simulation::kTickRateHz));
+            respawn_seconds_remaining =
+                std::max(0.0,
+                         (static_cast<double>(*deadline) - estimated_server_tick) /
+                             static_cast<double>(dots::simulation::kTickRateHz));
+        }
         if (config.debug.enabled) {
             draw_debug_overlay(
                 config,
@@ -1046,7 +1179,7 @@ int run_networked_game(
                     .occupied_grid_cells = std::nullopt,
                     .snapshot_id = client.world().snapshot_id().value(),
                     .transport = endpoint.statistics(client.connection_handle()),
-                    .replication = client.replication_statistics(now),
+                    .replication = replication_statistics,
                     .network_session =
                         DebugWorldStats::NetworkSession{
                             .runtime_state = client.state(),
@@ -1079,10 +1212,24 @@ int run_networked_game(
                                                     : std::nullopt,
                             .last_nonzero_movement_input = last_nonzero_movement_input,
                         },
+                    .gameplay_session =
+                        DebugWorldStats::GameplaySession{
+                            .client_id = client.client_id(),
+                            .mode = client.session_mode(),
+                            .owned_piece_count = client.owned_entity_ids().size(),
+                            .primary_entity_id = client.primary_entity_id(),
+                            .follow_entity_id = client.follow_entity_id(),
+                            .defeat_tick = client.defeat_tick(),
+                            .respawn_available_tick = client.respawn_available_tick(),
+                            .respawn_seconds_remaining = respawn_seconds_remaining,
+                            .latest_absorption = client.latest_absorption(),
+                            .latest_respawn_request_id = client.latest_respawn_request_id(),
+                            .latest_respawn_result = client.latest_respawn_result(),
+                        },
                 },
                 frame_metrics.snapshot(),
                 simulation_snapshot,
-                playing ? &prediction_debug_controls : nullptr);
+                &prediction_debug_controls);
         }
 
         if (playing && prediction_debug_controls.requested_prediction_error) {
@@ -1427,6 +1574,7 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
                     .transport = std::nullopt,
                     .replication = std::nullopt,
                     .network_session = std::nullopt,
+                    .gameplay_session = std::nullopt,
                 },
                 frame_metrics.snapshot(),
                 simulation_snapshot);

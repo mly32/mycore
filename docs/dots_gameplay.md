@@ -78,6 +78,12 @@ pixels-per-world-unit range. `R` or Enter submits one edge-triggered respawn act
 key does not submit a request every input tick. Camera state and zoom are presentation-only and do
 not grant authority or alter server interest filtering.
 
+The debug **Gameplay** tab repeats the confirmed session mode, owned pieces, primary/follow
+entities, defeat and respawn ticks, latest session-related absorption, and latest respawn result.
+Its respawn countdown advances the latest replicated server tick by local time since snapshot
+receipt. That display is approximate and presentation-only; only the server's current tick decides
+whether a request is eligible.
+
 Remote players are not extrapolated from guessed inputs. The client stores authoritative snapshots
 and renders remotes about six server ticks (200 ms) behind the newest known server state,
 interpolating between two known samples. If a newer sample is unavailable, the remote holds rather
