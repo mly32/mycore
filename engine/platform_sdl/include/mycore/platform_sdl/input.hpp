@@ -137,6 +137,7 @@ private:
 struct InputSnapshot {
     KeyboardSnapshot keyboard;
     MouseSnapshot mouse;
+    float wheel_delta_y{};
     bool quit_requested{};
 };
 

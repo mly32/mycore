@@ -9,6 +9,11 @@ food, and player absorption as the proving vertical slice.
 The durable contracts live in `../rollback_prediction_design.md`. This plan sequences their
 implementation and must not redefine them independently.
 
+The implemented authoritative spawn-search contract lives in `authoritative-spawn-search.md`.
+Its active-player-count starting point is derived from World state and adds no checkpoint field.
+If a future implementation introduces a cursor, free list, or random stream, that state must be
+included in the checkpoint and deterministic replay contract below.
+
 ## Scope
 
 Feature 14 includes:

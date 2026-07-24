@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -25,6 +26,23 @@ inline constexpr float kSpatialGridCellSize = 8.0F;
     return std::sqrt(mass);
 }
 
+struct PlayerAbsorbed {
+    mycore::time::Tick tick;
+    EntityId absorber_entity_id;
+    EntityId victim_entity_id;
+    PlayerOwnerId absorber_owner_id;
+    PlayerOwnerId victim_owner_id;
+    float transferred_mass{};
+
+    auto operator<=>(const PlayerAbsorbed&) const = default;
+};
+
+enum class InitialPlayerSpawnStatus : std::uint8_t {
+    Clear,
+    Blocked,
+    OutsideRepresentableGrid,
+};
+
 // A fixed-step world using an explicit structure-of-arrays (SoA) data model: each player
 // component has a dense parallel array, and matching indices associate components with an ID.
 // SoA suits Dots while most entities share one schema and systems process one component in bulk.
@@ -32,7 +50,8 @@ inline constexpr float kSpatialGridCellSize = 8.0F;
 // array-of-structures model when most logic repeatedly accesses every field of one entity.
 class World {
 public:
-    [[nodiscard]] std::optional<EntityId> spawn_player(mycore::math::Vector2 position = {});
+    [[nodiscard]] std::optional<EntityId> spawn_player(PlayerOwnerId owner_id,
+                                                       mycore::math::Vector2 position = {});
     [[nodiscard]] bool remove_player(EntityId entity_id);
     [[nodiscard]] std::optional<EntityId> spawn_food(mycore::math::Vector2 position);
     [[nodiscard]] bool remove_food(EntityId entity_id);
@@ -43,10 +62,15 @@ public:
     [[nodiscard]] std::size_t occupied_spatial_cell_count() const noexcept;
     [[nodiscard]] std::span<const EntityId> player_ids() const noexcept;
     [[nodiscard]] std::span<const EntityId> food_ids() const noexcept;
+    [[nodiscard]] std::optional<PlayerOwnerId> player_owner(EntityId entity_id) const noexcept;
     [[nodiscard]] std::optional<mycore::math::Vector2> position(EntityId entity_id) const noexcept;
     [[nodiscard]] std::optional<float> mass(EntityId entity_id) const noexcept;
     [[nodiscard]] std::optional<float> radius(EntityId entity_id) const noexcept;
+    [[nodiscard]] bool has_available_entity_id() const noexcept;
+    [[nodiscard]] InitialPlayerSpawnStatus
+    classify_initial_player_spawn(mycore::math::Vector2 position) const;
     [[nodiscard]] mycore::time::Tick tick() const noexcept;
+    [[nodiscard]] std::span<const PlayerAbsorbed> last_step_events() const noexcept;
 
     [[nodiscard]] bool apply_input(const InputCommand& command);
     [[nodiscard]] bool stop_player(EntityId entity_id) noexcept;
@@ -69,9 +93,9 @@ private:
     [[nodiscard]] std::optional<EntityId> next_entity_id() const noexcept;
     void reserve_player_capacity();
     void reserve_food_capacity();
-    void resolve_food_collisions();
 
     std::vector<EntityId> entity_ids_;
+    std::vector<PlayerOwnerId> owner_ids_;
     std::vector<mycore::math::Vector2> positions_;
     std::vector<mycore::math::Vector2> movements_;
     std::vector<InputCommandId> last_input_ids_;
@@ -83,6 +107,7 @@ private:
     SpatialGrid spatial_grid_{kSpatialGridCellSize};
     std::uint32_t next_entity_id_{};
     mycore::time::Tick tick_{};
+    std::vector<PlayerAbsorbed> last_step_events_;
 };
 
 } // namespace dots::simulation

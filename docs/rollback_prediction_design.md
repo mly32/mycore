@@ -11,6 +11,12 @@ output.
   movement.
 - **Remote presentation baseline:** Feature 12 uses delayed interpolation for remote presentation
   before complete rollback changes the normal predicted view.
+- **Authoritative lifecycle baseline:** Feature 13 now carries entity ownership and one atomic,
+  recipient-specific Playing/Spectating block in every full snapshot. Defeat and respawn remain
+  confirmed server results. Confirmed spectating selects follow-killer/free-camera presentation;
+  those camera modes never predict a lifecycle transition or authoritative entity. The Gameplay
+  tab exposes the repeated confirmed state; its receipt-age respawn countdown is presentation-only
+  and never enters a checkpoint, replay, or eligibility decision.
 - **Committed direction:** Feature 14 replaces position-only replay with a complete Dots World
   rollback kernel and makes the prediction set selectable.
 - **Deferred research:** time-sliced resimulation may be reconsidered only from measured Feature
@@ -85,6 +91,8 @@ A checkpoint must be sufficient to reproduce later predicted state without consu
 presentation or transport state. It contains:
 
 - Simulation tick and deterministic gameplay configuration.
+- Recipient session mode, owned and primary entities, confirmed follow target, defeat/respawn
+  ticks, and authoritative action results received with the same snapshot.
 - Entity IDs, kinds, ownership, positions, movement, launch velocity, mass, and radius-derived
   state.
 - Cooldown and merge deadline ticks.

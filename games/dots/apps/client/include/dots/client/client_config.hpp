@@ -86,6 +86,12 @@ struct ViewSettings {
     float grid_spacing_world_units{8.0F};
 };
 
+struct SpectatorSettings {
+    float pan_speed_world_units_per_second{12.0F};
+    float minimum_pixels_per_world_unit{5.0F};
+    float maximum_pixels_per_world_unit{80.0F};
+};
+
 struct DebugSettings {
     bool enabled{true};
     PresentationMode presentation_mode{PresentationMode::Interpolated};
@@ -113,6 +119,7 @@ struct ClientConfig {
     ClientControls controls;
     SimulationSettings simulation;
     ViewSettings view;
+    SpectatorSettings spectator;
     DebugSettings debug;
     ColorSettings colors;
 };

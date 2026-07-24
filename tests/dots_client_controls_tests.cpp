@@ -127,3 +127,44 @@ TEST_CASE("Client input propagates IDs and handles configured quit bindings",
     REQUIRE(dots::client::quit_requested(input, controls));
     REQUIRE(dots::client::quit_requested({.quit_requested = true}, controls));
 }
+
+TEST_CASE("Spectator controls reuse movement bindings and edge-trigger actions",
+          "[dots][client][input][spectator]") {
+    const auto controls = dots::client::default_client_config().controls;
+    dots::client::SpectatorControlTracker tracker;
+    const mycore::platform_sdl::InputSnapshot held{
+        .keyboard = {mycore::platform_sdl::Key::W,
+                     mycore::platform_sdl::Key::D,
+                     mycore::platform_sdl::Key::F,
+                     mycore::platform_sdl::Key::R,
+                     mycore::platform_sdl::Key::PageUp},
+    };
+
+    const auto pressed = tracker.sample(held, controls);
+    CHECK(pressed.pan.x == Catch::Approx(0.7071067F));
+    CHECK(pressed.pan.y == Catch::Approx(-0.7071067F));
+    CHECK(pressed.zoom_steps == 1);
+    CHECK(pressed.toggle_follow);
+    CHECK(pressed.request_respawn);
+
+    const auto repeated = tracker.sample(held, controls);
+    CHECK(repeated.pan == pressed.pan);
+    CHECK(repeated.zoom_steps == 0);
+    CHECK_FALSE(repeated.toggle_follow);
+    CHECK_FALSE(repeated.request_respawn);
+
+    static_cast<void>(tracker.sample({}, controls));
+    const auto pressed_again = tracker.sample(held, controls);
+    CHECK(pressed_again.toggle_follow);
+    CHECK(pressed_again.request_respawn);
+}
+
+TEST_CASE("Spectator wheel input accumulates fractional motion into discrete zoom steps",
+          "[dots][client][input][spectator]") {
+    const auto controls = dots::client::default_client_config().controls;
+    dots::client::SpectatorControlTracker tracker;
+
+    CHECK(tracker.sample({.wheel_delta_y = 0.4F}, controls).zoom_steps == 0);
+    CHECK(tracker.sample({.wheel_delta_y = 0.7F}, controls).zoom_steps == 1);
+    CHECK(tracker.sample({.wheel_delta_y = -2.25F}, controls).zoom_steps == -2);
+}

@@ -39,6 +39,7 @@ enum class InputSendResult : std::uint8_t {
     Sent,
     NotReady,
     InvalidMovement,
+    InvalidAction,
     InvalidClientTick,
     SequenceExhausted,
     TransportFailure,
@@ -120,13 +121,24 @@ public:
     [[nodiscard]] ProcessEventsResult
     process_events(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
     [[nodiscard]] InputSendResult send_input(std::uint32_t client_tick,
-                                             mycore::math::Vector2 movement);
+                                             mycore::math::Vector2 movement,
+                                             std::uint16_t action_bits = 0);
     [[nodiscard]] bool disconnect();
 
     [[nodiscard]] State state() const noexcept;
     [[nodiscard]] const replication::ReplicatedWorld& world() const noexcept;
     [[nodiscard]] protocol::ClientId client_id() const noexcept;
     [[nodiscard]] protocol::EntityId controlled_entity_id() const noexcept;
+    [[nodiscard]] protocol::SessionMode session_mode() const noexcept;
+    [[nodiscard]] std::span<const protocol::EntityId> owned_entity_ids() const noexcept;
+    [[nodiscard]] protocol::EntityId primary_entity_id() const noexcept;
+    [[nodiscard]] protocol::EntityId follow_entity_id() const noexcept;
+    [[nodiscard]] std::optional<std::uint32_t> defeat_tick() const noexcept;
+    [[nodiscard]] std::optional<std::uint32_t> respawn_available_tick() const noexcept;
+    [[nodiscard]] std::uint32_t respawn_cooldown_ticks() const noexcept;
+    [[nodiscard]] std::optional<protocol::PlayerAbsorbed> latest_absorption() const noexcept;
+    [[nodiscard]] protocol::InputSequenceId latest_respawn_request_id() const noexcept;
+    [[nodiscard]] protocol::RespawnResult latest_respawn_result() const noexcept;
     [[nodiscard]] mycore::net_transport::ConnectionHandle connection_handle() const noexcept;
     [[nodiscard]] std::optional<mycore::math::Vector2> predicted_position() const noexcept;
     [[nodiscard]] std::optional<mycore::math::Vector2> pre_correction_position() const noexcept;

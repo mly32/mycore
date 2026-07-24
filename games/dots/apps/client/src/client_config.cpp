@@ -296,6 +296,10 @@ void validate_binding_conflicts(const ClientConfig& config, const std::filesyste
         BindingView{"down", &config.controls.bindings.down},
         BindingView{"left", &config.controls.bindings.left},
         BindingView{"right", &config.controls.bindings.right},
+        BindingView{"follow", &config.controls.bindings.follow},
+        BindingView{"respawn", &config.controls.bindings.respawn},
+        BindingView{"zoom_in", &config.controls.bindings.zoom_in},
+        BindingView{"zoom_out", &config.controls.bindings.zoom_out},
         BindingView{"quit", &config.controls.bindings.quit},
     };
 
@@ -400,7 +404,11 @@ void parse_input(const toml::table& table,
 void parse_bindings(const toml::table& table,
                     ClientConfig& config,
                     const std::filesystem::path& source) {
-    validate_keys(table, {"up", "down", "left", "right", "quit"}, source, "bindings");
+    validate_keys(
+        table,
+        {"up", "down", "left", "right", "follow", "respawn", "zoom_in", "zoom_out", "quit"},
+        source,
+        "bindings");
     if (table.contains("up")) {
         config.controls.bindings.up = read_binding(table, "up", source, "bindings.up");
     }
@@ -412,6 +420,21 @@ void parse_bindings(const toml::table& table,
     }
     if (table.contains("right")) {
         config.controls.bindings.right = read_binding(table, "right", source, "bindings.right");
+    }
+    if (table.contains("follow")) {
+        config.controls.bindings.follow = read_binding(table, "follow", source, "bindings.follow");
+    }
+    if (table.contains("respawn")) {
+        config.controls.bindings.respawn =
+            read_binding(table, "respawn", source, "bindings.respawn");
+    }
+    if (table.contains("zoom_in")) {
+        config.controls.bindings.zoom_in =
+            read_binding(table, "zoom_in", source, "bindings.zoom_in");
+    }
+    if (table.contains("zoom_out")) {
+        config.controls.bindings.zoom_out =
+            read_binding(table, "zoom_out", source, "bindings.zoom_out");
     }
     if (table.contains("quit")) {
         config.controls.bindings.quit = read_binding(table, "quit", source, "bindings.quit");
@@ -467,6 +490,44 @@ void parse_view(const toml::table& table,
     if (table.contains("grid_spacing_world_units")) {
         config.view.grid_spacing_world_units = read_positive_float(
             table, "grid_spacing_world_units", source, "view.grid_spacing_world_units");
+    }
+}
+
+void parse_spectator(const toml::table& table,
+                     ClientConfig& config,
+                     const std::filesystem::path& source) {
+    validate_keys(table,
+                  {"pan_speed_world_units_per_second",
+                   "minimum_pixels_per_world_unit",
+                   "maximum_pixels_per_world_unit"},
+                  source,
+                  "spectator");
+    if (table.contains("pan_speed_world_units_per_second")) {
+        config.spectator.pan_speed_world_units_per_second =
+            read_positive_float(table,
+                                "pan_speed_world_units_per_second",
+                                source,
+                                "spectator.pan_speed_world_units_per_second");
+    }
+    if (table.contains("minimum_pixels_per_world_unit")) {
+        config.spectator.minimum_pixels_per_world_unit =
+            read_positive_float(table,
+                                "minimum_pixels_per_world_unit",
+                                source,
+                                "spectator.minimum_pixels_per_world_unit");
+    }
+    if (table.contains("maximum_pixels_per_world_unit")) {
+        config.spectator.maximum_pixels_per_world_unit =
+            read_positive_float(table,
+                                "maximum_pixels_per_world_unit",
+                                source,
+                                "spectator.maximum_pixels_per_world_unit");
+    }
+    if (config.spectator.minimum_pixels_per_world_unit >
+        config.spectator.maximum_pixels_per_world_unit) {
+        fail(source,
+             "spectator.minimum_pixels_per_world_unit",
+             "must not exceed spectator.maximum_pixels_per_world_unit");
     }
 }
 
@@ -533,6 +594,10 @@ ClientConfig default_client_config() {
         .down = {Key::S, Key::Down},
         .left = {Key::A, Key::Left},
         .right = {Key::D, Key::Right},
+        .follow = {Key::F},
+        .respawn = {Key::R, Key::Enter},
+        .zoom_in = {Key::PageUp},
+        .zoom_out = {Key::PageDown},
         .quit = {Key::Escape},
     };
     return config;
@@ -546,11 +611,18 @@ ClientConfig parse_client_config(std::string_view toml_text, const std::filesyst
         fail(source, "<document>", std::string{error.description()});
     }
 
-    validate_keys(
-        root,
-        {"window", "network", "input", "bindings", "simulation", "view", "debug", "colors"},
-        source,
-        "");
+    validate_keys(root,
+                  {"window",
+                   "network",
+                   "input",
+                   "bindings",
+                   "simulation",
+                   "view",
+                   "spectator",
+                   "debug",
+                   "colors"},
+                  source,
+                  "");
     auto config = default_client_config();
     if (const auto* table = optional_table(root, "window", source)) {
         parse_window(*table, config, source);
@@ -569,6 +641,9 @@ ClientConfig parse_client_config(std::string_view toml_text, const std::filesyst
     }
     if (const auto* table = optional_table(root, "view", source)) {
         parse_view(*table, config, source);
+    }
+    if (const auto* table = optional_table(root, "spectator", source)) {
+        parse_spectator(*table, config, source);
     }
     if (const auto* table = optional_table(root, "debug", source)) {
         parse_debug(*table, config, source);

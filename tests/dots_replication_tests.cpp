@@ -5,15 +5,32 @@
 #include <catch2/catch_test_macros.hpp>
 #include <variant>
 
+namespace {
+
+[[nodiscard]] dots::protocol::RecipientSessionState
+playing_session(dots::protocol::EntityId primary_entity_id) {
+    return {
+        .mode = dots::protocol::SessionMode::Playing,
+        .owned_entity_ids = {primary_entity_id},
+        .primary_entity_id = primary_entity_id,
+    };
+}
+
+} // namespace
+
 TEST_CASE("Full snapshots map and sort authoritative entities", "[dots][replication]") {
     dots::simulation::World world;
     const auto food = world.spawn_food({3.0F, 4.0F});
-    const auto player = world.spawn_player({1.0F, 2.0F});
+    const auto player = world.spawn_player(dots::simulation::PlayerOwnerId{0}, {1.0F, 2.0F});
     REQUIRE(food.has_value());
     REQUIRE(player.has_value());
 
     const auto result = dots::replication::build_full_snapshot(
-        world, dots::protocol::SnapshotId{7}, dots::protocol::InputSequenceId{5}, 4);
+        world,
+        dots::protocol::SnapshotId{7},
+        dots::protocol::InputSequenceId{5},
+        4,
+        playing_session(dots::replication::to_protocol(*player)));
     const auto* snapshot = std::get_if<dots::protocol::FullSnapshot>(&result);
     REQUIRE(snapshot != nullptr);
     REQUIRE(snapshot->snapshot_id == dots::protocol::SnapshotId{7});
@@ -24,6 +41,7 @@ TEST_CASE("Full snapshots map and sort authoritative entities", "[dots][replicat
     CHECK(snapshot->entities[0].kind == dots::protocol::EntityKind::Food);
     CHECK(snapshot->entities[1].entity_id == dots::replication::to_protocol(*player));
     CHECK(snapshot->entities[1].kind == dots::protocol::EntityKind::Player);
+    CHECK(snapshot->entities[1].owner_id == dots::protocol::PlayerOwnerId{0});
 }
 
 TEST_CASE("Replicated worlds replace newer state and reject stale snapshots",
@@ -34,11 +52,13 @@ TEST_CASE("Replicated worlds replace newer state and reject stale snapshots",
         .server_tick = 2,
         .last_processed_input_id = dots::protocol::InputSequenceId{3},
         .pending_input_count = 2,
+        .recipient = playing_session(dots::protocol::EntityId{9}),
         .entities =
             {
                 {
                     .entity_id = dots::protocol::EntityId{9},
                     .kind = dots::protocol::EntityKind::Player,
+                    .owner_id = dots::protocol::PlayerOwnerId{4},
                     .position_x = 4.0F,
                     .mass = 16.0F,
                 },
@@ -64,9 +84,11 @@ TEST_CASE("Replicated worlds replace newer state and reject stale snapshots",
     const dots::protocol::FullSnapshot replacement{
         .snapshot_id = dots::protocol::SnapshotId{2},
         .server_tick = 4,
+        .recipient = playing_session(dots::protocol::EntityId{12}),
         .entities = {{
             .entity_id = dots::protocol::EntityId{12},
             .kind = dots::protocol::EntityKind::Player,
+            .owner_id = dots::protocol::PlayerOwnerId{5},
             .mass = 25.0F,
         }},
     };
@@ -79,6 +101,12 @@ TEST_CASE("Replicated worlds reject invalid state atomically", "[dots][replicati
     dots::replication::ReplicatedWorld world;
     const dots::protocol::FullSnapshot invalid{
         .snapshot_id = dots::protocol::SnapshotId{1},
+        .recipient =
+            {
+                .mode = dots::protocol::SessionMode::Spectating,
+                .defeat_tick = 0,
+                .respawn_available_tick = 0,
+            },
         .entities = {{
             .entity_id = dots::protocol::EntityId{2},
             .kind = dots::protocol::EntityKind::Food,

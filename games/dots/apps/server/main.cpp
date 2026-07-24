@@ -22,12 +22,14 @@ Runs the authoritative Dots simulation at 30 Hz.
 
 Usage:
   dots_server [--listen <address>] [--ticks <count>]
+              [--respawn-cooldown-ticks <count>]
               [--fake-lag-ms <milliseconds>] [--fake-loss-percent <percent>] [--help]
 
 Options:
   --listen <address>           Listen on a numeric IPv4 or bracketed IPv6 address.
                                Defaults to [::]:27020. Port 0 selects a private dynamic port.
   --ticks <count>              Run exactly this many simulation ticks, then exit.
+  --respawn-cooldown-ticks <n> Allow respawn this many server ticks after defeat (default 90).
   --fake-lag-ms <milliseconds> Add outgoing one-way packet delay in native mode.
   --fake-loss-percent <value>  Drop this percentage of outgoing packets (0..100).
   --help                       Show this help text and exit.
@@ -44,6 +46,7 @@ void request_stop(int) {
 struct Options {
     std::optional<std::uint64_t> ticks;
     std::string listen_address{"[::]:27020"};
+    std::uint32_t respawn_cooldown_ticks{dots::server::kDefaultRespawnCooldownTicks};
     mycore::net_transport::NetworkImpairment impairment;
     bool help{};
 };
@@ -63,6 +66,11 @@ Options parse_arguments(int argc, char** argv) {
         }
         if (dots::app_cli::consume_network_impairment_option(
                 argument, index, argc, argv, options.impairment)) {
+            continue;
+        }
+        if (argument == "--respawn-cooldown-ticks") {
+            options.respawn_cooldown_ticks = dots::app_cli::parse_nonnegative_u32(
+                dots::app_cli::require_option_value(index, argc, argv, argument), argument);
             continue;
         }
         if (argument != "--ticks" || options.ticks) {
@@ -93,7 +101,11 @@ int main(int argc, char** argv) {
             dots::app_cli::parse_listen_address(options.listen_address, "--listen");
         mycore::net_transport::GameNetworkingSocketsNetwork network{options.impairment};
         const auto listening = network.listen(listen_address);
-        dots::server::Runtime server{*listening.endpoint, std::move(world)};
+        dots::server::Runtime server{
+            *listening.endpoint,
+            std::move(world),
+            {.respawn_cooldown_ticks = options.respawn_cooldown_ticks},
+        };
 
         std::cout << "DOTS_SERVER_READY " << listening.address.value() << '\n' << std::flush;
 

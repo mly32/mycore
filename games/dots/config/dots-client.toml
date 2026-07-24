@@ -23,6 +23,10 @@ up = ["W", "Up"]
 down = ["S", "Down"]
 left = ["A", "Left"]
 right = ["D", "Right"]
+follow = ["F"]
+respawn = ["R", "Enter"]
+zoom_in = ["PageUp"]
+zoom_out = ["PageDown"]
 quit = ["Escape"]
 
 [simulation]
@@ -33,6 +37,11 @@ max_steps_per_frame = 5
 pixels_per_world_unit = 20.0
 draw_grid = true
 grid_spacing_world_units = 8.0
+
+[spectator]
+pan_speed_world_units_per_second = 12.0
+minimum_pixels_per_world_unit = 5.0
+maximum_pixels_per_world_unit = 80.0
 
 [debug]
 enabled = true

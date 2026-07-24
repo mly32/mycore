@@ -198,7 +198,10 @@ set_tests_properties(dots_server_help PROPERTIES PASS_REGULAR_EXPRESSION "author
 add_test(NAME dots_bot_help COMMAND dots_bot --help)
 set_tests_properties(dots_bot_help PROPERTIES PASS_REGULAR_EXPRESSION "wide rectangle")
 
-add_test(NAME dots_server_ticks_smoke COMMAND dots_server --listen 127.0.0.1:0 --ticks 2)
+add_test(
+    NAME dots_server_ticks_smoke
+    COMMAND dots_server --listen 127.0.0.1:0 --ticks 2 --respawn-cooldown-ticks 0
+)
 
 add_test(
     NAME dots_session_launcher_tests

@@ -20,6 +20,7 @@ namespace {
 using namespace std::chrono_literals;
 
 constexpr dots::protocol::EntityId kControlledEntity{8};
+constexpr dots::protocol::PlayerOwnerId kControlledOwner{3};
 
 [[nodiscard]] constexpr std::chrono::steady_clock::time_point
 clock_time(std::chrono::steady_clock::duration offset) noexcept {
@@ -86,9 +87,16 @@ public:
         .server_tick = server_tick,
         .last_processed_input_id = acknowledgement,
         .pending_input_count = pending_input_count,
+        .recipient =
+            {
+                .mode = dots::protocol::SessionMode::Playing,
+                .owned_entity_ids = {kControlledEntity},
+                .primary_entity_id = kControlledEntity,
+            },
         .entities = {{
             .entity_id = kControlledEntity,
             .kind = dots::protocol::EntityKind::Player,
+            .owner_id = kControlledOwner,
             .position_x = controlled_position.x,
             .position_y = controlled_position.y,
             .mass = 16.0F,
@@ -116,7 +124,7 @@ void complete_handshake(ManualEndpoint& endpoint,
         .delivery = mycore::net_transport::DeliveryMode::Reliable,
         .payload = encode_bytes(dots::protocol::ServerWelcome{
             .client_id = dots::protocol::ClientId{2},
-            .controlled_entity_id = kControlledEntity,
+            .respawn_cooldown_ticks = 90,
         }),
     });
     push_snapshot(
@@ -160,6 +168,9 @@ TEST_CASE("Client prediction advances only successfully sent input", "[dots][pre
             dots::client_runtime::InputSendResult::InvalidClientTick);
     check_position(client.predicted_position(), 0.2F, 0.0F);
     CHECK(client.prediction_statistics(clock_time(10s)).history_count == 1);
+
+    REQUIRE(client.send_input(1, {}, dots::protocol::kKnownInputActionBits << 1U) ==
+            dots::client_runtime::InputSendResult::InvalidAction);
 
     REQUIRE(client.send_input(1, {std::numeric_limits<float>::infinity(), 0.0F}) ==
             dots::client_runtime::InputSendResult::InvalidMovement);
@@ -400,8 +411,8 @@ TEST_CASE("Acknowledgement cannot regress or become invalid", "[dots][prediction
     }
 }
 
-TEST_CASE("Missing controlled entity is rejected before snapshot commit",
-          "[dots][prediction][reconciliation]") {
+TEST_CASE("Confirmed spectating accepts a missing primary and clears prediction",
+          "[dots][prediction][session]") {
     ManualEndpoint endpoint;
     dots::client_runtime::Runtime client{endpoint};
     const mycore::net_transport::ConnectionHandle connection{18};
@@ -409,13 +420,41 @@ TEST_CASE("Missing controlled entity is rejected before snapshot commit",
     REQUIRE(client.send_input(0, {1.0F, 0.0F}) == dots::client_runtime::InputSendResult::Sent);
     auto missing = snapshot(1, 1, dots::protocol::InputSequenceId::invalid(), {9.0F, 0.0F});
     missing.entities.clear();
+    missing.recipient = {
+        .mode = dots::protocol::SessionMode::Spectating,
+        .defeat_tick = 1,
+        .respawn_available_tick = 91,
+    };
     push_snapshot(endpoint, connection, missing);
 
-    REQUIRE(client.process_events(clock_time(11s)).error ==
-            dots::client_runtime::RuntimeError::MissingControlledEntity);
+    REQUIRE_FALSE(client.process_events(clock_time(11s)).error.has_value());
+    CHECK(client.world().snapshot_id() == dots::protocol::SnapshotId{1});
+    CHECK(client.session_mode() == dots::protocol::SessionMode::Spectating);
+    CHECK_FALSE(client.primary_entity_id().is_valid());
+    CHECK_FALSE(client.predicted_position().has_value());
+    CHECK(client.prediction_statistics(clock_time(11s)).history_count == 0);
+    CHECK(client.send_input(1, {}, dots::protocol::kRespawnActionBit) ==
+          dots::client_runtime::InputSendResult::Sent);
+}
+
+TEST_CASE("Client rejects a respawn deadline that conflicts with welcome configuration",
+          "[dots][prediction][session]") {
+    ManualEndpoint endpoint;
+    dots::client_runtime::Runtime client{endpoint};
+    const mycore::net_transport::ConnectionHandle connection{23};
+    complete_handshake(endpoint, client, connection);
+    auto invalid = snapshot(1, 1, dots::protocol::InputSequenceId::invalid(), {});
+    invalid.entities.clear();
+    invalid.recipient = {
+        .mode = dots::protocol::SessionMode::Spectating,
+        .defeat_tick = 1,
+        .respawn_available_tick = 2,
+    };
+    push_snapshot(endpoint, connection, invalid);
+
+    CHECK(client.process_events(clock_time(11s)).error ==
+          dots::client_runtime::RuntimeError::InvalidSnapshot);
     CHECK(client.world().snapshot_id() == dots::protocol::SnapshotId{0});
-    check_position(client.predicted_position(), 0.2F, 0.0F);
-    CHECK(client.prediction_statistics(clock_time(11s)).history_count == 1);
 }
 
 TEST_CASE("Prediction history capacity hard-resyncs before recording new input",

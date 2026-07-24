@@ -169,6 +169,51 @@
             "$ref": "#/definitions/physicalKey"
           }
         },
+        "follow": {
+          "description": "Keys that toggle between the confirmed killer and the free camera while spectating.",
+          "type": "array",
+          "minItems": 1,
+          "default": [
+            "F"
+          ],
+          "items": {
+            "$ref": "#/definitions/physicalKey"
+          }
+        },
+        "respawn": {
+          "description": "Keys that request an authoritative respawn while spectating.",
+          "type": "array",
+          "minItems": 1,
+          "default": [
+            "R",
+            "Enter"
+          ],
+          "items": {
+            "$ref": "#/definitions/physicalKey"
+          }
+        },
+        "zoom_in": {
+          "description": "Keys that increase spectator camera scale by ten percent per press.",
+          "type": "array",
+          "minItems": 1,
+          "default": [
+            "PageUp"
+          ],
+          "items": {
+            "$ref": "#/definitions/physicalKey"
+          }
+        },
+        "zoom_out": {
+          "description": "Keys that decrease spectator camera scale by ten percent per press.",
+          "type": "array",
+          "minItems": 1,
+          "default": [
+            "PageDown"
+          ],
+          "items": {
+            "$ref": "#/definitions/physicalKey"
+          }
+        },
         "quit": {
           "description": "Keys that immediately exit the client.",
           "type": "array",
@@ -179,6 +224,37 @@
           "items": {
             "$ref": "#/definitions/physicalKey"
           }
+        }
+      }
+    },
+    "spectator": {
+      "description": "Client-only spectator camera behavior. These settings never change server authority.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pan_speed_world_units_per_second": {
+          "description": "Free-camera keyboard pan speed in world units per second.",
+          "type": "number",
+          "exclusiveMinimum": true,
+          "minimum": 0,
+          "maximum": 3.4028234663852886e+38,
+          "default": 12.0
+        },
+        "minimum_pixels_per_world_unit": {
+          "description": "Minimum spectator camera scale. The runtime also requires this not to exceed the maximum.",
+          "type": "number",
+          "exclusiveMinimum": true,
+          "minimum": 0,
+          "maximum": 3.4028234663852886e+38,
+          "default": 5.0
+        },
+        "maximum_pixels_per_world_unit": {
+          "description": "Maximum spectator camera scale.",
+          "type": "number",
+          "exclusiveMinimum": true,
+          "minimum": 0,
+          "maximum": 3.4028234663852886e+38,
+          "default": 80.0
         }
       }
     },

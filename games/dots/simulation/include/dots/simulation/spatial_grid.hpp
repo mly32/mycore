@@ -17,6 +17,12 @@ namespace dots::simulation {
 // queries return broad-phase candidates and callers perform exact collision checks.
 class SpatialGrid {
 public:
+    enum class VisitResult : std::uint8_t {
+        InvalidBounds,
+        Completed,
+        Stopped,
+    };
+
     explicit SpatialGrid(float cell_size);
 
     [[nodiscard]] bool insert(EntityId entity_id, Circle bounds);
@@ -28,6 +34,11 @@ public:
     [[nodiscard]] std::size_t entity_count() const noexcept;
     [[nodiscard]] std::size_t occupied_cell_count() const noexcept;
     [[nodiscard]] std::vector<EntityId> query(Circle bounds) const;
+
+    // Visits broad-phase IDs without allocating or deduplicating them. The visitor may receive
+    // the same ID from multiple cells and returns false to stop traversal.
+    template <typename Visitor>
+    [[nodiscard]] VisitResult visit_candidates(Circle bounds, Visitor&& visitor) const;
 
 private:
     struct Cell {
@@ -57,5 +68,29 @@ private:
     std::map<Cell, std::vector<EntityId>> cells_;
     std::unordered_map<std::uint32_t, CellRange> entries_by_id_;
 };
+
+template <typename Visitor>
+SpatialGrid::VisitResult SpatialGrid::visit_candidates(Circle bounds, Visitor&& visitor) const {
+    const auto range = cell_range(bounds);
+    if (!range) {
+        return VisitResult::InvalidBounds;
+    }
+
+    for (std::int64_t y = range->minimum.y; y <= range->maximum.y; ++y) {
+        for (std::int64_t x = range->minimum.x; x <= range->maximum.x; ++x) {
+            const auto cell =
+                cells_.find({.x = static_cast<std::int32_t>(x), .y = static_cast<std::int32_t>(y)});
+            if (cell == cells_.end()) {
+                continue;
+            }
+            for (const auto entity_id : cell->second) {
+                if (!visitor(entity_id)) {
+                    return VisitResult::Stopped;
+                }
+            }
+        }
+    }
+    return VisitResult::Completed;
+}
 
 } // namespace dots::simulation

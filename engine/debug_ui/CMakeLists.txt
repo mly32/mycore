@@ -1,6 +1,6 @@
 find_package(imgui CONFIG REQUIRED)
 
-add_library(mycore_debug_ui STATIC src/context.cpp)
+add_library(mycore_debug_ui STATIC src/context.cpp src/widgets.cpp)
 add_library(MyCore::DebugUI ALIAS mycore_debug_ui)
 
 target_include_directories(

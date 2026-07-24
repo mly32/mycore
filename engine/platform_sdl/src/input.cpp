@@ -102,6 +102,9 @@ InputSnapshot poll_input(Window& window, EventObserver* observer) {
                                              event.window.windowID == window_id)) {
             snapshot.quit_requested = true;
         }
+        if (event.type == SDL_EVENT_MOUSE_WHEEL && event.wheel.windowID == window_id) {
+            snapshot.wheel_delta_y += event.wheel.y;
+        }
     }
 
     int key_count{};

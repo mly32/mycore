@@ -15,7 +15,11 @@ target_link_libraries(
 )
 mycore_configure_target(dots_remote_presentation)
 
-add_library(dots_presentation STATIC src/presentation.cpp)
+add_library(
+    dots_presentation STATIC
+    src/presentation.cpp
+    src/spectator_camera.cpp
+)
 add_library(Dots::Presentation ALIAS dots_presentation)
 
 target_include_directories(
