@@ -411,7 +411,7 @@ interpolation diagnostics for comparison.
 | Field | Meaning |
 |---|---|
 | Prediction profile | `InteractionClosure`, `FullReplicated`, or `OwnedMovement`, plus predicted/interpolated/extrapolated/confirmed entity counts. |
-| Prediction scope | Scope epoch, included mechanics/state domains, closure seed/count, replay horizon, and `IncompleteClosure` fallback reason. |
+| Prediction scope | Scope epoch, included mechanics, entity/owner/global state domains, causal subscriptions, closure seed/count, replay horizon, and `IncompleteClosure` fallback reason. |
 | Replay coordinates | Authoritative snapshot/tick, predicted tick, input ACK, and exact replay sequence range. |
 | Prediction lead | Predicted tick minus its stated authoritative base tick. This replay extent is not RTT, snapshot age, or estimated live server time. |
 | History | Occupied frames out of 64, replay tick count, checkpoint bytes, and hard-resync reason. |

@@ -80,6 +80,13 @@ Remote held movement is an explicit recorded assumption; unknown edge actions ar
 full-replicated profile remains an oracle/benchmark, and incomplete closure falls back to owned
 movement rather than guessing contested gameplay.
 
+That closure is causal rather than purely spatial. It also contains owner-local
+cooldown/piece-count state, required global rule/timer domains, mechanic dependencies, and
+explicit authority facts.
+A mutable global aggregate is predictable only when every contribution that can change it during
+the replay window is subscribed; otherwise presentation may show an authoritative base plus a
+clearly speculative local delta without using that delta for authoritative consequences.
+
 ### Shooter lag compensation / server rewind
 
 In shooter terminology, lag compensation commonly means a server-only historical query for an

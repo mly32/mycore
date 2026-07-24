@@ -857,11 +857,12 @@ game-neutral checkpoint/restore/step orchestration, retained stimuli, atomic rec
 event transitions, and consequence-delivery bookkeeping. Dots owns its checkpoint schema,
 mechanics, interaction closure, event identities, protocol, and presentation policy.
 
-The default Dots profile predicts the owned-and-interacting fixed-point closure. A
-full-replicated profile remains a correctness oracle and workload benchmark; owned movement is
-the safe fallback when closure state is incomplete. Remote level movement may be held only when
-recorded as a replay assumption, and unknown edge actions remain zero. The canonical contracts
-and consequence matrix are in
+The default Dots profile predicts the owned-and-interacting fixed-point causal closure. That
+scope includes non-spatial owner state and required global/mechanic dependencies as well as
+spatial entities. A full-replicated profile remains a correctness oracle and workload benchmark;
+owned movement is the safe fallback when closure state is incomplete. Remote level movement may
+be held only when recorded as a replay assumption, and unknown edge actions remain zero. The
+canonical contracts and consequence matrix are in
 [`rollback_prediction_design.md`](rollback_prediction_design.md).
 
 ## 10.4 Numerical model

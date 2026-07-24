@@ -901,7 +901,9 @@ in simulation or eligibility.
 Feature 14 then adds a game-neutral typed rollback timeline and restores a complete Dots World
 from an authoritative checkpoint before atomically replaying retained stimuli. The Dots default
 is an owned-and-interacting fixed-point closure; full-replicated mode is an oracle/benchmark and
-owned movement is the incomplete-state fallback.
+owned movement is the incomplete-state fallback. Closure includes non-spatial owner state,
+required global rule/timer domains, mechanic dependencies, and explicit causal authority facts;
+it is not only a radius query.
 
 Reversible World state may be predicted. Deterministic simulation events are regenerated during
 replay, while external presentation consequences run only after an atomic commit through

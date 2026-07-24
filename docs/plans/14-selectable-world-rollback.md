@@ -138,9 +138,9 @@ validated snapshot ---> AuthorityFrame ---> scratch restore/replay ---> atomic C
 - Commit retirement information that lets routers prune inactive keys only after retained replay
   can no longer regenerate them.
 
-A rollback model supplies `State`, `Checkpoint`, `Stimulus`, an event variant, stable event-key
-variant, typed diff/digest, checkpoint restore/capture, one atomic fixed step, and event identity
-validation.
+A rollback model supplies `State`, `Checkpoint`, `Stimulus`, opaque game-defined `Scope`, an
+event variant, stable event-key variant, typed diff/digest, checkpoint restore/capture, one atomic
+fixed step, and event identity validation.
 
 The engine never defines a Dots entity, component, command, protocol field, or cue.
 
@@ -155,7 +155,9 @@ Checkpoint state includes:
 - Sorted owners, players, and food.
 - Entity identity/kind/owner, position, mass, applied movement, launch velocity, and relevant
   command identity.
-- Split cooldown, merge eligibility, and predicted-spawn association.
+- Owner-local split cooldown, owned-piece membership/count, last non-zero movement, merge
+  eligibility, and predicted-spawn association; immutable piece-cap policy lives in
+  `WorldRules`.
 - Any deterministic cursor/RNG/order state before it is introduced.
 
 Radius and spatial-grid storage are rebuilt. Confirmed Playing/Spectating and respawn results
@@ -190,14 +192,37 @@ Initial mechanics:
 - Player absorption.
 - Split/merge.
 
-`InteractionClosure` begins with all owned pieces and repeatedly includes every entity that may
-affect them over the retained replay horizon. Conservative swept bounds account for current
-radius, food growth, remote held movement, split launch reach, and recursively reachable player
-interactions.
+`InteractionClosure` is a causal state closure, not only a spatial radius. Its Dots scope records
+enabled mechanics, included entities/owners, required global state domains, causal authority
+subscriptions, replay horizon, and scope epoch.
 
-Before advancing, an enlarged replay horizon can force an atomic scope rebase from latest
-authority and replay. Excluded entities cannot interact with the predicted island. Missing
-required state falls back to `OwnedMovement` and reports `IncompleteClosure`.
+The fixed-point builder expands through:
+
+- Ownership dependencies such as split cooldown, owned-piece membership/count, last movement,
+  and owned aggregates.
+- Conservative swept spatial bounds for movement, growth, split reach, food, and recursive
+  player interaction.
+- Mechanic dependencies and every state domain they read.
+- Non-spatial causal/global dependencies that can change a predicted result.
+
+Before advancing, an enlarged replay horizon or changed causal subscription can force an atomic
+scope rebase from latest authority and replay. Excluded entities cannot interact with the
+predicted island. Missing required entity, owner, global, or causal state falls back to
+`OwnedMovement` and reports `IncompleteClosure`.
+
+State policy is:
+
+| State class | Feature 14 behavior |
+|---|---|
+| Owner-local deterministic state | Predict from retained commands; split cooldown and owned-piece count are the Dots proof. |
+| Global deterministic baseline | Replicate immutable rules and checkpoint/advance the World tick; reject incompatible rules. |
+| Mutable global aggregate | Predict only with every causal contribution; otherwise retain authority plus an explicitly speculative local delta. |
+| Durable session/economy/match result | Authority-confirmed only. |
+
+Score remains a non-goal. If added later, presentation may compose
+`confirmed score + speculative local delta` and reconcile that delta by event key. Winning,
+unlocking an ability, or any other score-driven gameplay consequence remains confirmed unless
+the scope contains all score-affecting causes.
 
 Feature 15 must provide a conservative AOI margin sufficient to build the same closure.
 
@@ -436,8 +461,10 @@ Engine tests with a small deterministic model cover:
 Dots tests cover:
 
 - Checkpoint round-trip and deterministic replay for movement, food, absorption, split, and merge.
-- Closure expansion through movement, growth, split reach, and recursive player interaction.
-- Missing-closure fallback and full-world oracle agreement.
+- Closure expansion through ownership/cooldown, mechanic/global dependencies, movement, growth,
+  split reach, and recursive player interaction.
+- Owner-local cooldown correction without spatial expansion, immutable-rule incompatibility,
+  missing causal-state fallback, and full-world oracle agreement.
 - Split order/cap/mass/cooldown, launch/decay, merge eligibility/cohesion, mass conservation, and
   last-piece defeat.
 - Predicted spawn match/reject/authority-only/ambiguity and presentation remapping.

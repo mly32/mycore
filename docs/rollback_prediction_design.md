@@ -91,7 +91,8 @@ class StaticConsequenceRouter;
 
 A `RollbackModel` supplies these game-owned types and operations:
 
-- `State`, `Checkpoint`, `Stimulus`, `Event`, `EventKey`, `StateDiff`, and `StateDigest`.
+- `State`, `Checkpoint`, `Stimulus`, `Scope`, `Event`, `EventKey`, `StateDiff`, and
+  `StateDigest`.
 - Validate and restore a checkpoint without consulting mutable runtime state.
 - Capture a checkpoint from a committed state.
 - Advance exactly one fixed tick from an immutable stimulus and return a deterministic event
@@ -193,6 +194,40 @@ Dots uses statically declared `PredictionMechanic` contracts. Each mechanic decl
 
 The initial mechanics are movement, food consumption, player absorption, and split/merge.
 
+`InteractionClosure` means causal state closure, not only a radius query. The Dots
+`PredictionScope` is a value containing:
+
+- Enabled mechanics and the state domains they read/write.
+- Included entities and owners.
+- Required global/singleton domains such as World tick and immutable rules.
+- Required causal authority channels or scheduled facts.
+- Replay horizon and scope epoch.
+
+The fixed-point builder expands through four providers:
+
+1. **Ownership:** include owner-local cooldowns, owned-piece membership/count, last non-zero
+   movement, and derived owned aggregates for every included owned piece.
+2. **Spatial interaction:** include swept player/food participants that can affect the island.
+3. **Mechanic dependency:** include every state domain read by an enabled mechanic and any
+   mechanics needed to produce those values.
+4. **Causal/global dependency:** include a global value or authority stream when it can change a
+   predicted result without a spatial interaction.
+
+State follows these defaults:
+
+| State class | Prediction rule |
+|---|---|
+| Owner-local deterministic state | Predict when all retained commands that can change it are present. |
+| Global deterministic baseline | Replicate immutable rules and checkpoint the World tick for every scope; a rule mismatch makes the checkpoint incompatible and replay advances the tick. |
+| Mutable global aggregate | Predict only when every causal contribution over the replay window is subscribed; otherwise keep the authoritative base and an optional explicitly speculative local delta. |
+| Durable session/economy/match result | Confirm from authority even when related reversible World state is predicted. |
+
+Score is outside Feature 14. A future presentation-only score may display
+`confirmed total + speculative local delta`, reconcile the delta by stable event key, and avoid
+double counting on confirmation. If a score threshold changes gameplay, ends a match, or unlocks
+an ability, that consequence remains authority-confirmed unless the prediction scope contains
+every score-affecting cause.
+
 Prediction profiles are:
 
 | Profile | Behavior | Use |
@@ -201,14 +236,16 @@ Prediction profiles are:
 | `FullReplicated` | Every entity in the reconstructed replicated view. | Correctness oracle and workload benchmark |
 | `OwnedMovement` | Owned movement only; contested mechanics remain authoritative. | Safe incomplete-state fallback |
 
-Closure starts from owned pieces and expands through conservative swept bounds. Growth from food,
-split launch reach, and recursively reachable player interactions enlarge the set. Before each
-predicted step, an increased replay horizon may require a scope rebase from latest authority.
+Closure starts from owned pieces and their owner/global dependencies, then expands through
+conservative swept bounds. Growth from food, split launch reach, and recursively reachable player
+interactions enlarge the set. Before each predicted step, an increased replay horizon or causal
+subscription change may require a scope rebase from latest authority.
 
-Every participant in a predicted interaction must share the same timeline. Excluded entities do
-not collide with or otherwise affect the predicted island. Missing required replicated state
-causes an atomic fallback to `OwnedMovement` with an `IncompleteClosure` reason; the client never
-guesses the missing interaction.
+Every participant in a predicted interaction and every cause of predicted non-spatial state must
+share the same timeline or be an explicit retained authority fact. Excluded entities do not
+collide with or otherwise affect the predicted island. Missing required entity, owner, global, or
+causal state causes an atomic fallback to `OwnedMovement` with an `IncompleteClosure` reason; the
+client never guesses the missing dependency.
 
 Feature 15 AOI must replicate the conservative interaction margin required to construct this
 closure.
@@ -402,8 +439,8 @@ catch-up, and hard-resync before history exhaustion.
 
 Feature 14 exposes:
 
-- Prediction profile, scope epoch, included mechanics/state domains, closure size, and incomplete
-  closure fallback.
+- Prediction profile, scope epoch, included mechanics, entity/owner/global state domains, causal
+  subscriptions, closure size, and incomplete-closure fallback.
 - Authoritative checkpoint/tick/digest, corresponding predicted digest, predicted head, command
   ACK, and replay range.
 - History occupancy, checkpoint bytes, replay duration distribution, and hard-resync reason.

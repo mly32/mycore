@@ -497,6 +497,8 @@ Changes:
   [`rollback_prediction_design.md`](rollback_prediction_design.md).
 - Restore and resimulate complete gameplay state with an interaction-closure default,
   full-replicated oracle/benchmark, and owned-movement fallback.
+- Treat closure as causal state membership, including owner-local cooldown/piece-count state and
+  required global domains/authority facts rather than only spatial entities.
 - Add predicted split/launch/remerge, cooldowns, and predicted-spawn classification.
 - Add typed event journals and post-commit `PredictOnce`, `PredictCancelable`, and `ConfirmOnce`
   consequence delivery.
@@ -507,7 +509,8 @@ Changes:
 Tests:
 
 - A non-Dots toy model proving generic history, replay, atomic commit, and consequence behavior.
-- Matching/mismatching continuous and structural Dots rollback and closure fallback.
+- Matching/mismatching continuous and structural Dots rollback, non-spatial owner/global
+  dependencies, and closure fallback.
 - Accepted/rejected predicted spawns, stable event identity, every consequence policy, and
   guarded session state.
 - Dynamic latency, loss, reordering, queue-depth convergence, and hard resync.
