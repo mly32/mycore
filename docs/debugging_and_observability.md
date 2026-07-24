@@ -20,7 +20,8 @@ This document uses three status labels:
   interpolation-and-hold, and Feature 13's authoritative absorption/session lifecycle are
   implemented. Feature 13's follow/free spectator presentation and authoritative Gameplay output
   are also implemented.
-- **Feature 14 planned:** complete selectable rollback and Rollback output specified in
+- **Feature 14 planned:** game-neutral rollback timeline, interaction-closed Dots prediction, and
+  Rollback output specified in
   [`plans/14-selectable-world-rollback.md`](plans/14-selectable-world-rollback.md) and
   [`rollback_prediction_design.md`](rollback_prediction_design.md).
 
@@ -37,10 +38,11 @@ Networking debug output is useful only when the state being measured is named pr
 | Authoritative sample | State copied from the server into a snapshot. It is historical when the client receives it. | Protocol/replication |
 | Latest replicated snapshot | The newest validated authoritative sample installed by a client. | Client runtime |
 | Predicted state | Feature 11 controlled-player state advanced locally from owned input. | Client runtime |
-| Predicted World | Feature 14 complete gameplay state restored from a checkpoint and replayed through selected entities and recorded assumptions. | Planned client rollback kernel |
+| Predicted World | Feature 14 complete gameplay state restored from a checkpoint and replayed through an interaction closure and recorded assumptions. | Planned `MyCore::Rollback` timeline with Dots model |
 | Pre-correction state | Prediction immediately before a nonzero reconciliation correction. | Client runtime debug history |
 | Presentation state | The transient positions and geometry submitted for drawing. | Dots presentation/client app |
 | Interpolated remote state | Presentation sampled between two known remote snapshot states. | Feature 12 presentation |
+| Extrapolated remote state | Feature 14 bounded visual-only advancement outside the prediction closure; never gameplay input. | Planned Dots presentation |
 | Confirmed consequence | A durable session/gameplay result shown only after authority reports it, even if related reversible World state was predicted. | Server decision/client display |
 
 A native client cannot observe the server's live current position. A client debug ghost labeled
@@ -408,33 +410,39 @@ interpolation diagnostics for comparison.
 
 | Field | Meaning |
 |---|---|
-| Prediction mode | `AllReplicated`, `OwnerAndInteractionClosure`, or `OwnerOnly`, plus predicted/interpolated/confirmed entity counts. |
+| Prediction profile | `InteractionClosure`, `FullReplicated`, or `OwnedMovement`, plus predicted/interpolated/extrapolated/confirmed entity counts. |
+| Prediction scope | Scope epoch, included mechanics/state domains, closure seed/count, replay horizon, and `IncompleteClosure` fallback reason. |
 | Replay coordinates | Authoritative snapshot/tick, predicted tick, input ACK, and exact replay sequence range. |
 | Prediction lead | Predicted tick minus its stated authoritative base tick. This replay extent is not RTT, snapshot age, or estimated live server time. |
 | History | Occupied frames out of 64, replay tick count, checkpoint bytes, and hard-resync reason. |
+| State digest | Authority checkpoint schema/digest and corresponding predicted diagnostic digest. Typed differences, not hash equality, remain the correctness source. |
 | Replay duration | Latest, p50, p95, p99, and maximum same-frame replay time; 2 ms is a warning, not a partial-replay cutoff. |
 | Continuous divergence | Position, velocity, mass, radius, and deadline corrections that preserve topology. |
 | Structural divergence | Entity create/remove, ownership, component-set, split, merge, and elimination corrections. |
-| Predicted spawns | Pending, matched, rejected, authority-only, and ambiguous prediction-key counts. Ambiguity causes hard recovery. |
-| Cue lifecycle | Resimulated, deduplicated, canceled, and confirmed-only cue counts. |
+| Predicted spawns | Pending, matched, rejected, authority-only, and ambiguous prediction-key counts. Ambiguity causes hard resync. |
+| Event lifecycle | `FirstPredicted`, `Revised`, `Retracted`, `Confirmed`, and `AuthorityOnly` counts, with the selected stable event key. |
+| Consequence delivery | Per-policy delivered, suppressed, revised, canceled, confirmed, and authority-only counts for `PredictOnce`, `PredictCancelable`, and `ConfirmOnce`. |
+| Authority receipts | Latest received/acknowledged sequences, server/client pending depth, duplicate count, and conflict/overflow failures. |
 | Command buffer | Target/latest/EWMA server queue depth, cadence scale, low/high events, and accumulated phase correction. |
 | Remote assumption | Source snapshot and tick range over which last-known remote movement was held; remote edge actions remain zero. |
+| Outside-closure presentation | Latest-authority age, visual extrapolation age/cap, hold count, closure-entry transition, and interpolation fallback. No gameplay is executed for this layer. |
 
-The selected-entity world overlay draws five independently labeled layers: latest-known
-authoritative, predicted, Feature 12 interpolated, pre-correction, and smoothed presentation.
-Structural markers identify speculative spawns, removals, matches, and rejections. A layer is
-hidden or marked unavailable when its state source does not exist; zero is not used as a
-placeholder.
+The selected-entity world overlay draws independently labeled latest-known authoritative,
+predicted, Feature 12 interpolated, bounded extrapolated, pre-correction, and smoothed
+presentation layers. Structural markers identify speculative spawns, removals, matches, and
+rejections. Event markers show stable key and transition. A layer is hidden or marked
+unavailable when its state source does not exist; zero is not used as a placeholder.
 
 Fault tools cover position or mass divergence, forced split rejection, spawn-classification
-mismatch, action-packet suppression, and remote held-input divergence. Each fault has a durable
+mismatch, action-packet suppression, remote held-input divergence, repeated rollback of one event
+key, and duplicate/conflicting authority receipts. Each fault has a durable
 armed/triggered/completed receipt and remains separate from measured transport loss.
 
-Same-frame replay is the planned baseline. Phase 14.6 records entity count, replay ticks,
+Same-frame replay is the planned baseline. Branch 14h records entity count, replay ticks,
 checkpoint bytes, topology changes, RTT/jitter/loss grouping, client-frame impact, and replay
 duration. Multi-frame resimulation is not shown as an available mode unless a separate reviewed
 implementation exists; the decision thresholds and atomic-commit invariants live in
-[`rollback_prediction_design.md`](rollback_prediction_design.md#deferred-multi-frame-resimulation-research).
+[`rollback_prediction_design.md`](rollback_prediction_design.md#same-frame-replay-and-deferred-multi-frame-work).
 
 ## Troubleshooting Patterns
 
@@ -487,9 +495,22 @@ adding adaptive delay.
 
 ### Structural corrections repeat — Feature 14 planned
 
-Compare predicted-spawn classification, held remote assumptions, checkpoint configuration, and
-the first topology tick that differs. Position smoothing cannot repair an entity create/remove,
-ownership, split, merge, or deadline mismatch.
+Compare prediction profile/closure, predicted-spawn classification, held remote assumptions,
+checkpoint configuration, and the first topology tick that differs. Position smoothing cannot
+repair an entity create/remove, ownership, split, merge, or deadline mismatch.
+
+### A one-shot consequence repeats — Feature 14 planned
+
+Inspect its stable event key, transition history, handler policy, and suppression count.
+`PredictOnce` and `ConfirmOnce` are keyed per handler, so replaying or confirming the same key
+must not invoke that handler twice. A changing key indicates incorrect game identity; a stable
+key with repeated delivery indicates an occurrence-ledger defect.
+
+### A predicted effect remains after rejection — Feature 14 planned
+
+Confirm the handler uses `PredictCancelable`, produced a stored lifecycle token, and received a
+`Retracted` transition. `PredictOnce` deliberately cannot erase a cue already perceived; use it
+only when one brief false positive is acceptable.
 
 ### Hard resyncs rise — Feature 14 planned
 
@@ -524,7 +545,7 @@ Use impairment to answer a specific question:
 - Redundancy: compare the same drop schedule with redundancy enabled and disabled.
 - Remote interpolation: vary loss/jitter schedules and inspect known endpoints, buffer coverage,
   cursor rate, and holds.
-- Complete rollback: after Feature 14 lands, compare prediction-set modes and inspect replay,
+- Complete rollback: after Feature 14 lands, compare prediction profiles and inspect replay,
   structural divergence, command-buffer, and state-layer output under identical impairment.
 
 Random transport loss is useful for play testing. Deterministic tests should use controlled

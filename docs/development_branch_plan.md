@@ -488,33 +488,68 @@ Detailed plan:
 
 ### `feature/14-selectable-world-rollback`
 
-Purpose: replace position-only prediction with complete, selectable Dots World rollback.
+Purpose: replace position-only prediction with a game-neutral rollback timeline and a complete,
+interaction-closed predicted Dots World.
 
 Changes:
 
-- Add the Dots-owned rollback contracts defined in
+- Add the statically typed `MyCore::Rollback` mechanism and Dots-owned model defined in
   [`rollback_prediction_design.md`](rollback_prediction_design.md).
-- Restore and resimulate complete gameplay state with a selectable prediction set, defaulting to
-  every replicated entity.
+- Restore and resimulate complete gameplay state with an interaction-closure default,
+  full-replicated oracle/benchmark, and owned-movement fallback.
 - Add predicted split/launch/remerge, cooldowns, and predicted-spawn classification.
-- Render predicted remotes normally while retaining Feature 12 interpolation as fallback and
-  comparison.
+- Add typed event journals and post-commit `PredictOnce`, `PredictCancelable`, and `ConfirmOnce`
+  consequence delivery.
+- Compose predicted closure state with bounded presentation-only remote extrapolation while
+  retaining Feature 12 interpolation as fallback and comparison.
 - Add adaptive command-buffer timing plus Rollback metrics, overlays, and deliberate faults.
 
 Tests:
 
-- Matching/mismatching continuous and structural rollback.
-- Accepted/rejected predicted spawns, cue lifecycle, and guarded consequences.
-- Dynamic latency, loss, reordering, queue-depth convergence, and hard recovery.
+- A non-Dots toy model proving generic history, replay, atomic commit, and consequence behavior.
+- Matching/mismatching continuous and structural Dots rollback and closure fallback.
+- Accepted/rejected predicted spawns, stable event identity, every consequence policy, and
+  guarded session state.
+- Dynamic latency, loss, reordering, queue-depth convergence, and hard resync.
 - Recorded 10, 100, 500, and 1,000-entity replay workloads.
 
 Exit criterion:
 
-- Complete predicted gameplay converges atomically to server truth, remains measurable and
-  recoverable, and produces evidence for or against later multi-frame resimulation research.
+- Complete interaction-closed Dots gameplay converges atomically to server truth, Dots exercises
+  every generic consequence policy, and `MyCore::Rollback` contains no game or protocol policy.
+
+Deliver this program through the following reviewable branches in order:
+
+| Branch | Review boundary |
+|---|---|
+| `docs/14-rollback-programming-model` | Canonical design, detailed plan, roadmap, and observability agreement |
+| `feature/14a-engine-rollback-kernel` | Generic timeline/transaction/event/consequence API with toy-model tests |
+| `refactor/14b-replayable-dots-world` | Complete Dots checkpoints and shared atomic tick with current behavior preserved |
+| `feature/14c-dots-prediction-model` | Mechanic contracts, interaction closure, profiles, and current-mechanic rollback |
+| `feature/14d-split-merge-lifecycle` | Split/merge rules, predicted identity, and offline consequence examples |
+| `feature/14e-protocol-v4-rollback` | Complete wire checkpoint, digest, prediction key, and authority receipts |
+| `feature/14f-client-predicted-world` | Network client timeline integration and full state convergence |
+| `feature/14g-predicted-presentation` | Smoothing, consequence handlers, bounded extrapolation, and interpolation fallback |
+| `feature/14h-timing-observability-validation` | Adaptive timing, debugging, impairment tests, workloads, and exit decision |
 
 Detailed plan:
 [`plans/14-selectable-world-rollback.md`](plans/14-selectable-world-rollback.md).
+
+### `spike/multi-frame-resimulation` — conditional
+
+Purpose: evaluate time-sliced scratch replay only if Feature 14's optimized same-frame baseline
+exceeds 4 ms at p99 or causes rollback-attributable frame overruns in more than 1% of
+reconciliations in the target 200 ms impairment scenario.
+
+Do not create this branch from anticipated scale alone. The spike must use the recorded Feature
+14 workloads, keep presenting immutable committed state, accept commands while catching up,
+supersede work for newer authority, atomically swap only after reaching its moving target, and
+hard-resync before history exhaustion.
+
+Exit criterion:
+
+- A measured comparison either rejects multi-frame replay or produces a separately reviewed
+  production feature plan; spike code does not merge as an unreviewed second scheduler.
 
 ### `feature/15-interest-management`
 
@@ -886,6 +921,9 @@ Preserve these subsystem boundaries:
   game-specific panels or state.
 - `MyCore::NetTransport`: connections and byte payload transport; no gameplay messages or
   replication policy.
+- `MyCore::Rollback`: typed game-neutral checkpoint/step history, atomic reconciliation, event
+  transitions, and consequence-delivery bookkeeping; no Dots state, mechanics, protocol,
+  presentation, or audio policy.
 - `MyCore::Tasks`: conditional, profile-driven bounded CPU task groups and fences; no game tick,
   render-submission, network-poll, or audio-callback ownership policy.
 - `MyCore::Scripting`: Lua VM lifetime and safe calls; no game capabilities.
@@ -894,6 +932,8 @@ Preserve these subsystem boundaries:
 - `Dots::Protocol`: Dots wire messages and concrete protocol IDs, independent of C++ memory
   layout and transport implementation.
 - `Dots::Replication`: client-specific Dots snapshot construction.
+- `Dots::Prediction`: Dots rollback model, checkpoint adapter, mechanic closure, event identity,
+  typed differences, and prediction profiles.
 - `Dots::Presentation`: Dots render extraction and conversion to engine draw data.
 - `dots_server`: headless Dots authority; must not link renderer, SDL video, presentation,
   or ImGui rendering.

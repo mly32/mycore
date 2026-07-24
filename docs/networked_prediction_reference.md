@@ -18,7 +18,8 @@ authority, speculation, and drawing state.
 | Remote snapshot history | Accepted semantic entity snapshots retained for delayed sampling. | `Dots::RemotePresentation` | Feature 12 |
 | Remote presentation frame | Immutable remote entity states sampled between known historical endpoints. | `Dots::RemotePresentation` | Feature 12 |
 | Composed presentation frame | Local presentation combined with remote presentation, camera, and debug layers. | `Dots::Presentation` | Feature 12 |
-| Predicted World | Complete checkpoint replayed through retained commands and recorded remote assumptions. | `Dots::Prediction` | Feature 14 |
+| Predicted World | Complete checkpoint replayed through retained immutable stimuli, including commands and recorded remote assumptions. | `MyCore::Rollback` timeline with `Dots::Prediction` model | Feature 14 |
+| Extrapolated presentation | Bounded visual-only advancement of replicated movement outside the predicted interaction closure. | `Dots::Presentation` | Feature 14 |
 | Confirmed consequence | Durable session or game result exposed only after authority reports it. | Server decision, client display | Feature 13+ |
 
 The server is authoritative even when a client runs matching code speculatively. Presentation
@@ -65,16 +66,19 @@ without the client knowing. A later authoritative sample may therefore require a
 correction. This is not rollback unless the client also retained deterministic assumptions and
 replayed a simulation history.
 
-Dots does not schedule raw remote extrapolation. It may be appropriate only for a demonstrated,
-predictable mechanic with an explicit forecast horizon and correction policy. It is not a
-replacement for scalable replication.
+Feature 14 may advance remote movement/launch vectors outside its prediction closure for at most
+six ticks/200 ms and then hold. This is presentation-only: it cannot collide, consume, split,
+merge, seed a checkpoint, or influence closure construction. Feature 12 delayed interpolation
+remains the spectator, fallback, and comparison path. Extrapolation is not a replacement for
+scalable replication.
 
 ### Complete rollback prediction
 
-Feature 14 may predict selected remote entities by replaying a complete Dots World from an
-authoritative checkpoint. Remote held movement is an explicit recorded assumption; unknown edge
-actions are zero. That is distinct from Feature 12 interpolation and remains a later,
-measured-cost policy.
+Feature 14 predicts the fixed-point interaction closure around owned pieces by replaying a
+complete Dots World from an authoritative checkpoint through the game-neutral rollback timeline.
+Remote held movement is an explicit recorded assumption; unknown edge actions are zero. A
+full-replicated profile remains an oracle/benchmark, and incomplete closure falls back to owned
+movement rather than guessing contested gameplay.
 
 ### Shooter lag compensation / server rewind
 
@@ -93,8 +97,9 @@ at 15 Hz is about 255 MB/s before packet and transport overhead.
 
 Feature 12 establishes a stable presentation baseline. Feature 15 reduces each recipient to an
 area of interest (AOI), Feature 16 sends budgeted deltas, and Feature 17 measures staged loads.
-Feature 14's all-replicated rollback is a controlled experiment before AOI, not the claimed
-steady-state design for a 1,000-player world.
+Feature 14's interaction closure reduces predicted simulation before AOI, while its
+full-replicated mode remains a controlled experiment rather than the claimed steady-state design
+for a 1,000-player world.
 
 ## Research basis
 
