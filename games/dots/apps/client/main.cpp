@@ -43,7 +43,7 @@ Configuration:
   Otherwise the built-in defaults are used.
   network.mode selects offline, in_memory, or native; CLI mode options take precedence.
   debug.presentation_mode selects offline interpolated, fixed, or comparison presentation.
-  Networked modes present the latest authoritative snapshot without interpolation.
+  Networked modes predict the controlled player and interpolate remote snapshot history.
 )";
 
 class CliError : public std::runtime_error {

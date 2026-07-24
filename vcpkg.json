@@ -11,11 +11,9 @@
     },
     {
       "name": "glslang",
-      "features": [
-        "tools"
-      ],
+      "features": ["tools"],
       "host": true,
-      "platform": "!windows"
+      "platform": "osx | linux"
     },
     "fmt",
     {
@@ -24,9 +22,7 @@
     },
     {
       "name": "imgui",
-      "features": [
-        "sdlgpu3-binding"
-      ]
+      "features": ["sdlgpu3-binding"]
     },
     "sdl3",
     "spdlog",
@@ -38,9 +34,7 @@
     "tomlplusplus",
     {
       "name": "tracy",
-      "features": [
-        "on-demand"
-      ]
+      "features": ["on-demand"]
     }
   ]
 }

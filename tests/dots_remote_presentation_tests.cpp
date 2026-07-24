@@ -48,6 +48,34 @@ clock_time(std::chrono::steady_clock::duration offset) noexcept {
 
 } // namespace
 
+TEST_CASE("Remote presentation holds the first sample while its normal delay buffers",
+          "[dots][remote-presentation]") {
+    dots::presentation::RemoteSnapshotBuffer buffer;
+    buffer.insert(snapshot(1, 40, 4.0F, 0ms));
+    buffer.advance(clock_time(0ms));
+
+    const auto first = buffer.sample(dots::protocol::EntityId{1});
+    REQUIRE_FALSE(first.ready);
+    REQUIRE(first.entities.size() == 1);
+    CHECK(first.presentation_tick == Catch::Approx(40.0));
+    CHECK(first.entities[0].position.x == Catch::Approx(4.0F));
+    CHECK(buffer.statistics(clock_time(0ms)).current_delay_ticks == Catch::Approx(0.0));
+
+    buffer.insert(snapshot(2, 42, 6.0F, 67ms));
+    buffer.insert(snapshot(3, 44, 8.0F, 133ms));
+    buffer.advance(clock_time(133ms));
+    const auto buffering = buffer.sample(dots::protocol::EntityId{1});
+    REQUIRE_FALSE(buffering.ready);
+    CHECK(buffering.presentation_tick == Catch::Approx(40.0));
+    CHECK(buffering.entities[0].position.x == Catch::Approx(4.0F));
+
+    buffer.insert(snapshot(4, 46, 10.0F, 200ms));
+    buffer.advance(clock_time(200ms));
+    const auto ready = buffer.sample(dots::protocol::EntityId{1});
+    REQUIRE(ready.ready);
+    CHECK(ready.presentation_tick == Catch::Approx(40.0));
+}
+
 TEST_CASE("Remote presentation waits for six ticks then samples known endpoints",
           "[dots][remote-presentation]") {
     dots::presentation::RemoteSnapshotBuffer buffer;
@@ -86,9 +114,64 @@ TEST_CASE("Remote presentation holds on an underrun and does not extrapolate",
     REQUIRE(held.holding);
     REQUIRE(held.entities.size() == 1);
     CHECK(held.entities[0].position.x == Catch::Approx(6.0F));
+    CHECK(held.presentation_tick == Catch::Approx(9.0));
+
+    buffer.advance(clock_time(516ms));
+    const auto still_held = buffer.sample(dots::protocol::EntityId{1});
+    REQUIRE(still_held.holding);
+    CHECK(still_held.presentation_tick == Catch::Approx(held.presentation_tick));
+    CHECK(still_held.entities[0].position.x == Catch::Approx(6.0F));
     const auto statistics = buffer.statistics(clock_time(550ms));
     CHECK(statistics.hold_episode_count == 1);
     CHECK(statistics.current_hold_duration >= 50ms);
+    CHECK(statistics.last_hold_duration == 0ms);
+    CHECK(statistics.maximum_hold_duration >= 50ms);
+    CHECK(statistics.total_hold_duration >= 50ms);
+    CHECK(statistics.hold_recovery_count == 0);
+    CHECK(statistics.cursor_rate == Catch::Approx(0.0));
+    CHECK(statistics.hard_rebase_count == 0);
+    CHECK(statistics.holding);
+}
+
+TEST_CASE("Remote presentation recovers monotonically through late snapshots",
+          "[dots][remote-presentation]") {
+    dots::presentation::RemoteSnapshotBuffer buffer;
+    buffer.insert(snapshot(1, 0, 0.0F, 0ms));
+    buffer.insert(snapshot(2, 2, 2.0F, 67ms));
+    buffer.insert(snapshot(3, 4, 4.0F, 133ms));
+    buffer.insert(snapshot(4, 6, 6.0F, 200ms));
+    buffer.advance(clock_time(200ms));
+    buffer.advance(clock_time(500ms));
+    buffer.advance(clock_time(516ms));
+    const auto held_tick = buffer.sample(dots::protocol::EntityId{1}).presentation_tick;
+
+    buffer.insert(snapshot(5, 8, 8.0F, 510ms));
+    buffer.advance(clock_time(550ms));
+    const auto late = buffer.sample(dots::protocol::EntityId{1});
+    REQUIRE(late.holding);
+    CHECK(late.presentation_tick == Catch::Approx(held_tick));
+    REQUIRE(late.entities.size() == 1);
+    CHECK(late.entities[0].position.x == Catch::Approx(8.0F));
+
+    buffer.insert(snapshot(6, 10, 10.0F, 567ms));
+    buffer.insert(snapshot(7, 12, 12.0F, 568ms));
+    buffer.insert(snapshot(8, 14, 14.0F, 569ms));
+    buffer.advance(clock_time(600ms));
+    const auto recovered = buffer.sample(dots::protocol::EntityId{1});
+    REQUIRE_FALSE(recovered.holding);
+    CHECK(recovered.presentation_tick > held_tick);
+    REQUIRE(recovered.entities.size() == 1);
+    CHECK(recovered.entities[0].position.x >= 10.0F);
+
+    const auto statistics = buffer.statistics(clock_time(600ms));
+    CHECK(statistics.late_snapshot_count == 1);
+    CHECK(statistics.hold_episode_count == 1);
+    CHECK(statistics.hold_recovery_count == 1);
+    CHECK(statistics.last_hold_duration == 100ms);
+    CHECK(statistics.maximum_hold_duration == 100ms);
+    CHECK(statistics.total_hold_duration == 100ms);
+    CHECK_FALSE(statistics.holding);
+    CHECK(statistics.hard_rebase_count == 0);
 }
 
 TEST_CASE("Remote presentation delays entity removal until the newer endpoint",
@@ -100,10 +183,56 @@ TEST_CASE("Remote presentation delays entity removal until the newer endpoint",
     buffer.insert(snapshot(4, 6, 6.0F, 200ms));
     buffer.insert(snapshot(5, 8, 8.0F, 267ms, false));
     buffer.advance(clock_time(267ms));
+    const auto before_removal = buffer.sample(dots::protocol::EntityId{1});
+    REQUIRE(before_removal.entities.size() == 1);
     buffer.advance(clock_time(267ms + 200ms));
 
     const auto frame = buffer.sample(dots::protocol::EntityId{1});
     CHECK(frame.entities.empty());
+    CHECK(buffer.statistics(clock_time(467ms)).delayed_entity_remove_count == 1);
+}
+
+TEST_CASE("Remote presentation recreates an entity only after an absence endpoint",
+          "[dots][remote-presentation]") {
+    dots::presentation::RemoteSnapshotBuffer buffer;
+    buffer.insert(snapshot(1, 0, 0.0F, 0ms));
+    buffer.insert(snapshot(2, 2, 0.0F, 67ms, false));
+    buffer.insert(snapshot(3, 4, 40.0F, 133ms));
+    buffer.insert(snapshot(4, 6, 60.0F, 200ms));
+    buffer.advance(clock_time(200ms));
+    REQUIRE(buffer.sample(dots::protocol::EntityId{1}).entities.size() == 1);
+
+    buffer.advance(clock_time(267ms));
+    const auto absent = buffer.sample(dots::protocol::EntityId{1});
+    CHECK(absent.entities.empty());
+    auto statistics = buffer.statistics(clock_time(267ms));
+    CHECK(statistics.delayed_entity_remove_count == 1);
+    CHECK(statistics.delayed_entity_create_count == 0);
+
+    buffer.advance(clock_time(337ms));
+    const auto recreated = buffer.sample(dots::protocol::EntityId{1});
+    REQUIRE(recreated.entities.size() == 1);
+    CHECK(recreated.entities[0].position.x >= 40.0F);
+    statistics = buffer.statistics(clock_time(337ms));
+    CHECK(statistics.delayed_entity_remove_count == 1);
+    CHECK(statistics.delayed_entity_create_count == 1);
+}
+
+TEST_CASE("Remote presentation interpolates across a lost snapshot gap",
+          "[dots][remote-presentation]") {
+    dots::presentation::RemoteSnapshotBuffer buffer;
+    buffer.insert(snapshot(1, 0, 0.0F, 0ms));
+    buffer.insert(snapshot(2, 6, 6.0F, 200ms));
+    buffer.advance(clock_time(200ms));
+    static_cast<void>(buffer.sample(dots::protocol::EntityId{1}));
+
+    buffer.advance(clock_time(300ms));
+    const auto frame = buffer.sample(dots::protocol::EntityId{1});
+    REQUIRE(frame.bracket.has_value());
+    CHECK(frame.presentation_tick == Catch::Approx(3.0));
+    CHECK(frame.bracket->alpha == Catch::Approx(0.5F));
+    REQUIRE(frame.entities.size() == 1);
+    CHECK(frame.entities[0].position.x == Catch::Approx(3.0F));
 }
 
 TEST_CASE("Remote presentation bounds history and records arrival jitter",

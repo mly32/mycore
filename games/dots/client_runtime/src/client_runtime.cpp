@@ -269,6 +269,7 @@ public:
             ++injected_input_drop_count_;
         } else if (endpoint_.send(connection_, *bytes, DeliveryMode::Unreliable) !=
                    SendStatus::Sent) {
+            static_cast<void>(endpoint_.disconnect(connection_));
             state_ = State::Disconnected;
             return InputSendResult::TransportFailure;
         }

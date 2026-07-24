@@ -1,9 +1,11 @@
 #include "mycore/net_transport/net_transport.hpp"
 
+#include <algorithm>
 #include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <cstddef>
+#include <iterator>
 #include <limits>
 #include <stdexcept>
 #include <thread>
@@ -239,6 +241,7 @@ TEST_CASE("Native transport connects and preserves message delivery intent",
         std::this_thread::sleep_for(1ms);
     }
     CHECK(remote_disconnected);
+    CHECK_FALSE(listening.endpoint->statistics(pair.server).has_value());
     REQUIRE(client.statistics(pair.client).has_value());
     CHECK(client.statistics(pair.client)->state ==
           mycore::net_transport::ConnectionState::Disconnected);
@@ -338,4 +341,50 @@ TEST_CASE("Native transport accepts multiple independently routed clients",
            received[1].payload == std::vector<std::byte>{std::byte{1}}));
     CHECK((received[0].payload == std::vector<std::byte>{std::byte{2}} ||
            received[1].payload == std::vector<std::byte>{std::byte{2}}));
+}
+
+TEST_CASE("Native transport drains reliable data before a lingered remote close",
+          "[transport][native][disconnect]") {
+    const auto listen_address = mycore::net_transport::NetworkAddress::parse("127.0.0.1:0");
+    REQUIRE(listen_address.has_value());
+
+    mycore::net_transport::GameNetworkingSocketsNetwork network{{
+        .outgoing_lag_milliseconds = 20,
+    }};
+    const auto listening = network.listen(*listen_address);
+    auto& client = network.connect(listening.address);
+    const auto pair = wait_for_native_connection(*listening.endpoint, client);
+
+    const std::array payload{std::byte{1}, std::byte{2}, std::byte{3}};
+    REQUIRE(client.send(pair.client, payload, mycore::net_transport::DeliveryMode::Reliable) ==
+            mycore::net_transport::SendStatus::Sent);
+    REQUIRE(client.disconnect(pair.client));
+
+    std::vector<mycore::net_transport::Event> remote_events;
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (std::chrono::steady_clock::now() < deadline &&
+           std::none_of(remote_events.begin(), remote_events.end(), [](const auto& event) {
+               return std::holds_alternative<mycore::net_transport::Disconnected>(event);
+           })) {
+        auto events = listening.endpoint->poll();
+        remote_events.insert(remote_events.end(),
+                             std::make_move_iterator(events.begin()),
+                             std::make_move_iterator(events.end()));
+        static_cast<void>(client.poll());
+        std::this_thread::sleep_for(1ms);
+    }
+
+    const auto payload_event =
+        std::find_if(remote_events.begin(), remote_events.end(), [](const auto& event) {
+            return std::holds_alternative<mycore::net_transport::PayloadReceived>(event);
+        });
+    const auto disconnect_event =
+        std::find_if(remote_events.begin(), remote_events.end(), [](const auto& event) {
+            return std::holds_alternative<mycore::net_transport::Disconnected>(event);
+        });
+    REQUIRE(payload_event != remote_events.end());
+    REQUIRE(disconnect_event != remote_events.end());
+    CHECK(payload_event < disconnect_event);
+    CHECK(std::get<mycore::net_transport::PayloadReceived>(*payload_event).payload ==
+          std::vector<std::byte>{payload.begin(), payload.end()});
 }

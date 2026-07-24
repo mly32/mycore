@@ -29,6 +29,27 @@ separate graphical clients to connect to the authoritative headless server.
   clients, optionally pass one TOML configuration to every client, prefix output, propagate
   failures, and clean up all children.
 
+## Post-merge review remediation
+
+A 2026-07-23 review of the transport and session lifecycle found three cleanup gaps:
+
+- An application send failure removed Dots session/player state without closing the underlying
+  connection. The peer could remain connected to a server that no longer recognized it. Send
+  failure is now terminal for that session: both client and server request transport disconnect
+  before abandoning runtime state.
+- A connected peer that never sent `ClientHello` was not covered by ready-client liveness and
+  could retain server transport/session resources indefinitely. Pending handshakes now have a
+  300-server-tick (10-second) deadline. Successful hello acceptance resets activity time before
+  the existing ready-client liveness policy begins.
+- The native listening endpoint retained closed connection records for its entire process
+  lifetime. It now reclaims a peer's transport record after delivering that peer's disconnect
+  event. Client endpoints retain their one post-close record so local diagnostics can still
+  report the terminal state.
+
+Regression tests cover client and server send-failure cleanup, pending-handshake expiry, the
+handshake-to-ready liveness transition, native server-record reclamation, and reliable payload
+delivery before a lingered native disconnect.
+
 ## Tests and Exit Criteria
 
 - Keep every existing in-memory test passing.

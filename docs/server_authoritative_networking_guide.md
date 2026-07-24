@@ -34,8 +34,8 @@ lossless, while the native backend supports realistic outgoing latency and loss 
 
 The runtime has **client-side movement prediction and reconciliation** without owning or stepping
 a gameplay `World`. The overlay says `NETWORKED PREDICTED` and separately displays the latest
-authoritative sample, corrected prediction, and smoothed presentation. Remote interpolation is
-still absent, so other players visibly advance at the 15 Hz snapshot rate.
+authoritative sample, corrected prediction, and smoothed presentation. Other players render from
+Feature 12's delayed interpolation history and hold known state when a newer bracket is absent.
 
 ## Three different responsibilities
 
@@ -190,12 +190,25 @@ Before a native graphical client tears down its networking instance, it requests
 transport close and drains endpoint callbacks for a bounded interval. The interval is the
 configured outgoing fake lag plus 50 ms, clamped from 50 ms to two seconds. This lets a delayed
 close notification leave the process; it does not wait indefinitely for an application-level ACK.
+If either Dots runtime cannot enqueue an application message, it closes that connection before
+removing or abandoning its session state; a peer is never intentionally left attached to an
+orphaned session.
+
+After a listening endpoint delivers a peer's disconnect event, it releases the server-side
+transport record for that connection. Server code must capture any final statistics before or
+while handling that event rather than treating closed handles as permanent history. A client
+endpoint retains its own single terminal record for post-close diagnostics.
 
 The Dots server also has a gameplay-level liveness fallback. Ready clients normally submit valid
 input packets at 30 Hz; after 90 server ticks (three seconds) without one, the server logs a
 warning, closes the transport session, and removes the player. This prevents a lost connection
 from retaining its last movement forever while still tolerating ordinary packet loss. The timeout
 uses server ticks, not wall-clock sleeps, so it is deterministic in tests.
+
+A transport connection that does not complete `ClientHello` within 300 server ticks (10 seconds)
+is also closed. Accepting the hello starts the ready-session activity window; time spent waiting
+to begin the application handshake is not charged against the three-second input-liveness
+window.
 
 Separately, Dots holds a player's last applied movement for at most five server ticks when its
 per-tick input queue runs dry. On the next missing-input tick it neutralizes movement but retains
@@ -240,6 +253,11 @@ includes transport connection establishment, the reliable hello/welcome exchange
 of a usable snapshot. Reaching it is a failed startup even if the transport was still retrying.
 Dots currently does not reconnect or begin a second handshake automatically; the client exits
 with `Could not establish the authoritative session`.
+
+After startup, network polling and 30 Hz fixed input production do not depend on a drawable
+surface. If a graphical window is minimized or temporarily has zero drawable size, rendering
+pauses but the authoritative session remains active. Mouse steering is neutral until a viewport
+is available again; keyboard input can still produce movement.
 
 Connection handles, client IDs, and entity IDs belong to different domains. It is normal for a
 client to report transport connection `0`, Dots client `0`, and a much larger controlled entity
@@ -514,13 +532,16 @@ tick_error      = desired_cursor - remote_presentation_cursor
 
 cursor_rate = 1.0                                      inside ±0.25 tick
 cursor_rate = clamp(1 + 0.02 * tick_error, 0.95, 1.05) outside the deadband
+cursor_rate = 0.0                                      while holding without a newer bracket
 ```
 
 A newer snapshot moves `newest_received_server_tick` and therefore the target. Jitter changes
 arrival spacing but not the server-tick coordinates stored in the buffer. During loss, the cursor
-can exhaust its newer bracket and hold; recovery resumes from accepted samples or performs the
-documented hard rebase. The six-tick target remains fixed in Feature 12—RTT and measured jitter do
-not automatically enlarge or shrink it.
+can exhaust its newer bracket and freeze. Late snapshots update the held known state without
+moving the cursor backward; normal advancement resumes once a newer endpoint exists. A hard
+rebase is forward-only when the cursor falls more than six ticks behind or its lower bracket has
+been evicted. The six-tick target remains fixed in Feature 12—RTT and measured jitter do not
+automatically enlarge or shrink it.
 
 #### If estimated live server time is implemented later
 
@@ -594,7 +615,7 @@ authoritative controlled-player sample and replays the remaining unacknowledged 
 | Accepted snapshot ID/latest-known server tick | Advance to the newer accepted sample. |
 | Owned predicted state | Rebuilt from the new authoritative base plus the retained input suffix. |
 | Local presentation position | Preserves continuity with a visual-only offset that decays over 100 ms. |
-| Feature 12 remote presentation cursor | Continues monotonically during normal sampling; a documented hard rebase is presentation recovery, not gameplay rollback. |
+| Feature 12 remote presentation cursor | Advances monotonically or freezes during a hold; a forward-only hard rebase is presentation recovery, not gameplay rollback. |
 
 | Clock or event | Current cadence | Approximate spacing | What happens |
 |---|---:|---:|---|

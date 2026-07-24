@@ -215,6 +215,7 @@ TEST_CASE("Transport send failure does not advance prediction or history",
     const auto statistics = client.prediction_statistics(clock_time(10s));
     CHECK_FALSE(statistics.last_input_sent.is_valid());
     CHECK(statistics.history_count == 0);
+    CHECK(endpoint.disconnect_called);
 }
 
 TEST_CASE("Matching reconciliation discards acknowledged input and replays the remainder",

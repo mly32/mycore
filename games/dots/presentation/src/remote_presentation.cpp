@@ -49,7 +49,8 @@ void RemoteSnapshotBuffer::insert(RemoteSnapshotSample sample) {
                            }) != sample.entities.end()) {
         return;
     }
-    if (!samples_.empty()) {
+    const auto first_sample = samples_.empty();
+    if (!first_sample) {
         const auto& newest = samples_.back();
         if (sample.snapshot_id <= newest.snapshot_id || sample.server_tick <= newest.server_tick) {
             return;
@@ -66,6 +67,9 @@ void RemoteSnapshotBuffer::insert(RemoteSnapshotSample sample) {
         ++late_snapshot_count_;
     }
     samples_.push_back(std::move(sample));
+    if (first_sample) {
+        presentation_tick_ = static_cast<double>(samples_.back().server_tick);
+    }
     if (samples_.size() > kRemoteSnapshotCapacity) {
         samples_.erase(samples_.begin());
     }
@@ -92,18 +96,39 @@ void RemoteSnapshotBuffer::advance(std::chrono::steady_clock::time_point now) {
     }
 
     const auto desired_tick = static_cast<double>(newest_tick - kRemotePresentationDelayTicks);
-    cursor_error_ = desired_tick - presentation_tick_;
-    if (std::abs(cursor_error_) > kMaximumCursorErrorTicks) {
-        presentation_tick_ = desired_tick;
-        cursor_error_ = 0.0;
+    if (hold_started_at_ && !newer_sample_index()) {
+        cursor_rate_ = 0.0;
+        cursor_error_ = desired_tick - presentation_tick_;
+        rate_correction_active_ = false;
+        last_advance_time_ = now;
+        return;
+    }
+    if (hold_started_at_) {
+        finish_hold(now);
+    }
+
+    auto rebased = false;
+    if (presentation_tick_ < static_cast<double>(samples_.front().server_tick)) {
+        presentation_tick_ =
+            std::max(desired_tick, static_cast<double>(samples_.front().server_tick));
         cursor_rate_ = 1.0;
         rate_correction_active_ = false;
         ++hard_rebase_count_;
         last_advance_time_ = now;
-    } else if (std::abs(cursor_error_) <= kCursorDeadbandTicks) {
+        rebased = true;
+    }
+    cursor_error_ = desired_tick - presentation_tick_;
+    if (!rebased && cursor_error_ > kMaximumCursorErrorTicks) {
+        presentation_tick_ = desired_tick;
         cursor_rate_ = 1.0;
         rate_correction_active_ = false;
-    } else {
+        ++hard_rebase_count_;
+        last_advance_time_ = now;
+        rebased = true;
+    } else if (!rebased && std::abs(cursor_error_) <= kCursorDeadbandTicks) {
+        cursor_rate_ = 1.0;
+        rate_correction_active_ = false;
+    } else if (!rebased) {
         cursor_rate_ =
             std::clamp(1.0 + (0.02 * cursor_error_), kMinimumCursorRate, kMaximumCursorRate);
         if (!rate_correction_active_) {
@@ -112,29 +137,31 @@ void RemoteSnapshotBuffer::advance(std::chrono::steady_clock::time_point now) {
         }
     }
 
-    const auto elapsed =
-        std::max(now - *last_advance_time_, std::chrono::steady_clock::duration::zero());
-    presentation_tick_ +=
-        std::chrono::duration<double>{elapsed}.count() * kServerTicksPerSecond * cursor_rate_;
+    if (!rebased) {
+        const auto elapsed = std::max(now - last_advance_time_.value_or(now),
+                                      std::chrono::steady_clock::duration::zero());
+        presentation_tick_ +=
+            std::chrono::duration<double>{elapsed}.count() * kServerTicksPerSecond * cursor_rate_;
+    }
     last_advance_time_ = now;
+    cursor_error_ = desired_tick - presentation_tick_;
     if (!newer_sample_index()) {
         if (!hold_started_at_) {
             hold_started_at_ = now;
             ++hold_episode_count_;
         }
-    } else {
-        hold_started_at_.reset();
+        cursor_rate_ = 0.0;
+        rate_correction_active_ = false;
     }
 }
 
-RemotePresentationFrame
-RemoteSnapshotBuffer::sample(protocol::EntityId controlled_entity_id) const {
+RemotePresentationFrame RemoteSnapshotBuffer::sample(protocol::EntityId controlled_entity_id) {
     RemotePresentationFrame frame{.entities = {},
                                   .bracket = std::nullopt,
                                   .presentation_tick = presentation_tick_,
                                   .ready = ready_,
                                   .holding = hold_started_at_.has_value()};
-    if (!ready_ || samples_.empty()) {
+    if (samples_.empty()) {
         return frame;
     }
     const auto older_index = older_sample_index();
@@ -178,6 +205,7 @@ RemoteSnapshotBuffer::sample(protocol::EntityId controlled_entity_id) const {
         for (const auto& entity : older.entities) {
             append(entity, position(entity), entity.mass);
         }
+        record_presented_lifecycle(frame.entities);
         return frame;
     }
 
@@ -207,6 +235,7 @@ RemoteSnapshotBuffer::sample(protocol::EntityId controlled_entity_id) const {
             ++newer_it;
         }
     }
+    record_presented_lifecycle(frame.entities);
     return frame;
 }
 
@@ -249,6 +278,13 @@ RemoteEntityEndpoints RemoteSnapshotBuffer::endpoints(protocol::EntityId entity_
 
 RemotePresentationStatistics
 RemoteSnapshotBuffer::statistics(std::chrono::steady_clock::time_point now) const {
+    auto current_hold_duration = std::chrono::steady_clock::duration::zero();
+    if (hold_started_at_) {
+        current_hold_duration =
+            std::max(now - *hold_started_at_, std::chrono::steady_clock::duration::zero());
+    }
+    const auto maximum_hold_duration = std::max(maximum_hold_duration_, current_hold_duration);
+    const auto total_hold_duration = total_hold_duration_ + current_hold_duration;
     RemotePresentationStatistics result{
         .sample_count = samples_.size(),
         .coverage_ticks =
@@ -270,13 +306,21 @@ RemoteSnapshotBuffer::statistics(std::chrono::steady_clock::time_point now) cons
         .ewma_jitter_milliseconds = ewma_jitter_milliseconds_,
         .late_snapshot_count = late_snapshot_count_,
         .hold_episode_count = hold_episode_count_,
+        .holding = hold_started_at_.has_value(),
+        .current_hold_duration =
+            std::chrono::duration_cast<std::chrono::milliseconds>(current_hold_duration),
+        .last_hold_duration =
+            std::chrono::duration_cast<std::chrono::milliseconds>(last_hold_duration_),
+        .maximum_hold_duration =
+            std::chrono::duration_cast<std::chrono::milliseconds>(maximum_hold_duration),
+        .total_hold_duration =
+            std::chrono::duration_cast<std::chrono::milliseconds>(total_hold_duration),
+        .hold_recovery_count = hold_recovery_count_,
         .rate_correction_count = rate_correction_count_,
         .hard_rebase_count = hard_rebase_count_,
+        .delayed_entity_create_count = delayed_entity_create_count_,
+        .delayed_entity_remove_count = delayed_entity_remove_count_,
     };
-    if (hold_started_at_) {
-        result.current_hold_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::max(now - *hold_started_at_, std::chrono::steady_clock::duration::zero()));
-    }
     const auto older_index = older_sample_index();
     const auto newer_index = newer_sample_index();
     if (older_index && newer_index) {
@@ -297,6 +341,57 @@ RemoteSnapshotBuffer::statistics(std::chrono::steady_clock::time_point now) cons
         };
     }
     return result;
+}
+
+void RemoteSnapshotBuffer::finish_hold(std::chrono::steady_clock::time_point now) noexcept {
+    if (!hold_started_at_) {
+        return;
+    }
+    last_hold_duration_ =
+        std::max(now - *hold_started_at_, std::chrono::steady_clock::duration::zero());
+    maximum_hold_duration_ = std::max(maximum_hold_duration_, last_hold_duration_);
+    total_hold_duration_ += last_hold_duration_;
+    ++hold_recovery_count_;
+    hold_started_at_.reset();
+}
+
+void RemoteSnapshotBuffer::record_presented_lifecycle(
+    const std::vector<RemoteEntitySample>& entities) {
+    std::vector<PresentedEntityIdentity> current_entities;
+    current_entities.reserve(entities.size());
+    for (const auto& entity : entities) {
+        current_entities.push_back({
+            .entity_id = entity.entity_id,
+            .kind = entity.kind,
+        });
+    }
+    if (!lifecycle_initialized_) {
+        last_presented_entities_ = std::move(current_entities);
+        lifecycle_initialized_ = true;
+        return;
+    }
+
+    auto previous = last_presented_entities_.begin();
+    auto current = current_entities.begin();
+    while (previous != last_presented_entities_.end() || current != current_entities.end()) {
+        if (current == current_entities.end() || (previous != last_presented_entities_.end() &&
+                                                  previous->entity_id < current->entity_id)) {
+            ++delayed_entity_remove_count_;
+            ++previous;
+        } else if (previous == last_presented_entities_.end() ||
+                   current->entity_id < previous->entity_id) {
+            ++delayed_entity_create_count_;
+            ++current;
+        } else {
+            if (previous->kind != current->kind) {
+                ++delayed_entity_remove_count_;
+                ++delayed_entity_create_count_;
+            }
+            ++previous;
+            ++current;
+        }
+    }
+    last_presented_entities_ = std::move(current_entities);
 }
 
 std::optional<std::size_t> RemoteSnapshotBuffer::older_sample_index() const noexcept {

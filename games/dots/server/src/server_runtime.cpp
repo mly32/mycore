@@ -483,6 +483,7 @@ private:
         session.mode = protocol::SessionMode::Playing;
         session.player_ids = {*player};
         session.primary_player_id = *player;
+        session.last_activity_tick = world_.tick().value();
         const auto connection = session.connection;
         const protocol::ServerWelcome welcome{
             .client_id = session.client_id,
@@ -555,6 +556,7 @@ private:
             mycore::debug::log_warning("dots.server.session",
                                        "Send failed on connection {}; removing its session",
                                        connection.value());
+            static_cast<void>(endpoint_.disconnect(connection));
             remove_session(connection);
         }
         return std::nullopt;
@@ -603,8 +605,9 @@ private:
         inactive_connections.reserve(sessions_.size());
         for (const auto& [unused, session] : sessions_) {
             static_cast<void>(unused);
-            if (session.ready() &&
-                current_tick - session.last_activity_tick >= settings_.liveness_timeout_ticks) {
+            const auto timeout_ticks = session.ready() ? settings_.liveness_timeout_ticks
+                                                       : settings_.handshake_timeout_ticks;
+            if (current_tick - session.last_activity_tick >= timeout_ticks) {
                 inactive_connections.push_back(session.connection);
             }
         }
@@ -613,11 +616,20 @@ private:
             if (iterator == sessions_.end()) {
                 continue;
             }
-            mycore::debug::log_warning(
-                "dots.server.session",
-                "Client {} timed out after {} server ticks without valid input; disconnecting",
-                iterator->second.client_id.value(),
-                settings_.liveness_timeout_ticks);
+            if (iterator->second.ready()) {
+                mycore::debug::log_warning(
+                    "dots.server.session",
+                    "Client {} timed out after {} server ticks without valid input; disconnecting",
+                    iterator->second.client_id.value(),
+                    settings_.liveness_timeout_ticks);
+            } else {
+                mycore::debug::log_warning(
+                    "dots.server.session",
+                    "Connection {} timed out after {} server ticks without completing the "
+                    "handshake; disconnecting",
+                    connection.value(),
+                    settings_.handshake_timeout_ticks);
+            }
             static_cast<void>(endpoint_.disconnect(connection));
             remove_session(connection);
         }

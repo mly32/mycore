@@ -35,12 +35,16 @@ public:
     send(mycore::net_transport::ConnectionHandle,
          std::span<const std::byte> payload,
          mycore::net_transport::DeliveryMode delivery) override {
+        if (fail_send_at && sent_payloads.size() == *fail_send_at) {
+            return mycore::net_transport::SendStatus::QueueFull;
+        }
         sent_delivery.push_back(delivery);
         sent_payloads.emplace_back(payload.begin(), payload.end());
         return mycore::net_transport::SendStatus::Sent;
     }
 
-    [[nodiscard]] bool disconnect(mycore::net_transport::ConnectionHandle) override {
+    [[nodiscard]] bool disconnect(mycore::net_transport::ConnectionHandle connection) override {
+        disconnected_connections.push_back(connection);
         return true;
     }
 
@@ -52,6 +56,8 @@ public:
     std::vector<mycore::net_transport::Event> events;
     std::vector<mycore::net_transport::DeliveryMode> sent_delivery;
     std::vector<std::vector<std::byte>> sent_payloads;
+    std::vector<mycore::net_transport::ConnectionHandle> disconnected_connections;
+    std::optional<std::size_t> fail_send_at;
 };
 
 [[nodiscard]] std::vector<std::byte> encode_bytes(const dots::protocol::Message& message) {
@@ -678,6 +684,65 @@ TEST_CASE("Server disconnects a client that exceeds its liveness timeout", "[dot
     CHECK(inactive.state() == dots::client_runtime::State::Disconnected);
 }
 
+TEST_CASE("Server disconnects a transport connection that never handshakes", "[dots][session]") {
+    mycore::net_transport::InMemoryNetwork network;
+    dots::server::Runtime server{
+        network.server_endpoint(),
+        {},
+        {
+            .handshake_timeout_ticks = 2,
+        },
+    };
+    auto& client = network.connect_client();
+    const auto connected_events = client.poll();
+    REQUIRE(connected_events.size() == 1);
+    REQUIRE(std::holds_alternative<mycore::net_transport::Connected>(connected_events.front()));
+    REQUIRE_FALSE(server.process_events().has_value());
+
+    REQUIRE_FALSE(server.step().has_value());
+    REQUIRE_FALSE(server.step().has_value());
+    REQUIRE(client.poll().empty());
+    REQUIRE_FALSE(server.step().has_value());
+
+    const auto disconnected_events = client.poll();
+    REQUIRE(disconnected_events.size() == 1);
+    const auto* disconnected =
+        std::get_if<mycore::net_transport::Disconnected>(&disconnected_events.front());
+    REQUIRE(disconnected != nullptr);
+    CHECK(disconnected->reason == mycore::net_transport::DisconnectReason::RemoteRequest);
+}
+
+TEST_CASE("Successful handshake starts the ready-session liveness window", "[dots][session]") {
+    mycore::net_transport::InMemoryNetwork network;
+    dots::server::Runtime server{
+        network.server_endpoint(),
+        {},
+        {
+            .liveness_timeout_ticks = 2,
+            .handshake_timeout_ticks = 10,
+        },
+    };
+    auto& client = network.connect_client();
+    const auto connected_events = client.poll();
+    REQUIRE(connected_events.size() == 1);
+    const auto connection =
+        std::get<mycore::net_transport::Connected>(connected_events.front()).connection;
+    REQUIRE_FALSE(server.process_events().has_value());
+
+    for (std::size_t tick = 0; tick < 5; ++tick) {
+        REQUIRE_FALSE(server.step().has_value());
+    }
+    const auto hello = encode_bytes(dots::protocol::ClientHello{});
+    REQUIRE(client.send(connection, hello, mycore::net_transport::DeliveryMode::Reliable) ==
+            mycore::net_transport::SendStatus::Sent);
+    REQUIRE_FALSE(server.process_events().has_value());
+    REQUIRE(server.client_count() == 1);
+
+    REQUIRE_FALSE(server.step().has_value());
+    CHECK(server.client_count() == 1);
+    CHECK(server.world().player_count() == 1);
+}
+
 TEST_CASE("Server stops held movement after its missing-input window", "[dots][session]") {
     mycore::net_transport::InMemoryNetwork network;
     dots::server::Runtime server{
@@ -731,6 +796,26 @@ TEST_CASE("Invalid packets disconnect one client without stopping another", "[do
     CHECK(server.world().player_count() == 1);
     REQUIRE_FALSE(server.step().has_value());
     CHECK(healthy.state() == dots::client_runtime::State::Ready);
+}
+
+TEST_CASE("Server closes a session whose handshake send fails", "[dots][session][send]") {
+    ManualEndpoint endpoint;
+    dots::server::Runtime server{endpoint};
+    const mycore::net_transport::ConnectionHandle connection{9};
+    endpoint.events.push_back(mycore::net_transport::Connected{.connection = connection});
+    REQUIRE_FALSE(server.process_events().has_value());
+
+    endpoint.fail_send_at = 1;
+    endpoint.events.push_back(mycore::net_transport::PayloadReceived{
+        .connection = connection,
+        .delivery = mycore::net_transport::DeliveryMode::Reliable,
+        .payload = encode_bytes(dots::protocol::ClientHello{}),
+    });
+    REQUIRE_FALSE(server.process_events().has_value());
+
+    CHECK(server.client_count() == 0);
+    CHECK(server.world().player_count() == 0);
+    CHECK(endpoint.disconnected_connections == std::vector{connection});
 }
 
 TEST_CASE("Client accepts an initial snapshot before its welcome", "[dots][session]") {
