@@ -131,16 +131,20 @@ validated snapshot ---> AuthorityFrame ---> scratch restore/replay ---> atomic C
   immutable history/state/statistics access.
 - `HistorySettings`, initially fixed to 64 ticks for Dots.
 - `AuthorityFrame<Model>`, `FrameRecord<Model>`, `Commit<Model>`, and
-  `ReconcileResult<Model>`.
+  `CommitResult<Model>`.
+- `CommitKind::{Initialize, Advance, Reconcile, ScopeRebase, HardResync}`; initialization is a
+  commit so first-frame authoritative events are observable.
 - `EventTransition::{FirstPredicted, Revised, Retracted, Confirmed, AuthorityOnly}`.
 - `ConsequencePolicy::{PredictOnce, PredictCancelable, ConfirmOnce}`.
-- `StaticConsequenceRouter<Handlers...>` with a separate ledger for each typed handler.
+- `StaticConsequenceRouter<Model, Handlers...>` with a separate ledger for each typed handler.
 - Commit retirement information that lets routers prune inactive keys only after retained replay
-  can no longer regenerate them.
+  can no longer regenerate them and the authority-receipt watermark proves duplicates cannot
+  return. The first kernel increment retains session tombstones until receipt integration can
+  provide both proofs.
 
 A rollback model supplies `State`, `Checkpoint`, `Stimulus`, opaque game-defined `Scope`, an
 event variant, stable event-key variant, typed diff/digest, checkpoint restore/capture, one atomic
-fixed step, and event identity validation.
+fixed step, exact checkpoint equality for same-tick scope rebases, and event identity validation.
 
 The engine never defines a Dots entity, component, command, protocol field, or cue.
 
@@ -276,8 +280,9 @@ Policy is per handler, not per event type:
   snapshots.
 
 The router stages ledger changes before handler invocation. Handler errors are surfaced and not
-automatically retried. Retired inactive keys are pruned only after the timeline proves no
-retained stimulus can replay them; game event keys are never reused.
+automatically retried. A timeline retirement hint does not by itself prune an at-most-once
+tombstone. Pruning becomes safe only when no retained stimulus can replay the key and the
+authority-receipt watermark proves it cannot be repeated; game event keys are never reused.
 
 Dots stable keys are explicit variants:
 

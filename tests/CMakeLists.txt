@@ -46,6 +46,16 @@ target_link_libraries(
 mycore_configure_test_executable(mycore_assets_tests)
 catch_discover_tests(mycore_assets_tests)
 
+add_executable(mycore_rollback_tests mycore_rollback_tests.cpp)
+target_link_libraries(
+    mycore_rollback_tests
+    PRIVATE
+        MyCore::Rollback
+        Catch2::Catch2WithMain
+)
+mycore_configure_test_executable(mycore_rollback_tests)
+catch_discover_tests(mycore_rollback_tests)
+
 add_executable(mycore_platform_sdl_tests mycore_platform_sdl_tests.cpp)
 target_link_libraries(
     mycore_platform_sdl_tests

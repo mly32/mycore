@@ -83,7 +83,7 @@ enum class ConsequencePolicy {
 template <class Model>
 class Timeline;
 
-template <class... Handlers>
+template <class Model, class... Handlers>
 class StaticConsequenceRouter;
 
 } // namespace mycore::rollback
@@ -92,12 +92,14 @@ class StaticConsequenceRouter;
 A `RollbackModel` supplies these game-owned types and operations:
 
 - `State`, `Checkpoint`, `Stimulus`, `Scope`, `Event`, `EventKey`, `StateDiff`, and
-  `StateDigest`.
+  `StateDigest`, plus `EventKeyHash` and a typed `Error`.
 - Validate and restore a checkpoint without consulting mutable runtime state.
 - Capture a checkpoint from a committed state.
 - Advance exactly one fixed tick from an immutable stimulus and return a deterministic event
   journal.
 - Calculate a canonical diagnostic digest and a typed state difference.
+- Compare checkpoint values exactly when a same-tick scope rebase must prove it is starting from
+  the currently committed authority; digests remain diagnostic and never decide correctness.
 - Return a stable key for each typed event and validate that one key never describes conflicting
   semantics.
 
@@ -107,13 +109,15 @@ The engine exposes these behavioral values:
   sequence, scope epoch, and authoritative event receipts.
 - `FrameRecord<Model>`: predicted tick, immutable replay stimulus, checkpoint, digest, event
   journal, and scope epoch.
-- `Commit<Model>`: immutable committed state, typed diff, replay coordinates, event transitions,
-  correction data, and statistics.
-- `ReconcileResult<Model>`: accepted commit or a typed rejection/recovery reason.
+- `Commit<Model>`: commit kind, typed diff, replay coordinates, event transitions, and diagnostic
+  digests. The corresponding immutable committed state is read from the timeline after success.
+- `CommitResult<Model>`: accepted commit or a typed rejection/recovery reason.
 
 `Timeline<Model>` initializes from authority, advances one predicted tick, reconciles
 transactionally, rebases a prediction scope, hard-resyncs, and exposes immutable committed and
-debug views. Callers cannot access scratch state.
+debug views. Initialization is itself `CommitKind::Initialize`, so authoritative events in the
+first accepted frame pass through the same observer/router path. Callers cannot access scratch
+state.
 
 ## Replay Stimuli and Rollforward
 
@@ -330,10 +334,11 @@ Handler failure is reported but is not automatically retried, preserving at-most
 than pretending to provide external exactly-once delivery.
 
 The timeline reports when an event key is no longer reachable from retained replay stimuli.
-Routers may then prune inactive predicted entries; stable game keys must never be reused.
-Confirmed delivery is additionally guarded by the monotonic authority-receipt watermark. This
-bounds bookkeeping while preserving at-most-once delivery across every legal replay in the
-connected session.
+That replay-retirement hint alone is not enough to discard an at-most-once tombstone: a repeated
+authority receipt could otherwise expose the key again. The initial engine-kernel increment
+therefore retains router tombstones for the connected session. Protocol integration later in
+Feature 14 pairs retirement with the monotonic authority-receipt watermark before adding bounded
+pruning. Stable game keys must never be reused.
 
 The router does not claim persistent exactly-once behavior across a process crash, and it cannot
 erase audio, haptics, or pixels the player already perceived. Cancelable handlers stop or fade
