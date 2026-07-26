@@ -298,7 +298,10 @@ TEST_CASE("Defeat state survives snapshot loss and respawn remains server-author
         REQUIRE_FALSE(server.process_events().has_value());
         REQUIRE_FALSE(server.step().has_value());
         REQUIRE_FALSE(first.process_events().error.has_value());
-        absorbed = !server.world().last_step_events().empty();
+        absorbed =
+            std::ranges::any_of(server.world().last_tick_journal().events, [](const auto& event) {
+                return std::holds_alternative<dots::simulation::PlayerAbsorbed>(event);
+            });
         if (!absorbed) {
             REQUIRE_FALSE(second.process_events().error.has_value());
         }

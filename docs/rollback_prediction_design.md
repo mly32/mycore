@@ -6,8 +6,14 @@ first Dots integration. Feature plans define delivery order, and
 
 ## Status and Scope
 
-- **Current:** Feature 11 predicts only the owned player's position by replaying unacknowledged
-  movement.
+- **Current engine kernel:** Feature 14 step 1 provides the statically typed
+  `MyCore::Rollback` timeline, transactional replay, event transitions, and consequence router.
+- **Current Dots simulation substrate:** Feature 14 step 2 provides complete value checkpoints,
+  atomic checkpoint restore, owner-scoped atomic ticks, stable typed food/absorption journals,
+  immutable rules, and predicted identity storage. Split/merge state fields are present but inert
+  until their mechanics are implemented.
+- **Current client integration:** the production network client still uses Feature 11's owned
+  position predictor while complete Dots World prediction remains under construction.
 - **Remote presentation baseline:** Feature 12 renders remote entities from delayed known
   snapshots and holds at the newest endpoint.
 - **Authoritative lifecycle baseline:** Feature 13 implements deterministic absorption and
@@ -178,6 +184,14 @@ placement remain server-only.
 A checkpoint never contains renderer objects, particle handles, audio voices, UI state, logs,
 sockets, wall-clock timestamps, or the consequence ledger.
 
+The implemented Dots checkpoint is a canonical sorted value: owners carry piece membership,
+applied and last-nonzero movement, last input identity, and split cooldown; players carry
+identity, owner, position, mass, launch velocity, merge eligibility, and optional
+`PredictionKey`; food carries identity and position. Restore validates the complete value into a
+scratch `World`, rebuilds radius, entity lookup, and spatial-grid state, and publishes only after
+the entire checkpoint succeeds. Restoring a checkpoint intentionally starts with an empty event
+journal at that checkpoint tick because events are replay outputs, not checkpoint state.
+
 Protocol version 4 carries a checkpoint schema identifier and a 64-bit FNV-1a digest over a
 documented canonical sequence of primitive field bytes. The client hydrates and validates the
 typed checkpoint, recomputes the digest, and rejects an incompatible frame before mutation.
@@ -268,6 +282,14 @@ Server, offline mode, and prediction execute the same owner-command tick:
 
 No simulation callback performs presentation, logging, networking, analytics, or audio work.
 
+The implemented step-2 tick accepts an unordered batch containing at most one command per owner,
+stages movement and command identity, then advances every piece owned by that owner. It currently
+runs movement, enemy absorption, and food consumption before atomically committing the World and
+its `TickJournal`. Invalid or duplicate commands and unrepresentable simulation geometry leave
+the prior checkpoint and journal unchanged. The server expresses expiration of its five-tick
+input hold as an explicit `StopMovement` command. Split, launch, cohesion, and merge extend this
+same transaction in step 4 rather than adding a second stepping path.
+
 ## Split, Launch, and Merge Rules
 
 Split is an edge action keyed by its input sequence. Immutable server defaults are:
@@ -292,8 +314,9 @@ piece was lost and changes the network session to Spectating.
 
 ## Event Journals and Stable Identity
 
-Dots uses a typed event variant for `SplitOccurred`, `FoodConsumed`, `PlayerAbsorbed`, and
-`PiecesMerged`. Stable keys are explicit value variants:
+The implemented step-2 event variant contains `FoodConsumed` and `PlayerAbsorbed`; their stable
+keys are the food identity and victim identity respectively. Step 4 extends the same typed
+variant with `SplitOccurred` and `PiecesMerged`. The complete stable-key design is:
 
 - Split: owner, input sequence, and child ordinal.
 - Food consumption: the stable food entity identity.

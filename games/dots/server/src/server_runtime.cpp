@@ -2,7 +2,6 @@
 
 #include "dots/protocol/codec.hpp"
 #include "dots/replication/replication.hpp"
-#include "dots/simulation/input_command.hpp"
 #include "dots/simulation/world_setup.hpp"
 #include "mycore/debug/log.hpp"
 #include "mycore/math/vector2.hpp"
@@ -170,6 +169,8 @@ public:
         remove_inactive_sessions();
         std::vector<std::pair<std::uint32_t, protocol::InputSequenceId>> applied_inputs;
         applied_inputs.reserve(sessions_.size());
+        std::vector<simulation::TickCommand> tick_commands;
+        tick_commands.reserve(sessions_.size());
         for (auto& [connection_value, session] : sessions_) {
             if (!session.ready()) {
                 continue;
@@ -179,9 +180,13 @@ public:
                     continue;
                 }
                 ++session.consecutive_missing_input_ticks;
-                if (session.consecutive_missing_input_ticks > settings_.input_hold_ticks &&
-                    !world_.stop_player(session.primary_player_id)) {
-                    return RuntimeError::SimulationInputRejected;
+                if (session.consecutive_missing_input_ticks > settings_.input_hold_ticks) {
+                    tick_commands.push_back({
+                        .type = simulation::TickCommandType::StopMovement,
+                        .input_id = simulation::InputCommandId::invalid(),
+                        .owner_id = session.owner_id,
+                        .movement = {},
+                    });
                 }
                 continue;
             }
@@ -192,23 +197,29 @@ public:
                 }
             }
             if (session.mode == protocol::SessionMode::Playing) {
-                if (!session.primary_player_id.is_valid() ||
-                    !world_.apply_input({
-                        .id = replication::to_simulation(sample.sequence_id),
-                        .entity_id = session.primary_player_id,
-                        .movement = {sample.movement_x, sample.movement_y},
-                    })) {
+                if (!session.primary_player_id.is_valid()) {
                     return RuntimeError::SimulationInputRejected;
                 }
+                tick_commands.push_back({
+                    .type = simulation::TickCommandType::ApplyInput,
+                    .input_id = replication::to_simulation(sample.sequence_id),
+                    .owner_id = session.owner_id,
+                    .movement = {sample.movement_x, sample.movement_y},
+                });
             }
             session.consecutive_missing_input_ticks = 0;
             applied_inputs.emplace_back(connection_value, sample.sequence_id);
         }
 
-        if (!world_.step()) {
-            return RuntimeError::SimulationStepFailed;
+        const auto tick_result = world_.advance(tick_commands);
+        const auto* journal = std::get_if<simulation::TickJournal>(&tick_result);
+        if (journal == nullptr) {
+            return std::get<simulation::TickError>(tick_result) ==
+                           simulation::TickError::SimulationRejected
+                       ? RuntimeError::SimulationStepFailed
+                       : RuntimeError::SimulationInputRejected;
         }
-        if (const auto error = process_absorption_events()) {
+        if (const auto error = process_absorption_events(*journal)) {
             return error;
         }
         for (const auto& [connection_value, sequence_id] : applied_inputs) {
@@ -390,42 +401,47 @@ private:
         return std::nullopt;
     }
 
-    [[nodiscard]] std::optional<RuntimeError> process_absorption_events() {
-        for (const auto& event : world_.last_step_events()) {
-            if (event.tick.value() >= std::numeric_limits<std::uint32_t>::max()) {
+    [[nodiscard]] std::optional<RuntimeError>
+    process_absorption_events(const simulation::TickJournal& journal) {
+        for (const auto& simulation_event : journal.events) {
+            const auto* event = std::get_if<simulation::PlayerAbsorbed>(&simulation_event);
+            if (event == nullptr) {
+                continue;
+            }
+            if (event->tick.value() >= std::numeric_limits<std::uint32_t>::max()) {
                 return RuntimeError::TickOutOfRange;
             }
-            const auto defeat_tick = static_cast<std::uint32_t>(event.tick.value());
+            const auto defeat_tick = static_cast<std::uint32_t>(event->tick.value());
             if (settings_.respawn_cooldown_ticks >
                 std::numeric_limits<std::uint32_t>::max() - defeat_tick) {
                 return RuntimeError::TickOutOfRange;
             }
             const protocol::PlayerAbsorbed replicated_event{
                 .server_tick = defeat_tick,
-                .absorber_entity_id = replication::to_protocol(event.absorber_entity_id),
-                .victim_entity_id = replication::to_protocol(event.victim_entity_id),
-                .absorber_owner_id = replication::to_protocol(event.absorber_owner_id),
-                .victim_owner_id = replication::to_protocol(event.victim_owner_id),
-                .transferred_mass = event.transferred_mass,
+                .absorber_entity_id = replication::to_protocol(event->absorber_entity_id),
+                .victim_entity_id = replication::to_protocol(event->victim_entity_id),
+                .absorber_owner_id = replication::to_protocol(event->absorber_owner_id),
+                .victim_owner_id = replication::to_protocol(event->victim_owner_id),
+                .transferred_mass = event->transferred_mass,
             };
-            if (auto* absorber = session_for_owner(event.absorber_owner_id)) {
+            if (auto* absorber = session_for_owner(event->absorber_owner_id)) {
                 absorber->latest_absorption = replicated_event;
             }
-            auto* victim = session_for_owner(event.victim_owner_id);
+            auto* victim = session_for_owner(event->victim_owner_id);
             if (victim == nullptr) {
                 continue;
             }
             victim->latest_absorption = replicated_event;
-            std::erase(victim->player_ids, event.victim_entity_id);
+            std::erase(victim->player_ids, event->victim_entity_id);
             if (!victim->player_ids.empty()) {
-                if (victim->primary_player_id == event.victim_entity_id) {
+                if (victim->primary_player_id == event->victim_entity_id) {
                     victim->primary_player_id = victim->player_ids.front();
                 }
                 continue;
             }
             victim->mode = protocol::SessionMode::Spectating;
             victim->primary_player_id = {};
-            victim->follow_player_id = event.absorber_entity_id;
+            victim->follow_player_id = event->absorber_entity_id;
             victim->defeat_tick = defeat_tick;
             victim->respawn_available_tick = defeat_tick + settings_.respawn_cooldown_ticks;
             victim->consecutive_missing_input_ticks = 0;
@@ -434,8 +450,8 @@ private:
                 "Client {} entered spectating after entity {} was absorbed by entity {}; "
                 "respawn available at tick {}",
                 victim->client_id.value(),
-                event.victim_entity_id.value(),
-                event.absorber_entity_id.value(),
+                event->victim_entity_id.value(),
+                event->absorber_entity_id.value(),
                 *victim->respawn_available_tick);
         }
         return std::nullopt;

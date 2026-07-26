@@ -1,0 +1,87 @@
+#pragma once
+
+#include "dots/simulation/world_state.hpp"
+#include "mycore/math/vector2.hpp"
+#include "mycore/time/time.hpp"
+
+#include <compare>
+#include <cstdint>
+#include <variant>
+#include <vector>
+
+namespace dots::simulation {
+
+enum class TickCommandType : std::uint8_t {
+    ApplyInput,
+    StopMovement,
+};
+
+// A tick accepts at most one command for each owner. ApplyInput installs a newer sampled movement
+// and command identity; StopMovement is an explicit deterministic cause with an invalid input ID
+// and zero movement.
+struct TickCommand {
+    TickCommandType type{TickCommandType::ApplyInput};
+    InputCommandId input_id;
+    PlayerOwnerId owner_id;
+    mycore::math::Vector2 movement;
+
+    bool operator==(const TickCommand&) const = default;
+};
+
+struct FoodConsumed {
+    mycore::time::Tick tick;
+    EntityId food_entity_id;
+    EntityId consumer_entity_id;
+    PlayerOwnerId consumer_owner_id;
+    float transferred_mass{};
+
+    bool operator==(const FoodConsumed&) const = default;
+};
+
+struct PlayerAbsorbed {
+    mycore::time::Tick tick;
+    EntityId absorber_entity_id;
+    EntityId victim_entity_id;
+    PlayerOwnerId absorber_owner_id;
+    PlayerOwnerId victim_owner_id;
+    float transferred_mass{};
+
+    bool operator==(const PlayerAbsorbed&) const = default;
+};
+
+using SimulationEvent = std::variant<FoodConsumed, PlayerAbsorbed>;
+
+struct FoodConsumedKey {
+    EntityId food_entity_id;
+
+    auto operator<=>(const FoodConsumedKey&) const = default;
+};
+
+struct PlayerAbsorbedKey {
+    EntityId victim_entity_id;
+
+    auto operator<=>(const PlayerAbsorbedKey&) const = default;
+};
+
+using SimulationEventKey = std::variant<FoodConsumedKey, PlayerAbsorbedKey>;
+
+[[nodiscard]] SimulationEventKey simulation_event_key(const SimulationEvent& event);
+
+// Journals are deterministic simulation output. Replay regenerates them; they are never restored
+// as checkpoint state or allowed to invoke presentation side effects from inside the World.
+struct TickJournal {
+    mycore::time::Tick tick;
+    std::vector<SimulationEvent> events;
+
+    bool operator==(const TickJournal&) const = default;
+};
+
+enum class TickError : std::uint8_t {
+    InvalidCommand,
+    DuplicateOwnerCommand,
+    SimulationRejected,
+};
+
+using TickResult = std::variant<TickJournal, TickError>;
+
+} // namespace dots::simulation

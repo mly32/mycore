@@ -7,7 +7,7 @@
 
 namespace {
 
-constexpr dots::simulation::EntityId kPlayer{7};
+constexpr dots::simulation::PlayerOwnerId kOwner{7};
 constexpr dots::simulation::InputCommandId kCommand{12};
 constexpr dots::client::InputViewport kViewport{
     .width = 200.0F,
@@ -15,11 +15,11 @@ constexpr dots::client::InputViewport kViewport{
     .player_radius_pixels = 20.0F,
 };
 
-dots::simulation::InputCommand command_for(const mycore::platform_sdl::InputSnapshot& input,
-                                           const dots::client::ClientControls& controls,
-                                           bool mouse_input_available = true) {
-    return dots::client::make_input_command(
-        input, controls, kPlayer, kCommand, kViewport, mouse_input_available);
+dots::simulation::TickCommand command_for(const mycore::platform_sdl::InputSnapshot& input,
+                                          const dots::client::ClientControls& controls,
+                                          bool mouse_input_available = true) {
+    return dots::client::make_tick_command(
+        input, controls, kOwner, kCommand, kViewport, mouse_input_available);
 }
 
 } // namespace
@@ -61,10 +61,10 @@ TEST_CASE("Mouse movement uses renderer coordinates and honors its dead zone",
     const auto just_outside_player_circle = command_for({.mouse = {121.0F, 50.0F}}, controls);
     REQUIRE(just_outside_player_circle.movement == mycore::math::Vector2{1.0F, 0.0F});
 
-    const auto scaled = dots::client::make_input_command(
+    const auto scaled = dots::client::make_tick_command(
         {.mouse = {65.0F, 45.0F}},
         controls,
-        kPlayer,
+        kOwner,
         kCommand,
         {.width = 200.0F, .height = 100.0F, .mouse_scale_x = 2.0F, .mouse_scale_y = 2.0F});
     REQUIRE(scaled.movement.x == Catch::Approx(0.6F));
@@ -122,8 +122,8 @@ TEST_CASE("Client input propagates IDs and handles configured quit bindings",
     };
 
     const auto command = command_for(input, controls);
-    REQUIRE(command.entity_id == kPlayer);
-    REQUIRE(command.id == kCommand);
+    REQUIRE(command.owner_id == kOwner);
+    REQUIRE(command.input_id == kCommand);
     REQUIRE(dots::client::quit_requested(input, controls));
     REQUIRE(dots::client::quit_requested({.quit_requested = true}, controls));
 }

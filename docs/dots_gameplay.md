@@ -41,7 +41,9 @@ empty. Native and in-memory multiplayer use server-assigned spawns.
 ## Movement and connection loss
 
 Clients submit normalized movement intent at 30 Hz. A player moves at 6 world units per second.
-The server consumes at most one queued input sample per player per tick.
+The server consumes at most one queued input sample per owner per tick. The simulation installs
+at most one owner command and applies its held movement to every piece owned by that owner. A
+live network session currently has one piece because split/merge are not implemented yet.
 
 Brief missing input does not immediately stop a player: the server holds the last applied movement
 for five ticks. On the following missing-input tick it neutralizes movement, while keeping the

@@ -1514,19 +1514,17 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
                     throw dots::client::StartupError{"Local input command IDs are exhausted"};
                 }
                 const auto command =
-                    make_input_command(input,
-                                       config.controls,
-                                       *player,
-                                       dots::simulation::InputCommandId{next_command_id},
-                                       viewport,
-                                       mouse_input_available);
+                    make_tick_command(input,
+                                      config.controls,
+                                      dots::simulation::PlayerOwnerId{0},
+                                      dots::simulation::InputCommandId{next_command_id},
+                                      viewport,
+                                      mouse_input_available);
                 ++next_command_id;
-                if (!world.apply_input(command)) {
-                    throw dots::client::StartupError{"The local world rejected an input command"};
-                }
                 previous_player_position = current_player_position;
-                if (!world.step()) {
-                    throw dots::client::StartupError{"The local world rejected a simulation step"};
+                if (!std::holds_alternative<dots::simulation::TickJournal>(
+                        world.advance(command))) {
+                    throw dots::client::StartupError{"The local world rejected an atomic tick"};
                 }
                 const auto position = world.position(*player);
                 if (!position) {

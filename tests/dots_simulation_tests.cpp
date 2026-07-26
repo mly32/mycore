@@ -8,6 +8,10 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <span>
+#include <utility>
+#include <variant>
+#include <vector>
 
 namespace {
 
@@ -15,6 +19,43 @@ void spawn_food(dots::simulation::World& world, mycore::math::Vector2 position, 
     for (std::size_t index = 0; index < count; ++index) {
         REQUIRE(world.spawn_food(position).has_value());
     }
+}
+
+[[nodiscard]] dots::simulation::TickCommand input_command(dots::simulation::PlayerOwnerId owner_id,
+                                                          dots::simulation::InputCommandId input_id,
+                                                          mycore::math::Vector2 movement) {
+    return {
+        .type = dots::simulation::TickCommandType::ApplyInput,
+        .input_id = input_id,
+        .owner_id = owner_id,
+        .movement = movement,
+    };
+}
+
+[[nodiscard]] bool advance_with_input(dots::simulation::World& world,
+                                      dots::simulation::PlayerOwnerId owner_id,
+                                      dots::simulation::InputCommandId input_id,
+                                      mycore::math::Vector2 movement) {
+    return std::holds_alternative<dots::simulation::TickJournal>(
+        world.advance(input_command(owner_id, input_id, movement)));
+}
+
+[[nodiscard]] dots::simulation::TickJournal
+require_journal(const dots::simulation::TickResult& result) {
+    const auto* journal = std::get_if<dots::simulation::TickJournal>(&result);
+    REQUIRE(journal != nullptr);
+    return *journal;
+}
+
+[[nodiscard]] std::vector<dots::simulation::PlayerAbsorbed>
+absorption_events(const dots::simulation::World& world) {
+    std::vector<dots::simulation::PlayerAbsorbed> result;
+    for (const auto& event : world.last_tick_journal().events) {
+        if (const auto* absorption = std::get_if<dots::simulation::PlayerAbsorbed>(&event)) {
+            result.push_back(*absorption);
+        }
+    }
+    return result;
 }
 
 } // namespace
@@ -59,12 +100,10 @@ TEST_CASE("Movement input advances a player by one 30 Hz tick", "[dots][simulati
     REQUIRE(player_result.has_value());
     const auto player = *player_result;
 
-    REQUIRE(world.apply_input({
-        .id = dots::simulation::InputCommandId{0},
-        .entity_id = player,
-        .movement = {3.0F, 4.0F},
-    }));
-    REQUIRE(world.step());
+    REQUIRE(advance_with_input(world,
+                               dots::simulation::PlayerOwnerId{0},
+                               dots::simulation::InputCommandId{0},
+                               {3.0F, 4.0F}));
 
     const auto position = world.position(player);
     REQUIRE(position.has_value());
@@ -92,13 +131,11 @@ TEST_CASE("World applies persistent movement over multiple ticks", "[dots][simul
         world.spawn_player(dots::simulation::PlayerOwnerId{0}, {2.0F, -1.0F});
     REQUIRE(player_result.has_value());
     const auto player = *player_result;
-    REQUIRE(world.apply_input({
-        .id = dots::simulation::InputCommandId{4},
-        .entity_id = player,
-        .movement = {1.0F, 0.0F},
-    }));
-
-    for (std::uint32_t tick = 0; tick < dots::simulation::kTickRateHz; ++tick) {
+    REQUIRE(advance_with_input(world,
+                               dots::simulation::PlayerOwnerId{0},
+                               dots::simulation::InputCommandId{4},
+                               {1.0F, 0.0F}));
+    for (std::uint32_t tick = 1; tick < dots::simulation::kTickRateHz; ++tick) {
         REQUIRE(world.step());
     }
 
@@ -128,12 +165,11 @@ TEST_CASE("Recorded inputs replay to a deterministic final state", "[dots][simul
     std::uint32_t input_id = 0;
 
     for (const auto& entry : replay) {
-        REQUIRE(world.apply_input({
-            .id = dots::simulation::InputCommandId{input_id++},
-            .entity_id = player,
-            .movement = entry.movement,
-        }));
-        for (std::size_t tick = 0; tick < entry.tick_count; ++tick) {
+        REQUIRE(advance_with_input(world,
+                                   dots::simulation::PlayerOwnerId{0},
+                                   dots::simulation::InputCommandId{input_id++},
+                                   entry.movement));
+        for (std::size_t tick = 1; tick < entry.tick_count; ++tick) {
             REQUIRE(world.step());
         }
     }
@@ -149,28 +185,274 @@ TEST_CASE("World rejects invalid, unknown, and stale input", "[dots][simulation]
     dots::simulation::World world;
     const auto player_result = world.spawn_player(dots::simulation::PlayerOwnerId{0});
     REQUIRE(player_result.has_value());
-    const auto player = *player_result;
+    REQUIRE(std::get<dots::simulation::TickError>(world.advance(
+                input_command(dots::simulation::PlayerOwnerId{0},
+                              dots::simulation::InputCommandId::invalid(),
+                              {1.0F, 0.0F}))) == dots::simulation::TickError::InvalidCommand);
+    REQUIRE(std::get<dots::simulation::TickError>(world.advance(
+                input_command(dots::simulation::PlayerOwnerId{99},
+                              dots::simulation::InputCommandId{0},
+                              {1.0F, 0.0F}))) == dots::simulation::TickError::InvalidCommand);
+    REQUIRE(advance_with_input(world,
+                               dots::simulation::PlayerOwnerId{0},
+                               dots::simulation::InputCommandId{2},
+                               {1.0F, 0.0F}));
+    REQUIRE(std::get<dots::simulation::TickError>(world.advance(
+                input_command(dots::simulation::PlayerOwnerId{0},
+                              dots::simulation::InputCommandId{1},
+                              {0.0F, 1.0F}))) == dots::simulation::TickError::InvalidCommand);
+}
 
-    REQUIRE_FALSE(world.apply_input({
-        .id = dots::simulation::InputCommandId::invalid(),
-        .entity_id = player,
-        .movement = {1.0F, 0.0F},
-    }));
-    REQUIRE_FALSE(world.apply_input({
-        .id = dots::simulation::InputCommandId{0},
-        .entity_id = dots::simulation::EntityId{99},
-        .movement = {1.0F, 0.0F},
-    }));
-    REQUIRE(world.apply_input({
-        .id = dots::simulation::InputCommandId{2},
-        .entity_id = player,
-        .movement = {1.0F, 0.0F},
-    }));
-    REQUIRE_FALSE(world.apply_input({
-        .id = dots::simulation::InputCommandId{1},
-        .entity_id = player,
-        .movement = {0.0F, 1.0F},
-    }));
+TEST_CASE("World checkpoints round trip complete replay state and allocator",
+          "[dots][simulation][checkpoint]") {
+    auto rules = dots::simulation::WorldRules{};
+    rules.initial_player_mass = 25.0F;
+    rules.food_mass = 2.0F;
+    rules.spatial_grid_cell_size = 4.0F;
+    rules.player_speed_units_per_second = 9.0F;
+    dots::simulation::World world{rules};
+    constexpr auto owner = dots::simulation::PlayerOwnerId{7};
+    constexpr auto prediction_key = dots::simulation::PredictionKey{
+        .owner_id = owner,
+        .input_id = dots::simulation::InputCommandId{4},
+        .child_ordinal = 2,
+    };
+    const auto predicted_player = world.spawn_player(owner, {-20.0F, 2.0F}, prediction_key);
+    const auto sibling = world.spawn_player(owner, {20.0F, 2.0F});
+    const auto food = world.spawn_food({50.0F, -4.0F});
+    REQUIRE(predicted_player.has_value());
+    REQUIRE(sibling.has_value());
+    REQUIRE(food.has_value());
+
+    const auto journal = require_journal(
+        world.advance(input_command(owner, dots::simulation::InputCommandId{5}, {3.0F, 4.0F})));
+    REQUIRE(journal.tick == mycore::time::Tick{1});
+    REQUIRE(journal.events.empty());
+    const auto checkpoint = world.checkpoint();
+
+    REQUIRE(checkpoint.rules == rules);
+    REQUIRE(checkpoint.owners.size() == 1);
+    CHECK(checkpoint.owners.front().owner_id == owner);
+    CHECK(checkpoint.owners.front().player_ids == std::vector{*predicted_player, *sibling});
+    CHECK(checkpoint.owners.front().movement.x == Catch::Approx(0.6F));
+    CHECK(checkpoint.owners.front().movement.y == Catch::Approx(0.8F));
+    CHECK(checkpoint.owners.front().last_non_zero_movement == checkpoint.owners.front().movement);
+    CHECK(checkpoint.owners.front().last_input_id == dots::simulation::InputCommandId{5});
+    REQUIRE(checkpoint.players.size() == 2);
+    CHECK(checkpoint.players.front().entity_id == *predicted_player);
+    CHECK(checkpoint.players.front().prediction_key == prediction_key);
+    CHECK(world.mass(*predicted_player) == 25.0F);
+    CHECK(world.radius(*predicted_player) == 5.0F);
+    CHECK(world.position(*predicted_player) == mycore::math::Vector2{-19.82F, 2.24F});
+
+    dots::simulation::World restored;
+    REQUIRE_FALSE(restored.restore(checkpoint).has_value());
+    CHECK(restored.checkpoint() == checkpoint);
+    CHECK(restored.rules() == rules);
+    CHECK(restored.prediction_key(*predicted_player) == prediction_key);
+    CHECK(restored.radius(*predicted_player) == 5.0F);
+    CHECK(restored.occupied_spatial_cell_count() > 0);
+    CHECK(restored.last_tick_journal() ==
+          dots::simulation::TickJournal{.tick = checkpoint.tick, .events = {}});
+
+    const auto original_next_entity = world.spawn_food({80.0F, 0.0F});
+    const auto restored_next_entity = restored.spawn_food({80.0F, 0.0F});
+    REQUIRE(original_next_entity.has_value());
+    REQUIRE(restored_next_entity.has_value());
+    CHECK(original_next_entity == restored_next_entity);
+}
+
+TEST_CASE("Owner commands are atomic, order independent, and apply to every owned piece",
+          "[dots][simulation][tick]") {
+    dots::simulation::World original;
+    constexpr auto first_owner = dots::simulation::PlayerOwnerId{1};
+    constexpr auto second_owner = dots::simulation::PlayerOwnerId{2};
+    const auto first_piece = original.spawn_player(first_owner, {-20.0F, 0.0F});
+    const auto second_piece = original.spawn_player(first_owner, {-10.0F, 0.0F});
+    const auto remote_piece = original.spawn_player(second_owner, {20.0F, 0.0F});
+    REQUIRE(first_piece.has_value());
+    REQUIRE(second_piece.has_value());
+    REQUIRE(remote_piece.has_value());
+
+    dots::simulation::World reversed;
+    REQUIRE_FALSE(reversed.restore(original.checkpoint()).has_value());
+    const std::array commands{
+        input_command(second_owner, dots::simulation::InputCommandId{0}, {0.0F, 1.0F}),
+        input_command(first_owner, dots::simulation::InputCommandId{0}, {1.0F, 0.0F}),
+    };
+    const std::array reversed_commands{commands[1], commands[0]};
+
+    CHECK(require_journal(original.advance(commands)) ==
+          require_journal(reversed.advance(reversed_commands)));
+    CHECK(original.checkpoint() == reversed.checkpoint());
+    CHECK(original.position(*first_piece) == mycore::math::Vector2{-19.8F, 0.0F});
+    CHECK(original.position(*second_piece) == mycore::math::Vector2{-9.8F, 0.0F});
+    CHECK(original.position(*remote_piece) == mycore::math::Vector2{20.0F, 0.2F});
+
+    const auto checkpoint_before_rejection = original.checkpoint();
+    const auto journal_before_rejection = original.last_tick_journal();
+    const std::array duplicate_owner_commands{
+        input_command(first_owner, dots::simulation::InputCommandId{1}, {0.0F, 1.0F}),
+        input_command(first_owner, dots::simulation::InputCommandId{2}, {-1.0F, 0.0F}),
+    };
+    const auto rejection = original.advance(duplicate_owner_commands);
+    REQUIRE(std::get<dots::simulation::TickError>(rejection) ==
+            dots::simulation::TickError::DuplicateOwnerCommand);
+    CHECK(original.checkpoint() == checkpoint_before_rejection);
+    CHECK(original.last_tick_journal() == journal_before_rejection);
+}
+
+TEST_CASE("Checkpoint restore rejects invalid state without changing the World",
+          "[dots][simulation][checkpoint][atomic]") {
+    dots::simulation::World world;
+    constexpr auto owner = dots::simulation::PlayerOwnerId{3};
+    REQUIRE(world.spawn_player(owner).has_value());
+    REQUIRE(world.spawn_player(dots::simulation::PlayerOwnerId{4}, {40.0F, 0.0F}).has_value());
+    REQUIRE(world.spawn_food({30.0F, 0.0F}).has_value());
+    REQUIRE(advance_with_input(world, owner, dots::simulation::InputCommandId{0}, {1.0F, 0.0F}));
+    const auto checkpoint_before_rejection = world.checkpoint();
+    const auto journal_before_rejection = world.last_tick_journal();
+
+    auto invalid_rules = checkpoint_before_rejection;
+    invalid_rules.rules.player_speed_units_per_second = 0.0F;
+    CHECK(world.restore(invalid_rules) == dots::simulation::CheckpointRestoreError::InvalidRules);
+    CHECK(world.checkpoint() == checkpoint_before_rejection);
+    CHECK(world.last_tick_journal() == journal_before_rejection);
+
+    auto invalid_ordering = checkpoint_before_rejection;
+    std::swap(invalid_ordering.players[0], invalid_ordering.players[1]);
+    CHECK(world.restore(invalid_ordering) ==
+          dots::simulation::CheckpointRestoreError::InvalidOrdering);
+    CHECK(world.checkpoint() == checkpoint_before_rejection);
+    CHECK(world.last_tick_journal() == journal_before_rejection);
+
+    auto invalid_membership = checkpoint_before_rejection;
+    invalid_membership.owners.front().player_ids.clear();
+    CHECK(world.restore(invalid_membership) ==
+          dots::simulation::CheckpointRestoreError::InvalidOwnerState);
+    CHECK(world.checkpoint() == checkpoint_before_rejection);
+    CHECK(world.last_tick_journal() == journal_before_rejection);
+
+    auto invalid_entity = checkpoint_before_rejection;
+    invalid_entity.players.front().mass = 0.0F;
+    CHECK(world.restore(invalid_entity) ==
+          dots::simulation::CheckpointRestoreError::InvalidEntityState);
+    CHECK(world.checkpoint() == checkpoint_before_rejection);
+    CHECK(world.last_tick_journal() == journal_before_rejection);
+
+    auto invalid_geometry = checkpoint_before_rejection;
+    invalid_geometry.players.front().position.x = std::numeric_limits<float>::max();
+    CHECK(world.restore(invalid_geometry) ==
+          dots::simulation::CheckpointRestoreError::InvalidGeometry);
+    CHECK(world.checkpoint() == checkpoint_before_rejection);
+    CHECK(world.last_tick_journal() == journal_before_rejection);
+}
+
+TEST_CASE("Failed simulation advance leaves command and World state uncommitted",
+          "[dots][simulation][tick][atomic]") {
+    auto rules = dots::simulation::WorldRules{};
+    rules.player_speed_units_per_second = std::numeric_limits<float>::max();
+    dots::simulation::World world{rules};
+    constexpr auto owner = dots::simulation::PlayerOwnerId{0};
+    const auto player = world.spawn_player(owner);
+    REQUIRE(player.has_value());
+    const auto checkpoint_before_rejection = world.checkpoint();
+    const auto journal_before_rejection = world.last_tick_journal();
+
+    const auto rejected =
+        world.advance(input_command(owner, dots::simulation::InputCommandId{0}, {1.0F, 0.0F}));
+    REQUIRE(std::get<dots::simulation::TickError>(rejected) ==
+            dots::simulation::TickError::SimulationRejected);
+    CHECK(world.checkpoint() == checkpoint_before_rejection);
+    CHECK(world.last_tick_journal() == journal_before_rejection);
+
+    REQUIRE(world.step());
+    CHECK(world.tick() == mycore::time::Tick{1});
+    CHECK(world.position(*player) == mycore::math::Vector2{});
+
+    auto exhausted_tick = world.checkpoint();
+    exhausted_tick.tick = mycore::time::Tick{std::numeric_limits<std::uint64_t>::max()};
+    REQUIRE_FALSE(world.restore(exhausted_tick).has_value());
+    const auto checkpoint_at_exhaustion = world.checkpoint();
+    const auto exhausted = world.advance(std::span<const dots::simulation::TickCommand>{});
+    REQUIRE(std::get<dots::simulation::TickError>(exhausted) ==
+            dots::simulation::TickError::SimulationRejected);
+    CHECK(world.checkpoint() == checkpoint_at_exhaustion);
+}
+
+TEST_CASE("Checkpoint replay regenerates deterministic typed event journals",
+          "[dots][simulation][checkpoint][replay][events]") {
+    dots::simulation::World source;
+    constexpr auto first_owner = dots::simulation::PlayerOwnerId{10};
+    constexpr auto second_owner = dots::simulation::PlayerOwnerId{20};
+    const auto first = source.spawn_player(first_owner);
+    const auto second = source.spawn_player(second_owner);
+    const auto food = source.spawn_food({});
+    REQUIRE(first.has_value());
+    REQUIRE(second.has_value());
+    REQUIRE(food.has_value());
+
+    dots::simulation::World first_replay;
+    dots::simulation::World second_replay;
+    const auto starting_checkpoint = source.checkpoint();
+    REQUIRE_FALSE(first_replay.restore(starting_checkpoint).has_value());
+    REQUIRE_FALSE(second_replay.restore(starting_checkpoint).has_value());
+
+    const std::array first_tick_commands{
+        input_command(second_owner, dots::simulation::InputCommandId{0}, {1.0F, 0.0F}),
+        input_command(first_owner, dots::simulation::InputCommandId{0}, {1.0F, 0.0F}),
+    };
+    const auto first_journal = require_journal(first_replay.advance(first_tick_commands));
+    const auto replayed_first_journal = require_journal(second_replay.advance(first_tick_commands));
+    REQUIRE(first_journal == replayed_first_journal);
+    REQUIRE(first_journal.events.size() == 1);
+    const auto* consumed = std::get_if<dots::simulation::FoodConsumed>(&first_journal.events[0]);
+    REQUIRE(consumed != nullptr);
+    CHECK(*consumed == dots::simulation::FoodConsumed{
+                           .tick = mycore::time::Tick{1},
+                           .food_entity_id = *food,
+                           .consumer_entity_id = *first,
+                           .consumer_owner_id = first_owner,
+                           .transferred_mass = dots::simulation::kFoodMass,
+                       });
+    CHECK(dots::simulation::simulation_event_key(first_journal.events[0]) ==
+          dots::simulation::SimulationEventKey{
+              dots::simulation::FoodConsumedKey{.food_entity_id = *food}});
+    CHECK(first_replay.checkpoint() == second_replay.checkpoint());
+
+    const std::array second_tick_commands{
+        dots::simulation::TickCommand{
+            .type = dots::simulation::TickCommandType::StopMovement,
+            .input_id = dots::simulation::InputCommandId::invalid(),
+            .owner_id = first_owner,
+            .movement = {},
+        },
+        dots::simulation::TickCommand{
+            .type = dots::simulation::TickCommandType::StopMovement,
+            .input_id = dots::simulation::InputCommandId::invalid(),
+            .owner_id = second_owner,
+            .movement = {},
+        },
+    };
+    const auto second_journal = require_journal(first_replay.advance(second_tick_commands));
+    const auto replayed_second_journal =
+        require_journal(second_replay.advance(second_tick_commands));
+    REQUIRE(second_journal == replayed_second_journal);
+    REQUIRE(second_journal.events.size() == 1);
+    const auto* absorbed = std::get_if<dots::simulation::PlayerAbsorbed>(&second_journal.events[0]);
+    REQUIRE(absorbed != nullptr);
+    CHECK(*absorbed == dots::simulation::PlayerAbsorbed{
+                           .tick = mycore::time::Tick{2},
+                           .absorber_entity_id = *first,
+                           .victim_entity_id = *second,
+                           .absorber_owner_id = first_owner,
+                           .victim_owner_id = second_owner,
+                           .transferred_mass = dots::simulation::kInitialPlayerMass,
+                       });
+    CHECK(dots::simulation::simulation_event_key(second_journal.events[0]) ==
+          dots::simulation::SimulationEventKey{
+              dots::simulation::PlayerAbsorbedKey{.victim_entity_id = *second}});
+    CHECK(first_replay.checkpoint() == second_replay.checkpoint());
 }
 
 TEST_CASE("Player eats food and updates mass and radius", "[dots][simulation][food]") {
@@ -264,22 +546,20 @@ TEST_CASE("Moving replay consumes food in deterministic order",
     REQUIRE(world.spawn_food({5.4F, 0.0F}).has_value());
     REQUIRE(world.spawn_food({0.6F, 5.6F}).has_value());
 
-    REQUIRE(world.apply_input({
-        .id = dots::simulation::InputCommandId{0},
-        .entity_id = player,
-        .movement = {1.0F, 0.0F},
-    }));
-    for (std::size_t tick = 0; tick < 3; ++tick) {
+    REQUIRE(advance_with_input(world,
+                               dots::simulation::PlayerOwnerId{0},
+                               dots::simulation::InputCommandId{0},
+                               {1.0F, 0.0F}));
+    for (std::size_t tick = 1; tick < 3; ++tick) {
         REQUIRE(world.step());
     }
     REQUIRE(world.food_count() == 1);
 
-    REQUIRE(world.apply_input({
-        .id = dots::simulation::InputCommandId{1},
-        .entity_id = player,
-        .movement = {0.0F, 1.0F},
-    }));
-    for (std::size_t tick = 0; tick < 3; ++tick) {
+    REQUIRE(advance_with_input(world,
+                               dots::simulation::PlayerOwnerId{0},
+                               dots::simulation::InputCommandId{1},
+                               {0.0F, 1.0F}));
+    for (std::size_t tick = 1; tick < 3; ++tick) {
         REQUIRE(world.step());
     }
 
@@ -305,7 +585,7 @@ TEST_CASE("Equal-mass and same-owner players cannot absorb one another",
     REQUIRE(world.step());
 
     CHECK(world.player_count() == 3);
-    CHECK(world.last_step_events().empty());
+    CHECK(absorption_events(world).empty());
 }
 
 TEST_CASE("A strictly larger player absorbs a touching opponent and emits a value event",
@@ -325,19 +605,19 @@ TEST_CASE("A strictly larger player absorbs a touching opponent and emits a valu
     CHECK_FALSE(world.contains(*victim));
     CHECK(world.mass(*absorber) ==
           dots::simulation::kInitialPlayerMass * 2.0F + dots::simulation::kFoodMass);
-    REQUIRE(world.last_step_events().size() == 1);
-    CHECK(world.last_step_events().front() ==
-          dots::simulation::PlayerAbsorbed{
-              .tick = mycore::time::Tick{2},
-              .absorber_entity_id = *absorber,
-              .victim_entity_id = *victim,
-              .absorber_owner_id = dots::simulation::PlayerOwnerId{10},
-              .victim_owner_id = dots::simulation::PlayerOwnerId{20},
-              .transferred_mass = dots::simulation::kInitialPlayerMass,
-          });
+    const auto absorbed = absorption_events(world);
+    REQUIRE(absorbed.size() == 1);
+    CHECK(absorbed.front() == dots::simulation::PlayerAbsorbed{
+                                  .tick = mycore::time::Tick{2},
+                                  .absorber_entity_id = *absorber,
+                                  .victim_entity_id = *victim,
+                                  .absorber_owner_id = dots::simulation::PlayerOwnerId{10},
+                                  .victim_owner_id = dots::simulation::PlayerOwnerId{20},
+                                  .transferred_mass = dots::simulation::kInitialPlayerMass,
+                              });
 
     REQUIRE(world.step());
-    CHECK(world.last_step_events().empty());
+    CHECK(absorption_events(world).empty());
 }
 
 TEST_CASE("Absorption arbitration skips an absorber removed by a larger player",
@@ -360,9 +640,10 @@ TEST_CASE("Absorption arbitration skips an absorber removed by a larger player",
     CHECK(world.contains(*smallest));
     CHECK(world.mass(*largest) == Catch::Approx(36.0F));
     CHECK(world.mass(*smallest) == Catch::Approx(16.0F));
-    REQUIRE(world.last_step_events().size() == 1);
-    CHECK(world.last_step_events().front().absorber_entity_id == *largest);
-    CHECK(world.last_step_events().front().victim_entity_id == *middle);
+    const auto absorbed = absorption_events(world);
+    REQUIRE(absorbed.size() == 1);
+    CHECK(absorbed.front().absorber_entity_id == *largest);
+    CHECK(absorbed.front().victim_entity_id == *middle);
 }
 
 TEST_CASE("Absorption arbitration orders equal absorbers and multiple victims by entity ID",
@@ -383,9 +664,10 @@ TEST_CASE("Absorption arbitration orders equal absorbers and multiple victims by
 
         REQUIRE(world.step());
 
-        REQUIRE(world.last_step_events().size() == 1);
-        CHECK(world.last_step_events().front().absorber_entity_id == *lower_absorber);
-        CHECK(world.last_step_events().front().victim_entity_id == *victim);
+        const auto absorbed = absorption_events(world);
+        REQUIRE(absorbed.size() == 1);
+        CHECK(absorbed.front().absorber_entity_id == *lower_absorber);
+        CHECK(absorbed.front().victim_entity_id == *victim);
         CHECK(world.contains(*higher_absorber));
     }
 
@@ -404,9 +686,10 @@ TEST_CASE("Absorption arbitration orders equal absorbers and multiple victims by
 
         REQUIRE(world.step());
 
-        REQUIRE(world.last_step_events().size() == 2);
-        CHECK(world.last_step_events()[0].victim_entity_id == *first_victim);
-        CHECK(world.last_step_events()[1].victim_entity_id == *second_victim);
+        const auto absorbed = absorption_events(world);
+        REQUIRE(absorbed.size() == 2);
+        CHECK(absorbed[0].victim_entity_id == *first_victim);
+        CHECK(absorbed[1].victim_entity_id == *second_victim);
         CHECK(world.mass(*absorber) == Catch::Approx(49.0F));
     }
 }
@@ -428,7 +711,12 @@ TEST_CASE("Player absorption is resolved before contested food",
     CHECK_FALSE(world.contains(*victim));
     CHECK_FALSE(world.contains(*contested_food));
     CHECK(world.mass(*absorber) == Catch::Approx(34.0F));
-    CHECK(world.last_step_events().size() == 1);
+    CHECK(absorption_events(world).size() == 1);
+    REQUIRE(world.last_tick_journal().events.size() == 2);
+    CHECK(std::holds_alternative<dots::simulation::PlayerAbsorbed>(
+        world.last_tick_journal().events[0]));
+    CHECK(std::holds_alternative<dots::simulation::FoodConsumed>(
+        world.last_tick_journal().events[1]));
 }
 
 TEST_CASE("Absorption growth affects new overlaps on the following tick",
