@@ -45,7 +45,8 @@ using MechanicMask = std::uint32_t;
 
 inline constexpr MechanicMask kCurrentPredictionMechanics =
     mechanic_bit(PredictionMechanic::Movement) | mechanic_bit(PredictionMechanic::FoodConsumption) |
-    mechanic_bit(PredictionMechanic::PlayerAbsorption);
+    mechanic_bit(PredictionMechanic::PlayerAbsorption) |
+    mechanic_bit(PredictionMechanic::SplitMerge);
 
 enum class StateDomain : std::uint8_t {
     WorldRules,
@@ -119,7 +120,8 @@ struct PredictionRequest {
 };
 
 // Scope membership is the maximum authoritative island admitted by this epoch. Live checkpoint
-// state may contain a subset after food consumption or player absorption.
+// state may contain a subset after consumption/absorption and locally predicted owned children
+// identified by unique PredictionKeys, because those entity IDs do not exist at scope-build time.
 struct PredictionScope {
     PredictionProfile requested_profile{PredictionProfile::InteractionClosure};
     PredictionProfile active_profile{PredictionProfile::InteractionClosure};

@@ -10,15 +10,17 @@ For a game-integration recipe and public API reference, use the
 
 - **Current engine kernel:** Feature 14 step 1 provides the statically typed
   `MyCore::Rollback` timeline, transactional replay, event transitions, and consequence router.
-- **Current Dots simulation substrate:** Feature 14 step 2 provides complete value checkpoints,
-  atomic checkpoint restore, owner-scoped atomic ticks, stable typed food/absorption journals,
-  immutable rules, and predicted identity storage. Split/merge state fields are present but inert
-  until their mechanics are implemented.
-- **Current Dots prediction adapter:** Feature 14 step 3 provides mechanic contracts,
+- **Current Dots simulation substrate:** Feature 14 steps 2 and 4 provide complete value
+  checkpoints, atomic checkpoint restore, owner-scoped atomic ticks, immutable rules, and shared
+  movement, food, absorption, split, launch, cohesion, and merge rules. Journals contain stable
+  typed food, absorption, split, and merge events; predicted split children carry stable
+  identity.
+- **Current Dots prediction adapter:** Feature 14 steps 3 and 4 provide mechanic contracts,
   `InteractionClosure`, `FullReplicated`, and `OwnedMovement` scopes, causal-coverage fallback,
   scope projection, retained remote movement assumptions, canonical checkpoint digests, typed
-  differences, and complete-World rollback tests for movement, food, and absorption. Offline
-  play advances through this adapter.
+  differences, and complete-World rollback tests for movement, food, absorption, split, and
+  merge. Dots event handlers demonstrate predicted-once, cancelable, and confirmed-only
+  delivery through the engine router. Offline play advances through this adapter.
 - **Current client integration:** the production network client still uses Feature 11's owned
   position predictor while complete Dots World prediction remains under construction.
 - **Remote presentation baseline:** Feature 12 renders remote entities from delayed known
@@ -272,6 +274,11 @@ conservative swept bounds. Growth from food, split launch reach, and recursively
 interactions enlarge the set. Before each predicted step, an increased replay horizon or causal
 subscription change may require a scope rebase from latest authority.
 
+Locally predicted split children are admitted by a unique `PredictionKey` belonging to an owned
+owner even though their authoritative entity IDs did not exist when the scope was built.
+Unkeyed additions, duplicate prediction keys, and remote-owner additions remain outside the
+scope and are rejected.
+
 Every participant in a predicted interaction and every cause of predicted non-spatial state must
 share the same timeline or be an explicit retained authority fact. Excluded entities do not
 collide with or otherwise affect the predicted island. Missing required entity, owner, global, or
@@ -296,15 +303,16 @@ Server, offline mode, and prediction execute the same owner-command tick:
 No simulation callback performs presentation, logging, networking, analytics, or audio work.
 
 The implemented tick accepts an unordered batch containing at most one command per owner,
-stages movement and command identity, then advances every piece owned by that owner. It currently
-runs movement, enemy absorption, and food consumption before atomically committing the World and
-its `TickJournal`. Prediction may select absorption and food processing independently after
+stages movement, command identity, and a split edge, then executes the sequence above on a
+scratch World. Split processes the stable pre-action piece list, movement combines owner motion,
+launch, and eligible cohesion, absorption preserves Feature 13 arbitration, merge chooses stable
+entity pairs, and food resolves last. One successful call publishes World and `TickJournal`
+together. Prediction may select absorption, food, and split/merge processing independently after
 mechanic dependencies are resolved. It installs a retained remote `AssumeMovement` without
 advancing that owner's authoritative input identity; this is the exact causal input replayed
 after correction. Invalid or duplicate commands and unrepresentable simulation geometry leave
 the prior checkpoint and journal unchanged. The server expresses expiration of its five-tick
-input hold as an explicit `StopMovement` command. Split, launch, cohesion, and merge extend this
-same transaction in step 4 rather than adding a second stepping path.
+input hold as an explicit `StopMovement` command.
 
 ## Split, Launch, and Merge Rules
 
@@ -318,21 +326,21 @@ Split is an edge action keyed by its input sequence. Immutable server defaults a
 - Linear launch-speed decay: 18 world units/second squared.
 - Post-deadline cohesion speed: 3 world units/second.
 
-Eligible owned pieces are processed by stable identity. Each divides its mass evenly, creates a
-child with `PredictionKey{owner, input sequence, ordinal}`, selects current movement, last
-non-zero movement, then positive X as launch direction, and applies cooldown/deadline state. A
-rejected split still consumes and ACKs the command.
+Eligible owned pieces are processed by stable identity until the cap is reached. Each divides its
+mass evenly, creates a child with `PredictionKey{owner, input sequence, ordinal}`, selects current
+movement, last non-zero movement, then positive X as launch direction, and applies
+cooldown/deadline state. A rejected split still consumes and ACKs the command.
 
 After merge eligibility, pieces cohere toward their mass-weighted centroid. Eligible touching
-same-owner pieces merge in stable order, conserve mass, and use mass-weighted position and
-velocity. Enemy absorption retains Feature 13 ordering. Only authority confirms that the final
-piece was lost and changes the network session to Spectating.
+same-owner pieces merge in stable pair order with the lower entity identity surviving, conserve
+mass, and use mass-weighted position and launch velocity. Enemy absorption retains Feature 13
+ordering. Only authority confirms that the final piece was lost and changes the network session
+to Spectating.
 
 ## Event Journals and Stable Identity
 
-The implemented step-2 event variant contains `FoodConsumed` and `PlayerAbsorbed`; their stable
-keys are the food identity and victim identity respectively. Step 4 extends the same typed
-variant with `SplitOccurred` and `PiecesMerged`. The complete stable-key design is:
+The implemented event variant contains `FoodConsumed`, `PlayerAbsorbed`, `PlayerSplit`, and
+`PiecesMerged`. The complete stable-key design is:
 
 - Split: owner, input sequence, and child ordinal.
 - Food consumption: the stable food entity identity.
@@ -396,9 +404,11 @@ their remaining presentation.
 | Confirmed absorption/defeat | Server-confirmed durable result | Kill/defeat banner and stinger hook | `ConfirmOnce` |
 | Merge | Topology and combined mass | Blob geometry and motion | State-derived commit projection |
 
-Dots currently has no audio backend. Feature 14 demonstrates policies through lightweight
-Dots-owned visual cues and deterministic test handlers; it does not introduce a speculative
-engine audio subsystem.
+Dots currently has no audio backend. Step 4 demonstrates the generic policies with real Dots
+split and absorption events plus deterministic handlers: a predicted split drives both
+predicted-once and cancelable handlers, rejection cancels the latter, confirmation finalizes it,
+and absorption reaches a confirmed-only handler only through authority. Persistent visual cue
+handlers remain step 7 work; Feature 14 does not introduce a speculative engine audio subsystem.
 
 ## Authoritative Event Receipts
 

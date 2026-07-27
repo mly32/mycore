@@ -6,9 +6,12 @@ future mechanics outlined in feature plans. The server is authoritative for ever
 ## Current objective
 
 Dots is an early Agar.io-like movement and growth slice. Players move through a shared field,
-consume food, and can absorb smaller opponents. There is currently no score, win condition,
-split, merge, or separate energy system. Food is the current resource that fills the role an
-energy pickup might later fill.
+consume food, and can absorb smaller opponents. The shared deterministic World and offline
+rollback model also implement split, launch, cohesion, and merge rules. The current graphical
+controls and network protocol do not submit split actions yet, so that mechanic is exercised
+through the simulation and prediction APIs until the remaining Feature 14 runtime integration.
+There is no score, win condition, or separate energy system. Food is the current resource that
+fills the role an energy pickup might later fill.
 
 ## World and food
 
@@ -21,6 +24,28 @@ energy pickup might later fill.
   winner before contested food is resolved, using deterministic mass/entity ordering.
 - The default field contains 272 food entities in an 8-world-unit grid from `x = -80..80` and
   `y = -48..48`, excluding the origin. Food does not currently respawn.
+
+## Split, launch, cohesion, and merge
+
+A split is an edge action on an owner input command. The default immutable rules are:
+
+- A 15-tick/0.5-second owner recast.
+- A maximum of eight pieces per owner.
+- Minimum parent mass `16`; each eligible parent divides its mass evenly with one child.
+- Child launch speed 18 world units per second with linear decay of 18 world units per second
+  squared.
+- A 150-tick/5-second merge delay and post-deadline cohesion speed of 3 world units per second.
+
+Eligible parents are processed by stable entity identity until the piece cap is reached. Each
+child receives `PredictionKey{owner, input, child ordinal}`. Launch uses current movement,
+last non-zero movement, then positive X as deterministic fallbacks. A split input is consumed
+even when cooldown, mass, piece cap, or allocator state rejects the action.
+
+After the per-piece merge deadline, pieces move toward their mass-weighted owner centroid.
+Touching eligible pieces merge in stable entity order; the lower entity identity survives, mass
+is conserved, and position and launch velocity are mass weighted. Enemy absorption still occurs
+before same-owner merge, and food consumption occurs afterward. Newly spawned players receive
+the same merge-delay baseline, although normal join and respawn create an owner with one piece.
 
 ## Joining and spawning
 
@@ -46,7 +71,8 @@ server-assigned spawns.
 Clients submit normalized movement intent at 30 Hz. A player moves at 6 world units per second.
 The server consumes at most one queued input sample per owner per tick. The simulation installs
 at most one owner command and applies its held movement to every piece owned by that owner. A
-live network session currently has one piece because split/merge are not implemented yet.
+live network session currently has one piece because the version 3 protocol and client controls
+do not carry the implemented split edge action yet.
 
 Brief missing input does not immediately stop a player: the server holds the last applied movement
 for five ticks. On the following missing-input tick it neutralizes movement, while keeping the
@@ -107,6 +133,8 @@ color.
 
 ## Planned gameplay, not current rules
 
-Future plans may add scoring or winning, split/merge actions, additional cooldowns, and richer
-resource/energy mechanics. These must be specified in this guide when they become implemented
-gameplay rules; feature plans remain design documents until then.
+Future plans may add scoring or winning, richer resource/energy mechanics, and additional
+cooldowns. Feature 14 still has to expose the implemented split action through network input,
+add authoritative checkpoint/receipt transport, and attach persistent presentation cues. These
+must be specified here as they become implemented gameplay behavior; feature plans remain design
+documents until then.

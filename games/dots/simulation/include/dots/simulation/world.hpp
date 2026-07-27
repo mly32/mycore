@@ -86,6 +86,11 @@ private:
         std::size_t index;
     };
 
+    struct SplitRequest {
+        PlayerOwnerId owner_id;
+        InputCommandId input_id;
+    };
+
     [[nodiscard]] const EntityLocation* find_location(EntityId entity_id) const noexcept;
     [[nodiscard]] std::optional<std::size_t> find_index(EntityId entity_id) const noexcept;
     [[nodiscard]] std::optional<std::size_t> find_food_index(EntityId entity_id) const noexcept;
@@ -94,8 +99,10 @@ private:
     [[nodiscard]] std::optional<EntityId> next_entity_id() const noexcept;
     [[nodiscard]] std::optional<TickError>
     apply_commands(std::span<const TickCommand> commands,
-                   std::vector<OwnerCheckpoint>& next_owners) const;
+                   std::vector<OwnerCheckpoint>& next_owners,
+                   std::vector<SplitRequest>& split_requests) const;
     [[nodiscard]] bool advance_simulation(std::vector<OwnerCheckpoint> next_owners,
+                                          std::span<const SplitRequest> split_requests,
                                           TickMechanics mechanics,
                                           TickJournal& journal);
     void reserve_player_capacity();

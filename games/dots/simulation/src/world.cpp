@@ -4,6 +4,7 @@
 #include <cmath>
 #include <limits>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <unordered_set>
 #include <utility>
@@ -20,6 +21,13 @@ struct FoodConsumption {
 struct PlayerAbsorptionCandidate {
     std::size_t absorber_index{};
     std::size_t victim_index{};
+};
+
+struct MergeCandidate {
+    EntityId first_id;
+    EntityId second_id;
+    std::size_t first_index{};
+    std::size_t second_index{};
 };
 
 template <typename T> void reserve_for_append(std::vector<T>& values) {
@@ -48,6 +56,25 @@ template <typename T> void reserve_for_append(std::vector<T>& values) {
            rules.launch_decay_units_per_second_squared >= 0.0F &&
            std::isfinite(rules.cohesion_speed_units_per_second) &&
            rules.cohesion_speed_units_per_second >= 0.0F;
+}
+
+[[nodiscard]] mycore::time::Tick deadline_after(mycore::time::Tick tick,
+                                                std::uint32_t tick_count) noexcept {
+    const auto maximum = std::numeric_limits<std::uint64_t>::max();
+    if (tick.value() > maximum - tick_count) {
+        return mycore::time::Tick{maximum};
+    }
+    return tick + mycore::time::TickDelta{tick_count};
+}
+
+[[nodiscard]] mycore::math::Vector2
+decayed_velocity(mycore::math::Vector2 velocity, float decay_units_per_second_squared) noexcept {
+    const auto speed = mycore::math::length(velocity);
+    const auto decay_per_tick = decay_units_per_second_squared / static_cast<float>(kTickRateHz);
+    if (speed <= decay_per_tick) {
+        return {};
+    }
+    return velocity * ((speed - decay_per_tick) / speed);
 }
 
 template <class Range, class Projection>
@@ -80,7 +107,9 @@ std::optional<EntityId> World::spawn_player(PlayerOwnerId owner_id,
     if (!owner_id.is_valid() || !entity_id || !spatial_grid_.can_index(bounds) ||
         (prediction_key &&
          (!prediction_key->owner_id.is_valid() || !prediction_key->input_id.is_valid() ||
-          prediction_key->owner_id != owner_id))) {
+          prediction_key->owner_id != owner_id ||
+          std::find(prediction_keys_.begin(), prediction_keys_.end(), prediction_key) !=
+              prediction_keys_.end()))) {
         return std::nullopt;
     }
 
@@ -114,7 +143,7 @@ std::optional<EntityId> World::spawn_player(PlayerOwnerId owner_id,
     masses_.push_back(rules_.initial_player_mass);
     radii_.push_back(radius);
     launch_velocities_.emplace_back();
-    merge_eligible_ticks_.emplace_back();
+    merge_eligible_ticks_.push_back(deadline_after(tick_, rules_.merge_delay_ticks));
     prediction_keys_.push_back(prediction_key);
     owner->player_ids.push_back(*entity_id);
     entity_locations_.emplace(entity_id->value(),
@@ -385,6 +414,7 @@ std::optional<CheckpointRestoreError> World::restore(const WorldCheckpoint& chec
 
     std::map<std::uint32_t, std::vector<EntityId>> expected_owner_pieces;
     std::unordered_set<std::uint32_t> entity_ids;
+    std::set<PredictionKey> prediction_keys;
     for (const auto& owner : checkpoint.owners) {
         if (!owner.owner_id.is_valid() || owner.player_ids.empty() ||
             !is_strictly_sorted(owner.player_ids,
@@ -411,7 +441,8 @@ std::optional<CheckpointRestoreError> World::restore(const WorldCheckpoint& chec
             !is_finite(player.launch_velocity) ||
             (player.prediction_key && (!player.prediction_key->owner_id.is_valid() ||
                                        !player.prediction_key->input_id.is_valid() ||
-                                       player.prediction_key->owner_id != player.owner_id))) {
+                                       player.prediction_key->owner_id != player.owner_id ||
+                                       !prediction_keys.insert(*player.prediction_key).second))) {
             return CheckpointRestoreError::InvalidEntityState;
         }
         owner->second.push_back(player.entity_id);
@@ -471,7 +502,8 @@ std::optional<CheckpointRestoreError> World::restore(const WorldCheckpoint& chec
 }
 
 std::optional<TickError> World::apply_commands(std::span<const TickCommand> commands,
-                                               std::vector<OwnerCheckpoint>& next_owners) const {
+                                               std::vector<OwnerCheckpoint>& next_owners,
+                                               std::vector<SplitRequest>& split_requests) const {
     std::vector<TickCommand> ordered_commands{commands.begin(), commands.end()};
     std::sort(ordered_commands.begin(),
               ordered_commands.end(),
@@ -514,15 +546,23 @@ std::optional<TickError> World::apply_commands(std::span<const TickCommand> comm
                 owner->last_non_zero_movement = owner->movement;
             }
             owner->last_input_id = command.input_id;
+            if (command.split_requested) {
+                split_requests.push_back({
+                    .owner_id = command.owner_id,
+                    .input_id = command.input_id,
+                });
+            }
             break;
         case TickCommandType::StopMovement:
-            if (command.input_id.is_valid() || command.movement != mycore::math::Vector2{}) {
+            if (command.input_id.is_valid() || command.movement != mycore::math::Vector2{} ||
+                command.split_requested) {
                 return TickError::InvalidCommand;
             }
             owner->movement = {};
             break;
         case TickCommandType::AssumeMovement:
-            if (command.input_id.is_valid() || !is_valid_player_movement(command.movement)) {
+            if (command.input_id.is_valid() || !is_valid_player_movement(command.movement) ||
+                command.split_requested) {
                 return TickError::InvalidCommand;
             }
             owner->movement = command.movement;
@@ -538,15 +578,19 @@ std::optional<TickError> World::apply_commands(std::span<const TickCommand> comm
 }
 
 TickResult World::advance(std::span<const TickCommand> commands, TickMechanics mechanics) {
-    auto next_owners = owners_;
-    if (const auto error = apply_commands(commands, next_owners)) {
+    auto candidate = *this;
+    auto next_owners = candidate.owners_;
+    std::vector<SplitRequest> split_requests;
+    split_requests.reserve(commands.size());
+    if (const auto error = candidate.apply_commands(commands, next_owners, split_requests)) {
         return *error;
     }
 
     TickJournal journal;
-    if (!advance_simulation(std::move(next_owners), mechanics, journal)) {
+    if (!candidate.advance_simulation(std::move(next_owners), split_requests, mechanics, journal)) {
         return TickError::SimulationRejected;
     }
+    *this = std::move(candidate);
     return journal;
 }
 
@@ -559,26 +603,160 @@ bool World::step() {
 }
 
 bool World::advance_simulation(std::vector<OwnerCheckpoint> next_owners,
+                               std::span<const SplitRequest> split_requests,
                                TickMechanics mechanics,
                                TickJournal& journal) {
     if (tick_.value() == std::numeric_limits<std::uint64_t>::max()) {
         return false;
     }
 
-    std::vector<mycore::math::Vector2> next_positions;
-    next_positions.reserve(positions_.size());
-    for (std::size_t index = 0; index < positions_.size(); ++index) {
-        const auto owner = std::lower_bound(next_owners.begin(),
-                                            next_owners.end(),
-                                            owner_ids_[index],
-                                            [](const OwnerCheckpoint& state, PlayerOwnerId id) {
-                                                return state.owner_id < id;
-                                            });
-        if (owner == next_owners.end() || owner->owner_id != owner_ids_[index]) {
+    const auto completed_tick = tick_ + mycore::time::TickDelta{1};
+    owners_ = std::move(next_owners);
+    std::vector<SimulationEvent> next_events;
+
+    if (mechanics.split_merge) {
+        for (const auto& request : split_requests) {
+            auto* owner = find_owner(request.owner_id);
+            if (owner == nullptr || completed_tick < owner->split_cooldown_end_tick ||
+                owner->player_ids.size() >= rules_.maximum_pieces_per_owner) {
+                continue;
+            }
+
+            const auto original_player_ids = owner->player_ids;
+            auto child_ordinal = std::uint16_t{};
+            auto split_occurred = false;
+            for (const auto parent_id : original_player_ids) {
+                owner = find_owner(request.owner_id);
+                if (owner == nullptr ||
+                    owner->player_ids.size() >= rules_.maximum_pieces_per_owner) {
+                    break;
+                }
+                const auto parent_index = find_index(parent_id);
+                const auto child_id = next_entity_id();
+                if (!parent_index || !child_id ||
+                    masses_[*parent_index] < rules_.minimum_split_mass) {
+                    continue;
+                }
+
+                const auto split_mass = masses_[*parent_index] * 0.5F;
+                const auto split_radius = radius_for_mass(split_mass);
+                const auto position = positions_[*parent_index];
+                if (!spatial_grid_.can_index({.center = position, .radius = split_radius})) {
+                    return false;
+                }
+
+                auto launch_direction = owner->movement;
+                if (mycore::math::length_squared(launch_direction) == 0.0F) {
+                    launch_direction = owner->last_non_zero_movement;
+                }
+                if (mycore::math::length_squared(launch_direction) == 0.0F) {
+                    launch_direction = {1.0F, 0.0F};
+                }
+                const auto merge_eligible_tick =
+                    deadline_after(completed_tick, rules_.merge_delay_ticks);
+                const auto prediction_key = PredictionKey{
+                    .owner_id = request.owner_id,
+                    .input_id = request.input_id,
+                    .child_ordinal = child_ordinal,
+                };
+
+                reserve_player_capacity();
+                if (!spatial_grid_.update(parent_id,
+                                          {.center = position, .radius = split_radius}) ||
+                    !spatial_grid_.insert(*child_id,
+                                          {.center = position, .radius = split_radius})) {
+                    return false;
+                }
+                masses_[*parent_index] = split_mass;
+                radii_[*parent_index] = split_radius;
+                merge_eligible_ticks_[*parent_index] = merge_eligible_tick;
+
+                const auto child_index = entity_ids_.size();
+                entity_ids_.push_back(*child_id);
+                owner_ids_.push_back(request.owner_id);
+                positions_.push_back(position);
+                masses_.push_back(split_mass);
+                radii_.push_back(split_radius);
+                launch_velocities_.push_back(launch_direction *
+                                             rules_.child_launch_speed_units_per_second);
+                merge_eligible_ticks_.push_back(merge_eligible_tick);
+                prediction_keys_.push_back(prediction_key);
+                entity_locations_.emplace(
+                    child_id->value(),
+                    EntityLocation{.kind = EntityKind::Player, .index = child_index});
+                owner = find_owner(request.owner_id);
+                owner->player_ids.push_back(*child_id);
+                ++next_entity_id_;
+
+                next_events.emplace_back(PlayerSplit{
+                    .tick = completed_tick,
+                    .owner_id = request.owner_id,
+                    .input_id = request.input_id,
+                    .child_ordinal = child_ordinal,
+                    .parent_entity_id = parent_id,
+                    .child_entity_id = *child_id,
+                    .parent_mass = split_mass,
+                    .child_mass = split_mass,
+                });
+                ++child_ordinal;
+                split_occurred = true;
+            }
+            if (split_occurred) {
+                owner = find_owner(request.owner_id);
+                owner->split_cooldown_end_tick =
+                    deadline_after(completed_tick, rules_.split_recast_ticks);
+            }
+        }
+    }
+
+    std::vector<mycore::math::Vector2> owner_centroids(owners_.size());
+    std::vector<float> owner_masses(owners_.size());
+    for (std::size_t index = 0; index < entity_ids_.size(); ++index) {
+        const auto owner =
+            std::lower_bound(owners_.begin(),
+                             owners_.end(),
+                             owner_ids_[index],
+                             [](const OwnerCheckpoint& state, PlayerOwnerId owner_id) {
+                                 return state.owner_id < owner_id;
+                             });
+        if (owner == owners_.end() || owner->owner_id != owner_ids_[index]) {
             throw std::logic_error{"Player owner is missing from the Dots tick state"};
         }
-        const auto next_position = advance_player_position(
-            positions_[index], owner->movement, rules_.player_speed_units_per_second);
+        const auto owner_index = static_cast<std::size_t>(owner - owners_.begin());
+        owner_centroids[owner_index] += positions_[index] * masses_[index];
+        owner_masses[owner_index] += masses_[index];
+    }
+    for (std::size_t index = 0; index < owner_centroids.size(); ++index) {
+        owner_centroids[index] /= owner_masses[index];
+    }
+
+    std::vector<mycore::math::Vector2> next_positions;
+    std::vector<mycore::math::Vector2> next_launch_velocities = launch_velocities_;
+    next_positions.reserve(positions_.size());
+    for (std::size_t index = 0; index < positions_.size(); ++index) {
+        const auto owner =
+            std::lower_bound(owners_.begin(),
+                             owners_.end(),
+                             owner_ids_[index],
+                             [](const OwnerCheckpoint& state, PlayerOwnerId owner_id) {
+                                 return state.owner_id < owner_id;
+                             });
+        if (owner == owners_.end() || owner->owner_id != owner_ids_[index]) {
+            throw std::logic_error{"Player owner is missing from the Dots tick state"};
+        }
+        auto velocity = owner->movement * rules_.player_speed_units_per_second;
+        if (mechanics.split_merge) {
+            velocity += launch_velocities_[index];
+            if (owner->player_ids.size() > 1 && completed_tick >= merge_eligible_ticks_[index]) {
+                const auto owner_index = static_cast<std::size_t>(owner - owners_.begin());
+                const auto cohesion_direction = mycore::math::normalized_or_zero(
+                    owner_centroids[owner_index] - positions_[index]);
+                velocity += cohesion_direction * rules_.cohesion_speed_units_per_second;
+            }
+            next_launch_velocities[index] = decayed_velocity(
+                launch_velocities_[index], rules_.launch_decay_units_per_second_squared);
+        }
+        const auto next_position = positions_[index] + (velocity / static_cast<float>(kTickRateHz));
         if (!spatial_grid_.can_index({.center = next_position, .radius = radii_[index]})) {
             return false;
         }
@@ -640,25 +818,86 @@ bool World::advance_simulation(std::vector<OwnerCheckpoint> next_owners,
               });
 
     std::vector<bool> live_players(entity_ids_.size(), true);
-    std::vector<float> mass_gains(entity_ids_.size());
-    std::vector<SimulationEvent> next_events;
-    next_events.reserve(absorption_candidates.size());
-    auto completed_tick = tick_;
-    completed_tick += mycore::time::TickDelta{1};
+    std::vector<float> next_masses = masses_;
+    std::vector<float> next_radii = radii_;
+    next_events.reserve(next_events.size() + absorption_candidates.size());
     for (const auto& candidate : absorption_candidates) {
         if (!live_players[candidate.absorber_index] || !live_players[candidate.victim_index]) {
             continue;
         }
         live_players[candidate.victim_index] = false;
-        mass_gains[candidate.absorber_index] += masses_[candidate.victim_index];
+        next_masses[candidate.absorber_index] += next_masses[candidate.victim_index];
+        next_radii[candidate.absorber_index] =
+            radius_for_mass(next_masses[candidate.absorber_index]);
         next_events.emplace_back(PlayerAbsorbed{
             .tick = completed_tick,
             .absorber_entity_id = entity_ids_[candidate.absorber_index],
             .victim_entity_id = entity_ids_[candidate.victim_index],
             .absorber_owner_id = owner_ids_[candidate.absorber_index],
             .victim_owner_id = owner_ids_[candidate.victim_index],
-            .transferred_mass = masses_[candidate.victim_index],
+            .transferred_mass = next_masses[candidate.victim_index],
         });
+    }
+
+    if (mechanics.split_merge) {
+        while (true) {
+            std::optional<MergeCandidate> selected;
+            for (std::size_t first = 0; first < entity_ids_.size(); ++first) {
+                if (!live_players[first] || completed_tick < merge_eligible_ticks_[first]) {
+                    continue;
+                }
+                for (std::size_t second = first + 1; second < entity_ids_.size(); ++second) {
+                    if (!live_players[second] || owner_ids_[first] != owner_ids_[second] ||
+                        completed_tick < merge_eligible_ticks_[second] ||
+                        !circles_overlap(
+                            {.center = next_positions[first], .radius = next_radii[first]},
+                            {.center = next_positions[second], .radius = next_radii[second]})) {
+                        continue;
+                    }
+                    const auto first_id = std::min(entity_ids_[first], entity_ids_[second]);
+                    const auto second_id = std::max(entity_ids_[first], entity_ids_[second]);
+                    const auto first_index = entity_ids_[first] == first_id ? first : second;
+                    const auto second_index = entity_ids_[first] == first_id ? second : first;
+                    if (!selected || first_id < selected->first_id ||
+                        (first_id == selected->first_id && second_id < selected->second_id)) {
+                        selected = MergeCandidate{
+                            .first_id = first_id,
+                            .second_id = second_id,
+                            .first_index = first_index,
+                            .second_index = second_index,
+                        };
+                    }
+                }
+            }
+            if (!selected) {
+                break;
+            }
+
+            const auto survivor = selected->first_index;
+            const auto consumed = selected->second_index;
+            const auto survivor_mass = next_masses[survivor];
+            const auto consumed_mass = next_masses[consumed];
+            const auto combined_mass = survivor_mass + consumed_mass;
+            next_positions[survivor] = ((next_positions[survivor] * survivor_mass) +
+                                        (next_positions[consumed] * consumed_mass)) /
+                                       combined_mass;
+            next_launch_velocities[survivor] =
+                ((next_launch_velocities[survivor] * survivor_mass) +
+                 (next_launch_velocities[consumed] * consumed_mass)) /
+                combined_mass;
+            next_masses[survivor] = combined_mass;
+            next_radii[survivor] = radius_for_mass(combined_mass);
+            merge_eligible_ticks_[survivor] =
+                std::max(merge_eligible_ticks_[survivor], merge_eligible_ticks_[consumed]);
+            live_players[consumed] = false;
+            next_events.emplace_back(PiecesMerged{
+                .tick = completed_tick,
+                .owner_id = owner_ids_[survivor],
+                .survivor_entity_id = entity_ids_[survivor],
+                .consumed_entity_id = entity_ids_[consumed],
+                .combined_mass = combined_mass,
+            });
+        }
     }
 
     std::vector<FoodConsumption> food_consumptions;
@@ -668,7 +907,7 @@ bool World::advance_simulation(std::vector<OwnerCheckpoint> next_owners,
                 continue;
             }
             const Circle player_circle{.center = next_positions[player_index],
-                                       .radius = radii_[player_index]};
+                                       .radius = next_radii[player_index]};
             for (const auto candidate : spatial_grid_.query(player_circle)) {
                 const auto food_index = find_food_index(candidate);
                 if (!food_index) {
@@ -702,7 +941,9 @@ bool World::advance_simulation(std::vector<OwnerCheckpoint> next_owners,
             continue;
         }
         last_food_id = consumption.food_id;
-        mass_gains[consumption.player_index] += rules_.food_mass;
+        next_masses[consumption.player_index] += rules_.food_mass;
+        next_radii[consumption.player_index] =
+            radius_for_mass(next_masses[consumption.player_index]);
         consumed_food_ids.push_back(consumption.food_id);
         next_events.emplace_back(FoodConsumed{
             .tick = completed_tick,
@@ -713,19 +954,16 @@ bool World::advance_simulation(std::vector<OwnerCheckpoint> next_owners,
         });
     }
 
-    std::vector<float> next_radii = radii_;
     for (std::size_t index = 0; index < entity_ids_.size(); ++index) {
         if (!live_players[index]) {
             continue;
         }
-        next_radii[index] = radius_for_mass(masses_[index] + mass_gains[index]);
         if (!spatial_grid_.can_index(
                 {.center = next_positions[index], .radius = next_radii[index]})) {
             return false;
         }
     }
 
-    owners_ = std::move(next_owners);
     for (std::size_t index = 0; index < entity_ids_.size(); ++index) {
         if (!live_players[index]) {
             continue;
@@ -735,8 +973,9 @@ bool World::advance_simulation(std::vector<OwnerCheckpoint> next_owners,
             throw std::logic_error{"Player could not be updated in the Dots spatial grid"};
         }
         positions_[index] = next_positions[index];
-        masses_[index] += mass_gains[index];
+        masses_[index] = next_masses[index];
         radii_[index] = next_radii[index];
+        launch_velocities_[index] = next_launch_velocities[index];
     }
 
     std::vector<EntityId> removed_player_ids;
@@ -748,7 +987,7 @@ bool World::advance_simulation(std::vector<OwnerCheckpoint> next_owners,
     }
     for (const auto entity_id : removed_player_ids) {
         if (!remove_player(entity_id)) {
-            throw std::logic_error{"Absorbed player could not be removed from the Dots World"};
+            throw std::logic_error{"Resolved player could not be removed from the Dots World"};
         }
     }
     for (const auto food_id : consumed_food_ids) {
@@ -757,7 +996,7 @@ bool World::advance_simulation(std::vector<OwnerCheckpoint> next_owners,
         }
     }
 
-    tick_ += mycore::time::TickDelta{1};
+    tick_ = completed_tick;
     last_tick_journal_ = TickJournal{.tick = tick_, .events = std::move(next_events)};
     journal = last_tick_journal_;
     return true;

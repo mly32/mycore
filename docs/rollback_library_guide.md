@@ -144,6 +144,10 @@ The operations have stronger semantic requirements than the C++ concept can expr
   stores callbacks, input-device references, wall-clock queries, or regenerated events.
 - `Scope` is causally closed for every enabled predicted mechanic. Missing state must disable the
   mechanic, select a safe fallback scope, or reject the frame.
+- If prediction can create entities, the game defines how those entities remain inside the
+  scope before an authoritative entity ID exists. Use a unique causal spawn key, include the
+  new entity's conservative interaction reach when building the scope, and reject unkeyed,
+  duplicate, or unrelated additions.
 - `digest` is diagnostic. Exact typed validation and state comparison remain the correctness
   mechanism.
 - An `EventKey` identifies one semantic occurrence across replay. Do not include the replay

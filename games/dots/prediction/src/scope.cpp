@@ -98,6 +98,16 @@ find_player(const simulation::WorldCheckpoint& checkpoint, simulation::EntityId 
     });
 }
 
+[[nodiscard]] bool admits_player(const simulation::PlayerCheckpoint& player,
+                                 const PredictionScope& scope) {
+    if (contains(scope.player_ids, player.entity_id)) {
+        return true;
+    }
+    return includes_mechanic(scope.mechanics, PredictionMechanic::SplitMerge) &&
+           player.prediction_key && player.prediction_key->owner_id == player.owner_id &&
+           contains(scope.owned_owner_ids, player.owner_id);
+}
+
 [[nodiscard]] std::variant<PredictionScope, ScopeBuildError>
 make_owned_scope(const simulation::WorldCheckpoint& authority,
                  const PredictionRequest& request,
@@ -389,15 +399,18 @@ CheckpointProjectionResult project_checkpoint(const simulation::WorldCheckpoint&
             }
             continue;
         }
-        if (std::any_of(owner.player_ids.begin(), owner.player_ids.end(), [&scope](auto player_id) {
-                return !contains(scope.player_ids, player_id);
-            })) {
+        if (std::any_of(owner.player_ids.begin(),
+                        owner.player_ids.end(),
+                        [&authority, &scope](auto player_id) {
+                            const auto* player = find_player(authority, player_id);
+                            return player == nullptr || !admits_player(*player, scope);
+                        })) {
             return error(PredictionErrorCode::CheckpointOutsideScope);
         }
         projected.owners.push_back(owner);
     }
     for (const auto& player : authority.players) {
-        if (contains(scope.player_ids, player.entity_id)) {
+        if (admits_player(player, scope)) {
             if (!contains(scope.owner_ids, player.owner_id)) {
                 return error(PredictionErrorCode::CheckpointOutsideScope);
             }

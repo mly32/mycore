@@ -26,13 +26,16 @@ using dots::simulation::World;
 using dots::simulation::WorldCheckpoint;
 using mycore::math::Vector2;
 
-[[nodiscard]] TickCommand
-input(PlayerOwnerId owner_id, std::uint32_t input_id, Vector2 movement = {}) {
+[[nodiscard]] TickCommand input(PlayerOwnerId owner_id,
+                                std::uint32_t input_id,
+                                Vector2 movement = {},
+                                bool split_requested = false) {
     return {
         .type = TickCommandType::ApplyInput,
         .input_id = InputCommandId{input_id},
         .owner_id = owner_id,
         .movement = movement,
+        .split_requested = split_requested,
     };
 }
 
@@ -109,6 +112,74 @@ require_scope(const WorldCheckpoint& checkpoint,
     };
 }
 
+struct SplitFlashHandler {
+    using Event = dots::simulation::PlayerSplit;
+    static constexpr auto policy = mycore::rollback::ConsequencePolicy::PredictOnce;
+
+    [[nodiscard]] bool on_first(const dots::simulation::SimulationEventKey&, const Event&) {
+        ++delivery_count;
+        return true;
+    }
+
+    std::size_t delivery_count{};
+};
+
+struct SplitTrailHandler {
+    struct Token {
+        std::uint32_t value{};
+    };
+
+    using Event = dots::simulation::PlayerSplit;
+    static constexpr auto policy = mycore::rollback::ConsequencePolicy::PredictCancelable;
+
+    [[nodiscard]] std::optional<Token> on_predict(const dots::simulation::SimulationEventKey&,
+                                                  const Event&) {
+        ++prediction_count;
+        return Token{.value = static_cast<std::uint32_t>(prediction_count)};
+    }
+
+    [[nodiscard]] bool
+    on_revise(Token&, const dots::simulation::SimulationEventKey&, const Event&) {
+        ++revision_count;
+        return true;
+    }
+
+    [[nodiscard]] bool
+    on_cancel(Token&, const dots::simulation::SimulationEventKey&, const Event&) {
+        ++cancellation_count;
+        return true;
+    }
+
+    [[nodiscard]] bool
+    on_confirm(Token&, const dots::simulation::SimulationEventKey&, const Event&) {
+        ++confirmation_count;
+        return true;
+    }
+
+    std::size_t prediction_count{};
+    std::size_t revision_count{};
+    std::size_t cancellation_count{};
+    std::size_t confirmation_count{};
+};
+
+struct ConfirmedDefeatHandler {
+    using Event = dots::simulation::PlayerAbsorbed;
+    static constexpr auto policy = mycore::rollback::ConsequencePolicy::ConfirmOnce;
+
+    [[nodiscard]] bool on_confirmed(const dots::simulation::SimulationEventKey&, const Event&) {
+        ++delivery_count;
+        return true;
+    }
+
+    std::size_t delivery_count{};
+};
+
+using ConsequenceDemonstrationRouter =
+    mycore::rollback::StaticConsequenceRouter<dots::prediction::WorldModel,
+                                              SplitFlashHandler,
+                                              SplitTrailHandler,
+                                              ConfirmedDefeatHandler>;
+
 } // namespace
 
 TEST_CASE("Dots mechanic contracts declare deterministic prediction dependencies",
@@ -129,11 +200,17 @@ TEST_CASE("Dots mechanic contracts declare deterministic prediction dependencies
     CHECK(dots::prediction::includes_state_domain(movement.presentation_reads,
                                                   dots::prediction::StateDomain::PlayerKinematics));
     CHECK(absorption.expands_ownership);
-    CHECK_FALSE(split_merge.implemented);
+    CHECK(split_merge.implemented);
+    CHECK(dots::prediction::includes_mechanic(split_merge.dependencies,
+                                              PredictionMechanic::Movement));
+    CHECK(dots::prediction::includes_mechanic_event(
+        split_merge.events, dots::prediction::MechanicEventKind::PlayerSplit));
+    CHECK(dots::prediction::includes_state_domain(
+        split_merge.writes, dots::prediction::StateDomain::PredictedIdentity));
 
     World world;
     REQUIRE(world.spawn_player(PlayerOwnerId{0}).has_value());
-    const auto unsupported = dots::prediction::build_prediction_scope(
+    const auto split_scope = dots::prediction::build_prediction_scope(
         world.checkpoint(),
         {
             .profile = PredictionProfile::InteractionClosure,
@@ -143,8 +220,11 @@ TEST_CASE("Dots mechanic contracts declare deterministic prediction dependencies
             .scope_epoch = mycore::rollback::ScopeEpoch{1},
             .coverage = {},
         });
-    REQUIRE(std::get<dots::prediction::ScopeBuildError>(unsupported) ==
-            dots::prediction::ScopeBuildError::UnsupportedMechanic);
+    const auto* supported = std::get_if<PredictionScope>(&split_scope);
+    REQUIRE(supported != nullptr);
+    CHECK(dots::prediction::includes_mechanic(supported->mechanics, PredictionMechanic::Movement));
+    CHECK(
+        dots::prediction::includes_mechanic(supported->mechanics, PredictionMechanic::SplitMerge));
 }
 
 TEST_CASE("Dots prediction profiles construct causal islands and safe fallbacks",
@@ -281,7 +361,7 @@ TEST_CASE("Dots checkpoint digest and typed differences cover complete gameplay 
     REQUIRE(food.has_value());
     const auto checkpoint = previous.checkpoint();
     const auto digest = dots::prediction::checkpoint_digest(checkpoint);
-    CHECK(digest.value == 5'969'761'234'082'530'382ULL);
+    CHECK(digest.value == 1'850'078'864'355'198'452ULL);
     CHECK(digest == dots::prediction::checkpoint_digest(checkpoint));
 
     auto changed_checkpoint = checkpoint;
@@ -466,4 +546,237 @@ TEST_CASE("Dots prediction replays explicit remote assumptions and selected mech
     CHECK(advanced.event_changes.empty());
     CHECK(timeline.state()->player_count() == 2);
     CHECK(timeline.state()->food_count() == 1);
+}
+
+TEST_CASE("Dots rollback retracts a predicted split and removes its stable child",
+          "[dots][prediction][rollback][split]") {
+    auto rules = dots::simulation::WorldRules{};
+    rules.initial_player_mass = 64.0F;
+    rules.child_launch_speed_units_per_second = 0.0F;
+    World initial{rules};
+    constexpr auto owner = PlayerOwnerId{0};
+    const auto parent = initial.spawn_player(owner);
+    REQUIRE(parent.has_value());
+    const auto checkpoint = initial.checkpoint();
+    const auto scope = require_scope(checkpoint,
+                                     PredictionProfile::FullReplicated,
+                                     dots::prediction::kCurrentPredictionMechanics,
+                                     {owner});
+    auto timeline = initialized_timeline(checkpoint, scope);
+
+    const auto& predicted_split =
+        require_commit(timeline.advance(mycore::rollback::CommandSequence{0},
+                                        TickStimulus{.commands = {input(owner, 0, {}, true)}}));
+    REQUIRE(predicted_split.event_changes.size() == 1);
+    CHECK(predicted_split.event_changes.front().transition ==
+          mycore::rollback::EventTransition::FirstPredicted);
+    CHECK(std::holds_alternative<dots::simulation::PlayerSplit>(
+        *predicted_split.event_changes.front().current));
+    CHECK(predicted_split.state_diff.structural_change);
+    REQUIRE(timeline.state()->player_count() == 2);
+    const auto predicted_checkpoint = timeline.state()->checkpoint();
+    REQUIRE(predicted_checkpoint.players.size() == 2);
+    const auto child = predicted_checkpoint.players[1].entity_id;
+    CHECK(predicted_checkpoint.players[1].prediction_key == dots::simulation::PredictionKey{
+                                                                .owner_id = owner,
+                                                                .input_id = InputCommandId{0},
+                                                                .child_ordinal = 0,
+                                                            });
+
+    REQUIRE(std::holds_alternative<Commit>(
+        timeline.advance(mycore::rollback::CommandSequence{1},
+                         TickStimulus{.commands = {input(owner, 1, {1.0F, 0.0F})}})));
+
+    World authority{rules};
+    REQUIRE_FALSE(authority.restore(checkpoint).has_value());
+    REQUIRE(
+        std::holds_alternative<dots::simulation::TickJournal>(authority.advance(input(owner, 0))));
+    World expected{rules};
+    REQUIRE_FALSE(expected.restore(authority.checkpoint()).has_value());
+    REQUIRE(std::holds_alternative<dots::simulation::TickJournal>(
+        expected.advance(input(owner, 1, {1.0F, 0.0F}))));
+
+    const auto& reconciled =
+        require_commit(timeline.reconcile(authority_frame(authority.checkpoint(), scope, 0)));
+    CHECK(reconciled.replayed_frame_count == 1);
+    REQUIRE(reconciled.event_changes.size() == 1);
+    CHECK(reconciled.event_changes.front().transition ==
+          mycore::rollback::EventTransition::Retracted);
+    CHECK(reconciled.state_diff.structural_change);
+    CHECK(timeline.state()->checkpoint() == expected.checkpoint());
+    CHECK(timeline.state()->player_count() == 1);
+    CHECK(timeline.state()->contains(*parent));
+    CHECK_FALSE(timeline.state()->contains(child));
+}
+
+TEST_CASE("Dots prediction journals structural merge through the rollback timeline",
+          "[dots][prediction][rollback][merge]") {
+    auto rules = dots::simulation::WorldRules{};
+    rules.child_launch_speed_units_per_second = 0.0F;
+    rules.cohesion_speed_units_per_second = 0.0F;
+    rules.merge_delay_ticks = 2;
+    World initial{rules};
+    constexpr auto owner = PlayerOwnerId{4};
+    const auto parent = initial.spawn_player(owner);
+    REQUIRE(parent.has_value());
+    const auto checkpoint = initial.checkpoint();
+    const auto scope = require_scope(checkpoint,
+                                     PredictionProfile::FullReplicated,
+                                     dots::prediction::kCurrentPredictionMechanics,
+                                     {owner});
+    auto timeline = initialized_timeline(checkpoint, scope);
+
+    const auto split_commit =
+        require_commit(timeline.advance(mycore::rollback::CommandSequence{0},
+                                        TickStimulus{.commands = {input(owner, 0, {}, true)}}));
+    REQUIRE(split_commit.event_changes.size() == 1);
+    CHECK(std::holds_alternative<dots::simulation::PlayerSplit>(
+        *split_commit.event_changes.front().current));
+    REQUIRE(std::holds_alternative<Commit>(
+        timeline.advance(mycore::rollback::CommandSequence{1}, TickStimulus{})));
+
+    const auto merge_commit =
+        require_commit(timeline.advance(mycore::rollback::CommandSequence{2}, TickStimulus{}));
+    REQUIRE(merge_commit.event_changes.size() == 1);
+    CHECK(merge_commit.event_changes.front().transition ==
+          mycore::rollback::EventTransition::FirstPredicted);
+    CHECK(std::holds_alternative<dots::simulation::PiecesMerged>(
+        *merge_commit.event_changes.front().current));
+    CHECK(merge_commit.state_diff.structural_change);
+    CHECK(timeline.state()->player_count() == 1);
+    CHECK(timeline.state()->contains(*parent));
+    CHECK(timeline.state()->mass(*parent) == dots::simulation::kInitialPlayerMass);
+}
+
+TEST_CASE("Dots events demonstrate predicted-once, cancelable, and confirmed-only consequences",
+          "[dots][prediction][rollback][consequences]") {
+    ConsequenceDemonstrationRouter router{
+        SplitFlashHandler{},
+        SplitTrailHandler{},
+        ConfirmedDefeatHandler{},
+    };
+
+    auto split_rules = dots::simulation::WorldRules{};
+    split_rules.initial_player_mass = 64.0F;
+    split_rules.child_launch_speed_units_per_second = 0.0F;
+    World split_initial{split_rules};
+    constexpr auto split_owner = PlayerOwnerId{0};
+    REQUIRE(split_initial.spawn_player(split_owner).has_value());
+    const auto split_checkpoint = split_initial.checkpoint();
+    const auto split_scope = require_scope(split_checkpoint,
+                                           PredictionProfile::FullReplicated,
+                                           dots::prediction::kCurrentPredictionMechanics,
+                                           {split_owner});
+    auto split_timeline = initialized_timeline(split_checkpoint, split_scope);
+    const auto split_commit =
+        require_commit(split_timeline.advance(mycore::rollback::CommandSequence{0},
+                                              TickStimulus{
+                                                  .commands = {input(split_owner, 0, {}, true)},
+                                              }));
+    CHECK(router.consume(split_commit).failures.empty());
+    CHECK(router.consume(split_commit).failures.empty());
+    CHECK(router.handler<SplitFlashHandler>().delivery_count == 1);
+    CHECK(router.handler<SplitTrailHandler>().prediction_count == 1);
+
+    World rejected_split{split_rules};
+    REQUIRE_FALSE(rejected_split.restore(split_checkpoint).has_value());
+    REQUIRE(std::holds_alternative<dots::simulation::TickJournal>(
+        rejected_split.advance(input(split_owner, 0))));
+    const auto rejected_commit = require_commit(
+        split_timeline.reconcile(authority_frame(rejected_split.checkpoint(), split_scope, 0)));
+    CHECK(router.consume(rejected_commit).failures.empty());
+    CHECK(router.handler<SplitFlashHandler>().delivery_count == 1);
+    CHECK(router.handler<SplitTrailHandler>().cancellation_count == 1);
+
+    World confirmed_split_initial{split_rules};
+    constexpr auto confirmed_split_owner = PlayerOwnerId{1};
+    REQUIRE(confirmed_split_initial.spawn_player(confirmed_split_owner).has_value());
+    const auto confirmed_split_checkpoint = confirmed_split_initial.checkpoint();
+    const auto confirmed_split_scope = require_scope(confirmed_split_checkpoint,
+                                                     PredictionProfile::FullReplicated,
+                                                     dots::prediction::kCurrentPredictionMechanics,
+                                                     {confirmed_split_owner});
+    auto confirmed_split_timeline =
+        initialized_timeline(confirmed_split_checkpoint, confirmed_split_scope);
+    const auto predicted_confirmed_split = require_commit(confirmed_split_timeline.advance(
+        mycore::rollback::CommandSequence{0},
+        TickStimulus{
+            .commands = {input(confirmed_split_owner, 0, {}, true)},
+        }));
+    CHECK(router.consume(predicted_confirmed_split).failures.empty());
+    World confirmed_split_authority{split_rules};
+    REQUIRE_FALSE(confirmed_split_authority.restore(confirmed_split_checkpoint).has_value());
+    const auto confirmed_split_journal = std::get<dots::simulation::TickJournal>(
+        confirmed_split_authority.advance(input(confirmed_split_owner, 0, {}, true)));
+    REQUIRE(confirmed_split_journal.events.size() == 1);
+    const auto confirmed_split_commit = require_commit(confirmed_split_timeline.reconcile({
+        .tick = confirmed_split_authority.tick(),
+        .acknowledged_through = mycore::rollback::CommandSequence{0},
+        .scope_epoch = confirmed_split_scope.scope_epoch,
+        .checkpoint = confirmed_split_authority.checkpoint(),
+        .events = {{
+            .disposition = mycore::rollback::AuthorityEventDisposition::Confirmed,
+            .key = dots::simulation::simulation_event_key(confirmed_split_journal.events.front()),
+            .event = confirmed_split_journal.events.front(),
+        }},
+    }));
+    CHECK(router.consume(confirmed_split_commit).failures.empty());
+    CHECK(router.handler<SplitFlashHandler>().delivery_count == 2);
+    CHECK(router.handler<SplitTrailHandler>().prediction_count == 2);
+    CHECK(router.handler<SplitTrailHandler>().confirmation_count == 1);
+
+    World absorption_initial;
+    constexpr auto absorber_owner = PlayerOwnerId{10};
+    constexpr auto victim_owner = PlayerOwnerId{20};
+    REQUIRE(absorption_initial.spawn_player(absorber_owner).has_value());
+    REQUIRE(absorption_initial.spawn_player(victim_owner).has_value());
+    auto absorption_checkpoint = absorption_initial.checkpoint();
+    absorption_checkpoint.players.front().mass = 17.0F;
+    REQUIRE_FALSE(absorption_initial.restore(absorption_checkpoint).has_value());
+    const auto absorption_scope = require_scope(absorption_checkpoint,
+                                                PredictionProfile::FullReplicated,
+                                                dots::prediction::kCurrentPredictionMechanics,
+                                                {absorber_owner});
+    auto absorption_timeline = initialized_timeline(absorption_checkpoint, absorption_scope);
+    const auto absorption_stimulus = TickStimulus{
+        .commands = {input(absorber_owner, 0)},
+        .remote_movement_assumptions =
+            {
+                remote(victim_owner, absorption_checkpoint.tick),
+            },
+    };
+    const auto absorption_commit = require_commit(
+        absorption_timeline.advance(mycore::rollback::CommandSequence{0}, absorption_stimulus));
+    REQUIRE(absorption_commit.event_changes.size() == 1);
+    CHECK(router.consume(absorption_commit).failures.empty());
+    CHECK(router.handler<ConfirmedDefeatHandler>().delivery_count == 0);
+
+    World absorption_authority;
+    REQUIRE_FALSE(absorption_authority.restore(absorption_checkpoint).has_value());
+    const std::vector authority_commands{
+        input(absorber_owner, 0),
+        TickCommand{
+            .type = TickCommandType::AssumeMovement,
+            .input_id = InputCommandId::invalid(),
+            .owner_id = victim_owner,
+            .movement = {},
+        },
+    };
+    const auto authority_journal =
+        std::get<dots::simulation::TickJournal>(absorption_authority.advance(authority_commands));
+    REQUIRE(authority_journal.events.size() == 1);
+    const auto confirmed_commit = require_commit(absorption_timeline.reconcile({
+        .tick = absorption_authority.tick(),
+        .acknowledged_through = mycore::rollback::CommandSequence{0},
+        .scope_epoch = absorption_scope.scope_epoch,
+        .checkpoint = absorption_authority.checkpoint(),
+        .events = {{
+            .disposition = mycore::rollback::AuthorityEventDisposition::Confirmed,
+            .key = dots::simulation::simulation_event_key(authority_journal.events.front()),
+            .event = authority_journal.events.front(),
+        }},
+    }));
+    CHECK(router.consume(confirmed_commit).failures.empty());
+    CHECK(router.consume(confirmed_commit).failures.empty());
+    CHECK(router.handler<ConfirmedDefeatHandler>().delivery_count == 1);
 }

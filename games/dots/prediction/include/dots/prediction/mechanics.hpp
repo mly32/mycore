@@ -9,7 +9,7 @@ namespace dots::prediction {
 enum class MechanicEventKind : std::uint8_t {
     FoodConsumed,
     PlayerAbsorbed,
-    SplitOccurred,
+    PlayerSplit,
     PiecesMerged,
 };
 
@@ -113,11 +113,11 @@ inline constexpr std::array kMechanicContracts{
                               state_domain_bit(StateDomain::PlayerKinematics) |
                               state_domain_bit(StateDomain::PlayerMass) |
                               state_domain_bit(StateDomain::PredictedIdentity),
-        .events = mechanic_event_bit(MechanicEventKind::SplitOccurred) |
+        .events = mechanic_event_bit(MechanicEventKind::PlayerSplit) |
                   mechanic_event_bit(MechanicEventKind::PiecesMerged),
         .expands_ownership = true,
         .expands_spatial_interactions = true,
-        .implemented = false,
+        .implemented = true,
     },
 };
 

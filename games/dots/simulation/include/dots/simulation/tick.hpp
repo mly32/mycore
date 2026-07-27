@@ -18,14 +18,16 @@ enum class TickCommandType : std::uint8_t {
 };
 
 // A tick accepts at most one command for each owner. ApplyInput installs a newer sampled movement
-// and command identity; StopMovement is an explicit deterministic cause with an invalid input ID
-// and zero movement. AssumeMovement installs a retained remote level assumption with an invalid
-// input ID without claiming that the authoritative owner consumed a new command.
+// and command identity and may carry one split edge action. StopMovement is an explicit
+// deterministic cause with an invalid input ID and zero movement. AssumeMovement installs a
+// retained remote level assumption with an invalid input ID without claiming that the
+// authoritative owner consumed a new command.
 struct TickCommand {
     TickCommandType type{TickCommandType::ApplyInput};
     InputCommandId input_id;
     PlayerOwnerId owner_id;
     mycore::math::Vector2 movement;
+    bool split_requested{};
 
     bool operator==(const TickCommand&) const = default;
 };
@@ -33,6 +35,7 @@ struct TickCommand {
 struct TickMechanics {
     bool player_absorption{true};
     bool food_consumption{true};
+    bool split_merge{true};
 
     bool operator==(const TickMechanics&) const = default;
 };
@@ -58,7 +61,30 @@ struct PlayerAbsorbed {
     bool operator==(const PlayerAbsorbed&) const = default;
 };
 
-using SimulationEvent = std::variant<FoodConsumed, PlayerAbsorbed>;
+struct PlayerSplit {
+    mycore::time::Tick tick;
+    PlayerOwnerId owner_id;
+    InputCommandId input_id;
+    std::uint16_t child_ordinal{};
+    EntityId parent_entity_id;
+    EntityId child_entity_id;
+    float parent_mass{};
+    float child_mass{};
+
+    bool operator==(const PlayerSplit&) const = default;
+};
+
+struct PiecesMerged {
+    mycore::time::Tick tick;
+    PlayerOwnerId owner_id;
+    EntityId survivor_entity_id;
+    EntityId consumed_entity_id;
+    float combined_mass{};
+
+    bool operator==(const PiecesMerged&) const = default;
+};
+
+using SimulationEvent = std::variant<FoodConsumed, PlayerAbsorbed, PlayerSplit, PiecesMerged>;
 
 struct FoodConsumedKey {
     EntityId food_entity_id;
@@ -72,7 +98,23 @@ struct PlayerAbsorbedKey {
     auto operator<=>(const PlayerAbsorbedKey&) const = default;
 };
 
-using SimulationEventKey = std::variant<FoodConsumedKey, PlayerAbsorbedKey>;
+struct PlayerSplitKey {
+    PlayerOwnerId owner_id;
+    InputCommandId input_id;
+    std::uint16_t child_ordinal{};
+
+    auto operator<=>(const PlayerSplitKey&) const = default;
+};
+
+struct PiecesMergedKey {
+    EntityId first_entity_id;
+    EntityId second_entity_id;
+
+    auto operator<=>(const PiecesMergedKey&) const = default;
+};
+
+using SimulationEventKey =
+    std::variant<FoodConsumedKey, PlayerAbsorbedKey, PlayerSplitKey, PiecesMergedKey>;
 
 [[nodiscard]] SimulationEventKey simulation_event_key(const SimulationEvent& event);
 

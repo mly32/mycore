@@ -17,7 +17,8 @@ namespace {
 
 constexpr MechanicMask kSupportedMechanics = mechanic_bit(PredictionMechanic::Movement) |
                                              mechanic_bit(PredictionMechanic::FoodConsumption) |
-                                             mechanic_bit(PredictionMechanic::PlayerAbsorption);
+                                             mechanic_bit(PredictionMechanic::PlayerAbsorption) |
+                                             mechanic_bit(PredictionMechanic::SplitMerge);
 
 template <class Id> [[nodiscard]] bool is_strictly_sorted(const std::vector<Id>& values) {
     return std::adjacent_find(values.begin(), values.end(), [](Id lhs, Id rhs) {
@@ -316,6 +317,7 @@ WorldModel::step(State& state, const Stimulus& stimulus, const Scope& scope) con
                 includes_mechanic(scope.mechanics, PredictionMechanic::PlayerAbsorption),
             .food_consumption =
                 includes_mechanic(scope.mechanics, PredictionMechanic::FoodConsumption),
+            .split_merge = includes_mechanic(scope.mechanics, PredictionMechanic::SplitMerge),
         });
     if (const auto* tick_error = std::get_if<simulation::TickError>(&result)) {
         return PredictionError{
@@ -421,11 +423,26 @@ WorldModel::EventKey WorldModel::event_key(const Event& event) const {
 
 std::size_t
 SimulationEventKeyHash::operator()(const simulation::SimulationEventKey& key) const noexcept {
+    const auto combine = [](std::size_t seed, std::size_t value) {
+        constexpr auto kHashConstant = std::size_t{0x9E3779B9};
+        return seed ^ (value + kHashConstant + (seed << 6U) + (seed >> 2U));
+    };
     if (const auto* food = std::get_if<simulation::FoodConsumedKey>(&key)) {
-        return (static_cast<std::size_t>(food->food_entity_id.value()) << 1U) | std::size_t{0};
+        return combine(std::size_t{0}, food->food_entity_id.value());
     }
-    const auto* absorbed = std::get_if<simulation::PlayerAbsorbedKey>(&key);
-    return (static_cast<std::size_t>(absorbed->victim_entity_id.value()) << 1U) | std::size_t{1};
+    if (const auto* absorbed = std::get_if<simulation::PlayerAbsorbedKey>(&key)) {
+        return combine(std::size_t{1}, absorbed->victim_entity_id.value());
+    }
+    if (const auto* split = std::get_if<simulation::PlayerSplitKey>(&key)) {
+        auto result = combine(std::size_t{2}, split->owner_id.value());
+        result = combine(result, split->input_id.value());
+        return combine(result, split->child_ordinal);
+    }
+    if (const auto* merged = std::get_if<simulation::PiecesMergedKey>(&key)) {
+        auto result = combine(std::size_t{3}, merged->first_entity_id.value());
+        return combine(result, merged->second_entity_id.value());
+    }
+    return 0;
 }
 
 } // namespace dots::prediction

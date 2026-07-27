@@ -23,12 +23,14 @@ void spawn_food(dots::simulation::World& world, mycore::math::Vector2 position, 
 
 [[nodiscard]] dots::simulation::TickCommand input_command(dots::simulation::PlayerOwnerId owner_id,
                                                           dots::simulation::InputCommandId input_id,
-                                                          mycore::math::Vector2 movement) {
+                                                          mycore::math::Vector2 movement,
+                                                          bool split_requested = false) {
     return {
         .type = dots::simulation::TickCommandType::ApplyInput,
         .input_id = input_id,
         .owner_id = owner_id,
         .movement = movement,
+        .split_requested = split_requested,
     };
 }
 
@@ -363,6 +365,23 @@ TEST_CASE("Checkpoint restore rejects invalid state without changing the World",
           dots::simulation::CheckpointRestoreError::InvalidEntityState);
     CHECK(world.checkpoint() == checkpoint_before_rejection);
     CHECK(world.last_tick_journal() == journal_before_rejection);
+
+    auto duplicate_prediction_key = checkpoint_before_rejection;
+    const auto prediction_key = dots::simulation::PredictionKey{
+        .owner_id = duplicate_prediction_key.players.front().owner_id,
+        .input_id = dots::simulation::InputCommandId{20},
+        .child_ordinal = 0,
+    };
+    duplicate_prediction_key.players.front().prediction_key = prediction_key;
+    duplicate_prediction_key.players[1].owner_id =
+        duplicate_prediction_key.players.front().owner_id;
+    duplicate_prediction_key.players[1].prediction_key = prediction_key;
+    duplicate_prediction_key.owners.front().player_ids.push_back(
+        duplicate_prediction_key.players[1].entity_id);
+    duplicate_prediction_key.owners.erase(duplicate_prediction_key.owners.begin() + 1);
+    CHECK(world.restore(duplicate_prediction_key) ==
+          dots::simulation::CheckpointRestoreError::InvalidEntityState);
+    CHECK(world.checkpoint() == checkpoint_before_rejection);
 
     auto invalid_geometry = checkpoint_before_rejection;
     invalid_geometry.players.front().position.x = std::numeric_limits<float>::max();
@@ -898,4 +917,211 @@ TEST_CASE("Safe player spawning checks the live radius of grown players",
     CHECK_FALSE(dots::simulation::circles_overlap(
         {.center = *world.position(*first_id), .radius = *world.radius(*first_id)},
         {.center = *world.position(*second_id), .radius = *world.radius(*second_id)}));
+}
+
+TEST_CASE("Split creates stable predicted children with launch and owner cooldown",
+          "[dots][simulation][split]") {
+    auto rules = dots::simulation::WorldRules{};
+    rules.initial_player_mass = 64.0F;
+    dots::simulation::World world{rules};
+    constexpr auto owner = dots::simulation::PlayerOwnerId{7};
+    const auto parent = world.spawn_player(owner);
+    REQUIRE(parent.has_value());
+
+    const auto journal = require_journal(world.advance(
+        input_command(owner, dots::simulation::InputCommandId{3}, {0.0F, 1.0F}, true)));
+    REQUIRE(journal.events.size() == 1);
+    const auto* split = std::get_if<dots::simulation::PlayerSplit>(&journal.events.front());
+    REQUIRE(split != nullptr);
+    CHECK(split->tick == mycore::time::Tick{1});
+    CHECK(split->parent_entity_id == *parent);
+    CHECK(split->child_entity_id == dots::simulation::EntityId{1});
+    CHECK(split->parent_mass == 32.0F);
+    CHECK(split->child_mass == 32.0F);
+    CHECK(dots::simulation::simulation_event_key(journal.events.front()) ==
+          dots::simulation::SimulationEventKey{dots::simulation::PlayerSplitKey{
+              .owner_id = owner,
+              .input_id = dots::simulation::InputCommandId{3},
+              .child_ordinal = 0,
+          }});
+
+    const auto checkpoint = world.checkpoint();
+    REQUIRE(checkpoint.owners.size() == 1);
+    REQUIRE(checkpoint.players.size() == 2);
+    CHECK(checkpoint.owners.front().split_cooldown_end_tick == mycore::time::Tick{16});
+    CHECK(checkpoint.players[0].mass == 32.0F);
+    CHECK(checkpoint.players[1].mass == 32.0F);
+    CHECK(checkpoint.players[0].merge_eligible_tick == mycore::time::Tick{151});
+    CHECK(checkpoint.players[1].merge_eligible_tick == mycore::time::Tick{151});
+    CHECK(checkpoint.players[1].prediction_key ==
+          dots::simulation::PredictionKey{
+              .owner_id = owner,
+              .input_id = dots::simulation::InputCommandId{3},
+              .child_ordinal = 0,
+          });
+    CHECK(checkpoint.players[0].position.x == Catch::Approx(0.0F));
+    CHECK(checkpoint.players[0].position.y == Catch::Approx(0.2F));
+    CHECK(checkpoint.players[1].position.x == Catch::Approx(0.0F));
+    CHECK(checkpoint.players[1].position.y == Catch::Approx(0.8F));
+    CHECK(checkpoint.players[1].launch_velocity.y == Catch::Approx(17.4F));
+
+    const auto cooldown_journal = require_journal(world.advance(
+        input_command(owner, dots::simulation::InputCommandId{4}, {0.0F, 1.0F}, true)));
+    CHECK(cooldown_journal.events.empty());
+    CHECK(world.player_count() == 2);
+
+    for (auto tick = 0; tick < 13; ++tick) {
+        REQUIRE(world.step());
+    }
+    const auto recast_journal = require_journal(world.advance(
+        input_command(owner, dots::simulation::InputCommandId{5}, {0.0F, 1.0F}, true)));
+    CHECK(world.tick() == mycore::time::Tick{16});
+    CHECK(recast_journal.events.size() == 2);
+    CHECK(world.player_count() == 4);
+}
+
+TEST_CASE("Split processes stable parent order and respects the owner piece cap",
+          "[dots][simulation][split]") {
+    auto rules = dots::simulation::WorldRules{};
+    rules.initial_player_mass = 32.0F;
+    rules.maximum_pieces_per_owner = 3;
+    dots::simulation::World world{rules};
+    constexpr auto owner = dots::simulation::PlayerOwnerId{2};
+    const auto first = world.spawn_player(owner, {-20.0F, 0.0F});
+    const auto second = world.spawn_player(owner, {20.0F, 0.0F});
+    REQUIRE(first.has_value());
+    REQUIRE(second.has_value());
+
+    const auto journal = require_journal(
+        world.advance(input_command(owner, dots::simulation::InputCommandId{0}, {}, true)));
+    REQUIRE(journal.events.size() == 1);
+    const auto* split = std::get_if<dots::simulation::PlayerSplit>(&journal.events.front());
+    REQUIRE(split != nullptr);
+    CHECK(split->parent_entity_id == *first);
+    CHECK(split->child_entity_id == dots::simulation::EntityId{2});
+    CHECK(world.player_count() == 3);
+    CHECK(world.mass(*first) == 16.0F);
+    CHECK(world.mass(*second) == 32.0F);
+    CHECK(world.mass(dots::simulation::EntityId{2}) == 16.0F);
+    CHECK(world.position(dots::simulation::EntityId{2})->x == Catch::Approx(-19.4F));
+    CHECK(world.checkpoint().players[2].launch_velocity.x == Catch::Approx(17.4F));
+}
+
+TEST_CASE("Split pieces merge only after their deadline and conserve mass",
+          "[dots][simulation][merge]") {
+    auto rules = dots::simulation::WorldRules{};
+    rules.child_launch_speed_units_per_second = 0.0F;
+    rules.cohesion_speed_units_per_second = 0.0F;
+    rules.merge_delay_ticks = 2;
+    dots::simulation::World world{rules};
+    constexpr auto owner = dots::simulation::PlayerOwnerId{5};
+    const auto parent = world.spawn_player(owner);
+    REQUIRE(parent.has_value());
+
+    const auto split_journal = require_journal(
+        world.advance(input_command(owner, dots::simulation::InputCommandId{0}, {}, true)));
+    REQUIRE(std::holds_alternative<dots::simulation::PlayerSplit>(split_journal.events.front()));
+    REQUIRE(world.player_count() == 2);
+    REQUIRE(world.step());
+    CHECK(world.player_count() == 2);
+
+    const auto merge_journal =
+        require_journal(world.advance(std::span<const dots::simulation::TickCommand>{}));
+    REQUIRE(merge_journal.events.size() == 1);
+    const auto* merged = std::get_if<dots::simulation::PiecesMerged>(&merge_journal.events.front());
+    REQUIRE(merged != nullptr);
+    CHECK(merged->tick == mycore::time::Tick{3});
+    CHECK(merged->survivor_entity_id == *parent);
+    CHECK(merged->consumed_entity_id == dots::simulation::EntityId{1});
+    CHECK(merged->combined_mass == dots::simulation::kInitialPlayerMass);
+    CHECK(dots::simulation::simulation_event_key(merge_journal.events.front()) ==
+          dots::simulation::SimulationEventKey{dots::simulation::PiecesMergedKey{
+              .first_entity_id = *parent,
+              .second_entity_id = dots::simulation::EntityId{1},
+          }});
+    CHECK(world.player_count() == 1);
+    CHECK(world.mass(*parent) == dots::simulation::kInitialPlayerMass);
+}
+
+TEST_CASE("Merge-eligible pieces cohere toward their mass-weighted owner centroid",
+          "[dots][simulation][merge][cohesion]") {
+    dots::simulation::World source;
+    constexpr auto owner = dots::simulation::PlayerOwnerId{9};
+    const auto first = source.spawn_player(owner, {-10.0F, 0.0F});
+    const auto second = source.spawn_player(owner, {10.0F, 0.0F});
+    REQUIRE(first.has_value());
+    REQUIRE(second.has_value());
+    auto checkpoint = source.checkpoint();
+    checkpoint.players[0].merge_eligible_tick = {};
+    checkpoint.players[1].merge_eligible_tick = {};
+
+    dots::simulation::World world;
+    REQUIRE_FALSE(world.restore(checkpoint).has_value());
+    const auto journal =
+        require_journal(world.advance(std::span<const dots::simulation::TickCommand>{}));
+    CHECK(journal.events.empty());
+    CHECK(world.position(*first)->x == Catch::Approx(-9.9F));
+    CHECK(world.position(*second)->x == Catch::Approx(9.9F));
+}
+
+TEST_CASE("Stable merge uses mass-weighted position and launch velocity",
+          "[dots][simulation][merge]") {
+    auto rules = dots::simulation::WorldRules{};
+    rules.launch_decay_units_per_second_squared = 0.0F;
+    rules.cohesion_speed_units_per_second = 0.0F;
+    dots::simulation::World source{rules};
+    constexpr auto owner = dots::simulation::PlayerOwnerId{13};
+    const auto first = source.spawn_player(owner, {-1.0F, 0.0F});
+    const auto second = source.spawn_player(owner, {2.0F, 0.0F});
+    REQUIRE(first.has_value());
+    REQUIRE(second.has_value());
+    auto checkpoint = source.checkpoint();
+    checkpoint.players[0].mass = 9.0F;
+    checkpoint.players[0].launch_velocity = {3.0F, 0.0F};
+    checkpoint.players[0].merge_eligible_tick = {};
+    checkpoint.players[1].mass = 16.0F;
+    checkpoint.players[1].launch_velocity = {-1.0F, 0.0F};
+    checkpoint.players[1].merge_eligible_tick = {};
+
+    dots::simulation::World world{rules};
+    REQUIRE_FALSE(world.restore(checkpoint).has_value());
+    const auto journal =
+        require_journal(world.advance(std::span<const dots::simulation::TickCommand>{}));
+    REQUIRE(journal.events.size() == 1);
+    REQUIRE(std::holds_alternative<dots::simulation::PiecesMerged>(journal.events.front()));
+    CHECK(world.player_count() == 1);
+    CHECK(world.contains(*first));
+    CHECK_FALSE(world.contains(*second));
+    CHECK(world.mass(*first) == 25.0F);
+    CHECK(world.position(*first)->x == Catch::Approx(0.9346667F));
+    CHECK(world.checkpoint().players.front().launch_velocity.x == Catch::Approx(0.44F));
+}
+
+TEST_CASE("Checkpoint replay regenerates identical split and merge structure",
+          "[dots][simulation][checkpoint][replay][split][merge]") {
+    auto rules = dots::simulation::WorldRules{};
+    rules.child_launch_speed_units_per_second = 0.0F;
+    rules.cohesion_speed_units_per_second = 0.0F;
+    rules.merge_delay_ticks = 2;
+    dots::simulation::World source{rules};
+    constexpr auto owner = dots::simulation::PlayerOwnerId{12};
+    REQUIRE(source.spawn_player(owner).has_value());
+
+    dots::simulation::World first{rules};
+    dots::simulation::World second{rules};
+    REQUIRE_FALSE(first.restore(source.checkpoint()).has_value());
+    REQUIRE_FALSE(second.restore(source.checkpoint()).has_value());
+    const auto split = input_command(owner, dots::simulation::InputCommandId{0}, {}, true);
+    CHECK(require_journal(first.advance(split)) == require_journal(second.advance(split)));
+    CHECK(first.checkpoint() == second.checkpoint());
+    CHECK(require_journal(first.advance(std::span<const dots::simulation::TickCommand>{})) ==
+          require_journal(second.advance(std::span<const dots::simulation::TickCommand>{})));
+    const auto first_merge =
+        require_journal(first.advance(std::span<const dots::simulation::TickCommand>{}));
+    const auto second_merge =
+        require_journal(second.advance(std::span<const dots::simulation::TickCommand>{}));
+    CHECK(first_merge == second_merge);
+    REQUIRE(first_merge.events.size() == 1);
+    CHECK(std::holds_alternative<dots::simulation::PiecesMerged>(first_merge.events.front()));
+    CHECK(first.checkpoint() == second.checkpoint());
 }
