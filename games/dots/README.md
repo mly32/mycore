@@ -115,6 +115,12 @@ requests an authoritative respawn. Respawn is edge-triggered: holding a key send
 not one request per input tick. Press Escape to quit. Mouse steering and spectator wheel zoom
 pause while the debug panel owns the mouse.
 
+Split, launch, cohesion, and merge are implemented in the shared deterministic simulation and
+rollback adapter, but protocol v3 and the graphical input path cannot submit a split action yet.
+Consequently there is no split binding in the client configuration or schema. The mechanic's
+immutable match rules are simulation-owned rather than client presentation settings; protocol
+and client-runtime integration are the next Feature 14 steps.
+
 [`config/dots-client.toml`](config/dots-client.toml) documents window, network, input, simulation,
 view, spectator, debug, and color settings. Its `#:schema` header connects the checked-in JSON
 schema for editor completion and early validation. Spectator pan speed defaults to 12 world units
