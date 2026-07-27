@@ -11,6 +11,9 @@
 
 - [Building MyCore](building.md): prerequisites, presets, testing, packaging, and IDE setup.
 - [C++ style guide](cpp_style_guide.md): conventions, ownership boundaries, and API design.
+- [Rollback library guide](rollback_library_guide.md): onboarding a game to
+  `MyCore::Rollback`, implementing a model, driving the timeline, consequence handlers, and
+  recovery.
 - [Server-authoritative networking](server_authoritative_networking_guide.md): protocol,
   transport, authority, replication, impairment, and the prediction/interpolation model.
 - [Networked prediction and time reference](networked_prediction_reference.md): canonical state

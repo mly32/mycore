@@ -3,6 +3,8 @@
 This document is the canonical design contract for the game-neutral rollback mechanism and its
 first Dots integration. Feature plans define delivery order, and
 `debugging_and_observability.md` defines operator-facing output.
+For a game-integration recipe and public API reference, use the
+[rollback library guide](rollback_library_guide.md).
 
 ## Status and Scope
 
