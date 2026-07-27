@@ -12,6 +12,11 @@ first Dots integration. Feature plans define delivery order, and
   atomic checkpoint restore, owner-scoped atomic ticks, stable typed food/absorption journals,
   immutable rules, and predicted identity storage. Split/merge state fields are present but inert
   until their mechanics are implemented.
+- **Current Dots prediction adapter:** Feature 14 step 3 provides mechanic contracts,
+  `InteractionClosure`, `FullReplicated`, and `OwnedMovement` scopes, causal-coverage fallback,
+  scope projection, retained remote movement assumptions, canonical checkpoint digests, typed
+  differences, and complete-World rollback tests for movement, food, and absorption. Offline
+  play advances through this adapter.
 - **Current client integration:** the production network client still uses Feature 11's owned
   position predictor while complete Dots World prediction remains under construction.
 - **Remote presentation baseline:** Feature 12 renders remote entities from delayed known
@@ -192,10 +197,16 @@ scratch `World`, rebuilds radius, entity lookup, and spatial-grid state, and pub
 the entire checkpoint succeeds. Restoring a checkpoint intentionally starts with an empty event
 journal at that checkpoint tick because events are replay outputs, not checkpoint state.
 
-Protocol version 4 carries a checkpoint schema identifier and a 64-bit FNV-1a digest over a
-documented canonical sequence of primitive field bytes. The client hydrates and validates the
-typed checkpoint, recomputes the digest, and rejects an incompatible frame before mutation.
-Digest equality is diagnostic; typed validation and differences remain the correctness gate.
+The implemented local digest is 64-bit FNV-1a over big-endian primitive bytes. Its sequence is:
+the `DOTS` tag and schema `1`; all `WorldRules` fields in declaration order; tick and next entity
+ID; then owner, player, and food counts and records in canonical checkpoint order. Owner records
+include piece IDs, movement, last movement, input ID, and split cooldown. Player records include
+identity, owner, position, mass, launch velocity, merge deadline, and the tagged optional
+prediction key. Food records include identity and position. Counts and ticks use 64 bits; entity,
+owner, and input IDs use 32 bits; the prediction-key ordinal uses 16 bits; floats use their
+32-bit IEEE representation. Protocol version 4 will carry the schema identifier and this digest.
+The client hydrates and validates the typed checkpoint before mutation. Digest equality remains
+diagnostic; typed validation and differences are the correctness gate.
 
 Feature 16 delta snapshots must first materialize the same coherent checkpoint contract. A
 partial delta record is not a rollback checkpoint.
@@ -282,10 +293,13 @@ Server, offline mode, and prediction execute the same owner-command tick:
 
 No simulation callback performs presentation, logging, networking, analytics, or audio work.
 
-The implemented step-2 tick accepts an unordered batch containing at most one command per owner,
+The implemented tick accepts an unordered batch containing at most one command per owner,
 stages movement and command identity, then advances every piece owned by that owner. It currently
 runs movement, enemy absorption, and food consumption before atomically committing the World and
-its `TickJournal`. Invalid or duplicate commands and unrepresentable simulation geometry leave
+its `TickJournal`. Prediction may select absorption and food processing independently after
+mechanic dependencies are resolved. It installs a retained remote `AssumeMovement` without
+advancing that owner's authoritative input identity; this is the exact causal input replayed
+after correction. Invalid or duplicate commands and unrepresentable simulation geometry leave
 the prior checkpoint and journal unchanged. The server expresses expiration of its five-tick
 input hold as an explicit `StopMovement` command. Split, launch, cohesion, and merge extend this
 same transaction in step 4 rather than adding a second stepping path.

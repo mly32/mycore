@@ -40,6 +40,7 @@ target_link_libraries(
         dots_client_support
         Dots::AppCli
         Dots::ClientRuntime
+        Dots::Prediction
         Dots::Presentation
         Dots::Server
         MyCore::DebugUI

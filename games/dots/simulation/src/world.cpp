@@ -34,11 +34,6 @@ template <typename T> void reserve_for_append(std::vector<T>& values) {
     return std::isfinite(value.x) && std::isfinite(value.y);
 }
 
-[[nodiscard]] bool is_normalized(mycore::math::Vector2 value) noexcept {
-    constexpr float kLengthTolerance = 0.0001F;
-    return is_finite(value) && mycore::math::length_squared(value) <= 1.0F + kLengthTolerance;
-}
-
 [[nodiscard]] bool valid_rules(const WorldRules& rules) noexcept {
     return std::isfinite(rules.initial_player_mass) && rules.initial_player_mass > 0.0F &&
            std::isfinite(rules.food_mass) && rules.food_mass > 0.0F &&
@@ -396,7 +391,8 @@ std::optional<CheckpointRestoreError> World::restore(const WorldCheckpoint& chec
                                 [](EntityId entity_id) {
                                     return entity_id;
                                 }) ||
-            !is_normalized(owner.movement) || !is_normalized(owner.last_non_zero_movement)) {
+            !is_valid_player_movement(owner.movement) ||
+            !is_valid_player_movement(owner.last_non_zero_movement)) {
             return CheckpointRestoreError::InvalidOwnerState;
         }
         expected_owner_pieces.emplace(owner.owner_id.value(), std::vector<EntityId>{});
@@ -525,6 +521,15 @@ std::optional<TickError> World::apply_commands(std::span<const TickCommand> comm
             }
             owner->movement = {};
             break;
+        case TickCommandType::AssumeMovement:
+            if (command.input_id.is_valid() || !is_valid_player_movement(command.movement)) {
+                return TickError::InvalidCommand;
+            }
+            owner->movement = command.movement;
+            if (mycore::math::length_squared(owner->movement) > 0.0F) {
+                owner->last_non_zero_movement = owner->movement;
+            }
+            break;
         default:
             return TickError::InvalidCommand;
         }
@@ -532,28 +537,30 @@ std::optional<TickError> World::apply_commands(std::span<const TickCommand> comm
     return std::nullopt;
 }
 
-TickResult World::advance(std::span<const TickCommand> commands) {
+TickResult World::advance(std::span<const TickCommand> commands, TickMechanics mechanics) {
     auto next_owners = owners_;
     if (const auto error = apply_commands(commands, next_owners)) {
         return *error;
     }
 
     TickJournal journal;
-    if (!advance_simulation(std::move(next_owners), journal)) {
+    if (!advance_simulation(std::move(next_owners), mechanics, journal)) {
         return TickError::SimulationRejected;
     }
     return journal;
 }
 
-TickResult World::advance(const TickCommand& command) {
-    return advance(std::span{&command, std::size_t{1}});
+TickResult World::advance(const TickCommand& command, TickMechanics mechanics) {
+    return advance(std::span{&command, std::size_t{1}}, mechanics);
 }
 
 bool World::step() {
     return std::holds_alternative<TickJournal>(advance(std::span<const TickCommand>{}));
 }
 
-bool World::advance_simulation(std::vector<OwnerCheckpoint> next_owners, TickJournal& journal) {
+bool World::advance_simulation(std::vector<OwnerCheckpoint> next_owners,
+                               TickMechanics mechanics,
+                               TickJournal& journal) {
     if (tick_.value() == std::numeric_limits<std::uint64_t>::max()) {
         return false;
     }
@@ -587,26 +594,31 @@ bool World::advance_simulation(std::vector<OwnerCheckpoint> next_owners, TickJou
     }
 
     std::vector<PlayerAbsorptionCandidate> absorption_candidates;
-    for (std::size_t first = 0; first < entity_ids_.size(); ++first) {
-        const Circle first_circle{.center = next_positions[first], .radius = radii_[first]};
-        for (const auto candidate_id : collision_grid.query(first_circle)) {
-            const auto second_index = find_index(candidate_id);
-            if (!second_index || *second_index <= first) {
-                continue;
-            }
-            const auto second = *second_index;
-            if (owner_ids_[first] == owner_ids_[second]) {
-                continue;
-            }
-            const Circle second_circle{.center = next_positions[second], .radius = radii_[second]};
-            if (!circles_overlap(first_circle, second_circle) ||
-                masses_[first] == masses_[second]) {
-                continue;
-            }
-            if (masses_[first] > masses_[second]) {
-                absorption_candidates.push_back({.absorber_index = first, .victim_index = second});
-            } else {
-                absorption_candidates.push_back({.absorber_index = second, .victim_index = first});
+    if (mechanics.player_absorption) {
+        for (std::size_t first = 0; first < entity_ids_.size(); ++first) {
+            const Circle first_circle{.center = next_positions[first], .radius = radii_[first]};
+            for (const auto candidate_id : collision_grid.query(first_circle)) {
+                const auto second_index = find_index(candidate_id);
+                if (!second_index || *second_index <= first) {
+                    continue;
+                }
+                const auto second = *second_index;
+                if (owner_ids_[first] == owner_ids_[second]) {
+                    continue;
+                }
+                const Circle second_circle{.center = next_positions[second],
+                                           .radius = radii_[second]};
+                if (!circles_overlap(first_circle, second_circle) ||
+                    masses_[first] == masses_[second]) {
+                    continue;
+                }
+                if (masses_[first] > masses_[second]) {
+                    absorption_candidates.push_back(
+                        {.absorber_index = first, .victim_index = second});
+                } else {
+                    absorption_candidates.push_back(
+                        {.absorber_index = second, .victim_index = first});
+                }
             }
         }
     }
@@ -650,25 +662,27 @@ bool World::advance_simulation(std::vector<OwnerCheckpoint> next_owners, TickJou
     }
 
     std::vector<FoodConsumption> food_consumptions;
-    for (std::size_t player_index = 0; player_index < entity_ids_.size(); ++player_index) {
-        if (!live_players[player_index]) {
-            continue;
-        }
-        const Circle player_circle{.center = next_positions[player_index],
-                                   .radius = radii_[player_index]};
-        for (const auto candidate : spatial_grid_.query(player_circle)) {
-            const auto food_index = find_food_index(candidate);
-            if (!food_index) {
+    if (mechanics.food_consumption) {
+        for (std::size_t player_index = 0; player_index < entity_ids_.size(); ++player_index) {
+            if (!live_players[player_index]) {
                 continue;
             }
-            const Circle food_circle{.center = food_positions_[*food_index],
-                                     .radius = radius_for_mass(rules_.food_mass)};
-            if (circles_overlap(player_circle, food_circle)) {
-                food_consumptions.push_back({
-                    .food_id = candidate,
-                    .player_id = entity_ids_[player_index],
-                    .player_index = player_index,
-                });
+            const Circle player_circle{.center = next_positions[player_index],
+                                       .radius = radii_[player_index]};
+            for (const auto candidate : spatial_grid_.query(player_circle)) {
+                const auto food_index = find_food_index(candidate);
+                if (!food_index) {
+                    continue;
+                }
+                const Circle food_circle{.center = food_positions_[*food_index],
+                                         .radius = radius_for_mass(rules_.food_mass)};
+                if (circles_overlap(player_circle, food_circle)) {
+                    food_consumptions.push_back({
+                        .food_id = candidate,
+                        .player_id = entity_ids_[player_index],
+                        .player_index = player_index,
+                    });
+                }
             }
         }
     }

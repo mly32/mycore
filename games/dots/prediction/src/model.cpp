@@ -1,0 +1,431 @@
+#include "dots/prediction/model.hpp"
+
+#include "dots/prediction/mechanics.hpp"
+#include "dots/simulation/movement.hpp"
+
+#include <algorithm>
+#include <bit>
+#include <cmath>
+#include <concepts>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <utility>
+
+namespace dots::prediction {
+namespace {
+
+constexpr MechanicMask kSupportedMechanics = mechanic_bit(PredictionMechanic::Movement) |
+                                             mechanic_bit(PredictionMechanic::FoodConsumption) |
+                                             mechanic_bit(PredictionMechanic::PlayerAbsorption);
+
+template <class Id> [[nodiscard]] bool is_strictly_sorted(const std::vector<Id>& values) {
+    return std::adjacent_find(values.begin(), values.end(), [](Id lhs, Id rhs) {
+               return lhs >= rhs;
+           }) == values.end();
+}
+
+template <class Id> [[nodiscard]] bool contains(const std::vector<Id>& values, Id value) {
+    return std::binary_search(values.begin(), values.end(), value);
+}
+
+[[nodiscard]] bool valid_profile(PredictionProfile profile) noexcept {
+    switch (profile) {
+    case PredictionProfile::InteractionClosure:
+    case PredictionProfile::FullReplicated:
+    case PredictionProfile::OwnedMovement:
+        return true;
+    default:
+        return false;
+    }
+}
+
+[[nodiscard]] bool valid_scope(const PredictionScope& scope) {
+    if (!valid_profile(scope.requested_profile) || !valid_profile(scope.active_profile) ||
+        !scope.scope_epoch.is_valid() || scope.replay_horizon.value() == 0 ||
+        scope.owned_owner_ids.empty() || scope.requested_mechanics == 0 ||
+        (scope.requested_mechanics & ~kSupportedMechanics) != 0U || scope.mechanics == 0 ||
+        (scope.mechanics & ~kSupportedMechanics) != 0U ||
+        !includes_mechanic(scope.mechanics, PredictionMechanic::Movement) ||
+        !is_strictly_sorted(scope.owned_owner_ids) || !is_strictly_sorted(scope.owner_ids) ||
+        !is_strictly_sorted(scope.player_ids) || !is_strictly_sorted(scope.food_ids)) {
+        return false;
+    }
+    const auto valid_ids = std::all_of(scope.owner_ids.begin(),
+                                       scope.owner_ids.end(),
+                                       [](auto id) {
+                                           return id.is_valid();
+                                       }) &&
+                           std::all_of(scope.player_ids.begin(),
+                                       scope.player_ids.end(),
+                                       [](auto id) {
+                                           return id.is_valid();
+                                       }) &&
+                           std::all_of(scope.food_ids.begin(), scope.food_ids.end(), [](auto id) {
+                               return id.is_valid();
+                           });
+    const auto owned_are_in_scope =
+        std::all_of(scope.owned_owner_ids.begin(),
+                    scope.owned_owner_ids.end(),
+                    [&scope](simulation::PlayerOwnerId owner_id) {
+                        return owner_id.is_valid() && contains(scope.owner_ids, owner_id);
+                    });
+    const auto has_remote_owner =
+        std::any_of(scope.owner_ids.begin(), scope.owner_ids.end(), [&scope](auto owner_id) {
+            return !contains(scope.owned_owner_ids, owner_id);
+        });
+    const auto expected_channels =
+        has_remote_owner ? causal_channel_bit(CausalChannel::RemoteMovement) : CausalChannelMask{};
+    if (!valid_ids || !owned_are_in_scope || scope.required_causal_channels != expected_channels) {
+        return false;
+    }
+    if (scope.active_profile == PredictionProfile::OwnedMovement) {
+        const auto expected_fallback = scope.requested_profile == PredictionProfile::OwnedMovement
+                                           ? PredictionFallbackReason::None
+                                           : PredictionFallbackReason::IncompleteClosure;
+        return scope.fallback_reason == expected_fallback &&
+               scope.mechanics == mechanic_bit(PredictionMechanic::Movement) &&
+               scope.owner_ids == scope.owned_owner_ids && scope.food_ids.empty();
+    }
+    return scope.active_profile == scope.requested_profile &&
+           scope.fallback_reason == PredictionFallbackReason::None;
+}
+
+[[nodiscard]] PredictionError make_error(PredictionErrorCode code) {
+    return PredictionError{.code = code, .checkpoint_error = {}, .tick_error = {}};
+}
+
+class DigestWriter {
+public:
+    void byte(std::uint8_t value) noexcept {
+        value_ ^= value;
+        value_ *= kPrime;
+    }
+
+    template <std::unsigned_integral Value> void unsigned_value(Value value) noexcept {
+        for (auto byte_index = sizeof(Value); byte_index > 0; --byte_index) {
+            const auto shift = (byte_index - 1U) * 8U;
+            byte(static_cast<std::uint8_t>((value >> shift) & Value{0xFF}));
+        }
+    }
+
+    void float_value(float value) noexcept {
+        unsigned_value(std::bit_cast<std::uint32_t>(value));
+    }
+
+    void vector(mycore::math::Vector2 value) noexcept {
+        float_value(value.x);
+        float_value(value.y);
+    }
+
+    template <class Id> void id(Id value) noexcept {
+        unsigned_value(value.value());
+    }
+
+    [[nodiscard]] StateDigest finish() const noexcept {
+        return StateDigest{.value = value_};
+    }
+
+private:
+    static constexpr auto kOffsetBasis = std::uint64_t{14'695'981'039'346'656'037ULL};
+    static constexpr auto kPrime = std::uint64_t{1'099'511'628'211};
+    std::uint64_t value_{kOffsetBasis};
+};
+
+void write_rules(DigestWriter& writer, const simulation::WorldRules& rules) noexcept {
+    writer.float_value(rules.initial_player_mass);
+    writer.float_value(rules.food_mass);
+    writer.float_value(rules.spatial_grid_cell_size);
+    writer.float_value(rules.player_speed_units_per_second);
+    writer.unsigned_value(rules.split_recast_ticks);
+    writer.unsigned_value(rules.merge_delay_ticks);
+    writer.unsigned_value(rules.maximum_pieces_per_owner);
+    writer.float_value(rules.minimum_split_mass);
+    writer.float_value(rules.child_launch_speed_units_per_second);
+    writer.float_value(rules.launch_decay_units_per_second_squared);
+    writer.float_value(rules.cohesion_speed_units_per_second);
+}
+
+[[nodiscard]] float position_delta(mycore::math::Vector2 previous,
+                                   mycore::math::Vector2 current) noexcept {
+    return mycore::math::length(current - previous);
+}
+
+template <class Value, class Id, class GetId, class AddDifference>
+void collect_differences(const std::vector<Value>& previous,
+                         const std::vector<Value>& current,
+                         GetId get_id,
+                         AddDifference add_difference) {
+    auto previous_index = std::size_t{};
+    auto current_index = std::size_t{};
+    while (previous_index < previous.size() || current_index < current.size()) {
+        if (current_index == current.size()) {
+            add_difference(
+                get_id(previous[previous_index]), previous[previous_index], std::optional<Value>{});
+            ++previous_index;
+            continue;
+        }
+        if (previous_index == previous.size()) {
+            add_difference(
+                get_id(current[current_index]), std::optional<Value>{}, current[current_index]);
+            ++current_index;
+            continue;
+        }
+        const auto previous_id = get_id(previous[previous_index]);
+        const auto current_id = get_id(current[current_index]);
+        if (previous_id < current_id) {
+            add_difference(previous_id, previous[previous_index], std::optional<Value>{});
+            ++previous_index;
+        } else if (current_id < previous_id) {
+            add_difference(current_id, std::optional<Value>{}, current[current_index]);
+            ++current_index;
+        } else {
+            if (previous[previous_index] != current[current_index]) {
+                add_difference(previous_id, previous[previous_index], current[current_index]);
+            }
+            ++previous_index;
+            ++current_index;
+        }
+    }
+}
+
+} // namespace
+
+StateDigest checkpoint_digest(const simulation::WorldCheckpoint& checkpoint) {
+    DigestWriter writer;
+    writer.unsigned_value(std::uint32_t{0x444F5453});
+    writer.unsigned_value(std::uint16_t{1});
+    write_rules(writer, checkpoint.rules);
+    writer.unsigned_value(checkpoint.tick.value());
+    writer.unsigned_value(checkpoint.next_entity_id);
+
+    writer.unsigned_value(static_cast<std::uint64_t>(checkpoint.owners.size()));
+    for (const auto& owner : checkpoint.owners) {
+        writer.id(owner.owner_id);
+        writer.unsigned_value(static_cast<std::uint64_t>(owner.player_ids.size()));
+        for (const auto player_id : owner.player_ids) {
+            writer.id(player_id);
+        }
+        writer.vector(owner.movement);
+        writer.vector(owner.last_non_zero_movement);
+        writer.id(owner.last_input_id);
+        writer.unsigned_value(owner.split_cooldown_end_tick.value());
+    }
+
+    writer.unsigned_value(static_cast<std::uint64_t>(checkpoint.players.size()));
+    for (const auto& player : checkpoint.players) {
+        writer.id(player.entity_id);
+        writer.id(player.owner_id);
+        writer.vector(player.position);
+        writer.float_value(player.mass);
+        writer.vector(player.launch_velocity);
+        writer.unsigned_value(player.merge_eligible_tick.value());
+        writer.byte(player.prediction_key ? std::uint8_t{1} : std::uint8_t{0});
+        if (player.prediction_key) {
+            writer.id(player.prediction_key->owner_id);
+            writer.id(player.prediction_key->input_id);
+            writer.unsigned_value(player.prediction_key->child_ordinal);
+        }
+    }
+
+    writer.unsigned_value(static_cast<std::uint64_t>(checkpoint.food.size()));
+    for (const auto& food : checkpoint.food) {
+        writer.id(food.entity_id);
+        writer.vector(food.position);
+    }
+    return writer.finish();
+}
+
+std::variant<WorldModel::State, WorldModel::Error> WorldModel::restore(const Checkpoint& checkpoint,
+                                                                       const Scope& scope) const {
+    if (!valid_scope(scope)) {
+        return make_error(PredictionErrorCode::InvalidScope);
+    }
+    if (checkpoint.rules != scope.rules) {
+        return make_error(PredictionErrorCode::IncompatibleRules);
+    }
+    auto projected = project_checkpoint(checkpoint, scope);
+    if (const auto* projection_error = std::get_if<PredictionError>(&projected)) {
+        return *projection_error;
+    }
+    if (std::get<simulation::WorldCheckpoint>(projected) != checkpoint) {
+        return make_error(PredictionErrorCode::CheckpointOutsideScope);
+    }
+
+    simulation::World state;
+    if (const auto restore_error = state.restore(checkpoint)) {
+        return PredictionError{
+            .code = PredictionErrorCode::CheckpointRestoreFailed,
+            .checkpoint_error = restore_error,
+            .tick_error = {},
+        };
+    }
+    return state;
+}
+
+WorldModel::Checkpoint WorldModel::capture(const State& state, const Scope& scope) const {
+    static_cast<void>(scope);
+    return state.checkpoint();
+}
+
+std::variant<std::vector<WorldModel::Event>, WorldModel::Error>
+WorldModel::step(State& state, const Stimulus& stimulus, const Scope& scope) const {
+    if (!valid_scope(scope) || state.rules() != scope.rules) {
+        return make_error(PredictionErrorCode::InvalidScope);
+    }
+
+    std::vector<simulation::TickCommand> commands;
+    commands.reserve(stimulus.commands.size() + stimulus.remote_movement_assumptions.size());
+    for (const auto& command : stimulus.commands) {
+        if (!contains(scope.owned_owner_ids, command.owner_id) ||
+            command.type == simulation::TickCommandType::AssumeMovement) {
+            return make_error(PredictionErrorCode::InvalidStimulus);
+        }
+        commands.push_back(command);
+    }
+
+    const auto checkpoint = state.checkpoint();
+    std::vector<simulation::PlayerOwnerId> live_remote_owners;
+    for (const auto& owner : checkpoint.owners) {
+        if (!contains(scope.owned_owner_ids, owner.owner_id)) {
+            live_remote_owners.push_back(owner.owner_id);
+        }
+    }
+    if (stimulus.remote_movement_assumptions.size() != live_remote_owners.size()) {
+        return make_error(PredictionErrorCode::InvalidStimulus);
+    }
+    for (auto index = std::size_t{}; index < live_remote_owners.size(); ++index) {
+        const auto& assumption = stimulus.remote_movement_assumptions[index];
+        if (assumption.owner_id != live_remote_owners[index] ||
+            assumption.source_tick > state.tick() ||
+            !simulation::is_valid_player_movement(assumption.movement)) {
+            return make_error(PredictionErrorCode::InvalidStimulus);
+        }
+        commands.push_back(simulation::TickCommand{
+            .type = simulation::TickCommandType::AssumeMovement,
+            .input_id = simulation::InputCommandId::invalid(),
+            .owner_id = assumption.owner_id,
+            .movement = assumption.movement,
+        });
+    }
+
+    const auto result = state.advance(
+        commands,
+        simulation::TickMechanics{
+            .player_absorption =
+                includes_mechanic(scope.mechanics, PredictionMechanic::PlayerAbsorption),
+            .food_consumption =
+                includes_mechanic(scope.mechanics, PredictionMechanic::FoodConsumption),
+        });
+    if (const auto* tick_error = std::get_if<simulation::TickError>(&result)) {
+        return PredictionError{
+            .code = PredictionErrorCode::TickFailed,
+            .checkpoint_error = {},
+            .tick_error = *tick_error,
+        };
+    }
+    return std::get<simulation::TickJournal>(result).events;
+}
+
+WorldModel::StateDigest WorldModel::digest(const Checkpoint& checkpoint, const Scope& scope) const {
+    static_cast<void>(scope);
+    return checkpoint_digest(checkpoint);
+}
+
+WorldModel::StateDiff
+WorldModel::diff(const State& previous, const State& current, const Scope& scope) const {
+    static_cast<void>(scope);
+    const auto previous_checkpoint = previous.checkpoint();
+    const auto current_checkpoint = current.checkpoint();
+    StateDifference result{
+        .previous_tick = previous_checkpoint.tick,
+        .current_tick = current_checkpoint.tick,
+        .rules_changed = previous_checkpoint.rules != current_checkpoint.rules,
+        .allocator_changed =
+            previous_checkpoint.next_entity_id != current_checkpoint.next_entity_id,
+        .structural_change = false,
+        .maximum_position_delta = 0.0F,
+        .maximum_mass_delta = 0.0F,
+        .owners = {},
+        .players = {},
+        .food = {},
+    };
+
+    collect_differences<simulation::OwnerCheckpoint, simulation::PlayerOwnerId>(
+        previous_checkpoint.owners,
+        current_checkpoint.owners,
+        [](const auto& owner) {
+            return owner.owner_id;
+        },
+        [&result](simulation::PlayerOwnerId owner_id,
+                  std::optional<simulation::OwnerCheckpoint> old_owner,
+                  std::optional<simulation::OwnerCheckpoint> new_owner) {
+            result.structural_change = result.structural_change || !old_owner || !new_owner ||
+                                       old_owner->player_ids != new_owner->player_ids;
+            result.owners.push_back({
+                .owner_id = owner_id,
+                .previous = std::move(old_owner),
+                .current = std::move(new_owner),
+            });
+        });
+    collect_differences<simulation::PlayerCheckpoint, simulation::EntityId>(
+        previous_checkpoint.players,
+        current_checkpoint.players,
+        [](const auto& player) {
+            return player.entity_id;
+        },
+        [&result](simulation::EntityId entity_id,
+                  std::optional<simulation::PlayerCheckpoint> old_player,
+                  std::optional<simulation::PlayerCheckpoint> new_player) {
+            result.structural_change = result.structural_change || !old_player || !new_player;
+            if (old_player && new_player) {
+                result.maximum_position_delta =
+                    std::max(result.maximum_position_delta,
+                             position_delta(old_player->position, new_player->position));
+                result.maximum_mass_delta = std::max(result.maximum_mass_delta,
+                                                     std::abs(old_player->mass - new_player->mass));
+            }
+            result.players.push_back({
+                .entity_id = entity_id,
+                .previous = old_player,
+                .current = new_player,
+            });
+        });
+    collect_differences<simulation::FoodCheckpoint, simulation::EntityId>(
+        previous_checkpoint.food,
+        current_checkpoint.food,
+        [](const auto& food) {
+            return food.entity_id;
+        },
+        [&result](simulation::EntityId entity_id,
+                  std::optional<simulation::FoodCheckpoint> old_food,
+                  std::optional<simulation::FoodCheckpoint> new_food) {
+            result.structural_change = result.structural_change || !old_food || !new_food;
+            if (old_food && new_food) {
+                result.maximum_position_delta =
+                    std::max(result.maximum_position_delta,
+                             position_delta(old_food->position, new_food->position));
+            }
+            result.food.push_back({
+                .entity_id = entity_id,
+                .previous = old_food,
+                .current = new_food,
+            });
+        });
+    return result;
+}
+
+WorldModel::EventKey WorldModel::event_key(const Event& event) const {
+    return simulation::simulation_event_key(event);
+}
+
+std::size_t
+SimulationEventKeyHash::operator()(const simulation::SimulationEventKey& key) const noexcept {
+    if (const auto* food = std::get_if<simulation::FoodConsumedKey>(&key)) {
+        return (static_cast<std::size_t>(food->food_entity_id.value()) << 1U) | std::size_t{0};
+    }
+    const auto* absorbed = std::get_if<simulation::PlayerAbsorbedKey>(&key);
+    return (static_cast<std::size_t>(absorbed->victim_entity_id.value()) << 1U) | std::size_t{1};
+}
+
+} // namespace dots::prediction

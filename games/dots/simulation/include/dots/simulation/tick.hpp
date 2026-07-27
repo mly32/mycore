@@ -14,11 +14,13 @@ namespace dots::simulation {
 enum class TickCommandType : std::uint8_t {
     ApplyInput,
     StopMovement,
+    AssumeMovement,
 };
 
 // A tick accepts at most one command for each owner. ApplyInput installs a newer sampled movement
 // and command identity; StopMovement is an explicit deterministic cause with an invalid input ID
-// and zero movement.
+// and zero movement. AssumeMovement installs a retained remote level assumption with an invalid
+// input ID without claiming that the authoritative owner consumed a new command.
 struct TickCommand {
     TickCommandType type{TickCommandType::ApplyInput};
     InputCommandId input_id;
@@ -26,6 +28,13 @@ struct TickCommand {
     mycore::math::Vector2 movement;
 
     bool operator==(const TickCommand&) const = default;
+};
+
+struct TickMechanics {
+    bool player_absorption{true};
+    bool food_consumption{true};
+
+    bool operator==(const TickMechanics&) const = default;
 };
 
 struct FoodConsumed {

@@ -1368,8 +1368,16 @@ MyCore::DebugUI
     depends on Debug + PlatformSDL + Render + Dear ImGui; owns backend lifetime but no
     game-specific panels
 
+MyCore::Rollback
+    depends on Core + Time; owns typed history, atomic restore/replay, event transitions, and
+    consequence routing without owning a game schema
+
 Dots::Simulation
     depends on Core + Math + Time only
+
+Dots::Prediction
+    depends on Dots Simulation + MyCore Rollback; owns Dots mechanic contracts, causal scopes,
+    checkpoint projection, digests, differences, and the rollback model adapter
 
 Dots::Protocol
     depends on Core and owns Dots wire messages and concrete protocol IDs
@@ -1391,8 +1399,8 @@ dots_server
     depends on Dots Server; remains headless
 
 dots_client
-    depends on Dots Simulation + Protocol + Presentation + MyCore PlatformSDL + Render2D +
-    DebugUI + NetTransport
+    depends on Dots Simulation + Prediction + Protocol + Presentation + MyCore PlatformSDL +
+    Render2D + DebugUI + NetTransport
 
 dots_bot
     depends on Dots Protocol + MyCore NetTransport

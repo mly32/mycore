@@ -187,7 +187,7 @@ public:
 
     [[nodiscard]] CommitResult<Model> advance(CommandSequence sequence,
                                               typename Model::Stimulus stimulus) {
-        if (!initialized()) {
+        if (!state_ || !base_checkpoint_ || !scope_) {
             return failure(TimelineErrorCode::NotInitialized);
         }
         if (!sequence.is_valid()) {
@@ -201,13 +201,14 @@ public:
             return failure(TimelineErrorCode::HistoryExhausted);
         }
 
-        auto restored = model_.restore(head_checkpoint(), *scope_);
+        const auto& active_scope = *scope_;
+        auto restored = model_.restore(head_checkpoint(), active_scope);
         if (auto* error = std::get_if<typename Model::Error>(&restored)) {
             return failure(TimelineErrorCode::ModelRestoreFailed, std::move(*error));
         }
         auto scratch = std::move(std::get<typename Model::State>(restored));
 
-        auto stepped = model_.step(scratch, stimulus, *scope_);
+        auto stepped = model_.step(scratch, stimulus, active_scope);
         if (auto* error = std::get_if<typename Model::Error>(&stepped)) {
             return failure(TimelineErrorCode::ModelStepFailed, std::move(*error));
         }
@@ -222,9 +223,9 @@ public:
         }
 
         const auto next_tick = predicted_tick_ + time::TickDelta{1};
-        auto checkpoint = model_.capture(scratch, *scope_);
-        auto digest = model_.digest(checkpoint, *scope_);
-        auto state_diff = model_.diff(*state_, scratch, *scope_);
+        auto checkpoint = model_.capture(scratch, active_scope);
+        auto digest = model_.digest(checkpoint, active_scope);
+        auto state_diff = model_.diff(*state_, scratch, active_scope);
         const auto previous_tick = predicted_tick_;
 
         std::vector<EventChange<Model>> event_changes;
@@ -261,7 +262,7 @@ public:
             .acknowledged_through = acknowledged_through_,
             .replayed_frame_count = 0,
             .state_diff = std::move(state_diff),
-            .authoritative_digest = model_.digest(*base_checkpoint_, *scope_),
+            .authoritative_digest = model_.digest(*base_checkpoint_, active_scope),
             .predicted_digest = digest,
             .prior_prediction_digest_at_authority = std::nullopt,
             .event_changes = std::move(event_changes),
@@ -270,7 +271,7 @@ public:
     }
 
     [[nodiscard]] CommitResult<Model> reconcile(const AuthorityFrame<Model>& authority) {
-        if (!initialized()) {
+        if (!state_ || !base_checkpoint_ || !scope_) {
             return failure(TimelineErrorCode::NotInitialized);
         }
         if (authority.scope_epoch != scope_epoch_) {
@@ -282,7 +283,7 @@ public:
 
     [[nodiscard]] CommitResult<Model> rebase_scope(const AuthorityFrame<Model>& authority,
                                                    typename Model::Scope scope) {
-        if (!initialized()) {
+        if (!state_ || !base_checkpoint_ || !scope_) {
             return failure(TimelineErrorCode::NotInitialized);
         }
         if (!authority.scope_epoch.is_valid() || authority.scope_epoch <= scope_epoch_) {
@@ -294,7 +295,7 @@ public:
 
     [[nodiscard]] CommitResult<Model> hard_resync(const AuthorityFrame<Model>& authority,
                                                   typename Model::Scope scope) {
-        if (!initialized()) {
+        if (!state_ || !base_checkpoint_ || !scope_) {
             return failure(TimelineErrorCode::NotInitialized);
         }
         if (authority.scope_epoch < scope_epoch_) {
@@ -359,7 +360,7 @@ public:
     }
 
     [[nodiscard]] bool initialized() const noexcept {
-        return state_.has_value();
+        return state_.has_value() && base_checkpoint_.has_value() && scope_.has_value();
     }
 
     [[nodiscard]] const typename Model::State* state() const noexcept {
@@ -438,7 +439,10 @@ private:
         if (!history_.empty()) {
             return history_.back().checkpoint;
         }
-        return *base_checkpoint_;
+        if (base_checkpoint_) {
+            return *base_checkpoint_;
+        }
+        throw std::logic_error{"Rollback timeline has no committed checkpoint"};
     }
 
     [[nodiscard]] std::optional<TimelineErrorCode>
@@ -473,6 +477,9 @@ private:
         const AuthorityFrame<Model>& authority,
         AuthorityTickRule tick_rule,
         SameTickCheckpointRule checkpoint_rule = SameTickCheckpointRule::MustMatch) const {
+        if (!base_checkpoint_) {
+            return TimelineErrorCode::NotInitialized;
+        }
         if (!valid_epoch(authority.scope_epoch) ||
             !valid_optional_sequence(authority.acknowledged_through)) {
             return TimelineErrorCode::IncompatibleAuthority;
@@ -649,6 +656,9 @@ private:
                                                            typename Model::Scope scope,
                                                            CommitKind kind,
                                                            AuthorityTickRule tick_rule) {
+        if (!state_ || !base_checkpoint_) {
+            return failure(TimelineErrorCode::NotInitialized);
+        }
         if (const auto error = validate_authority(authority, tick_rule)) {
             return failure(*error);
         }

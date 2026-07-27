@@ -403,16 +403,21 @@ Keep commits focused and reviewable, but do not add approval gates between these
    entity-scale workloads, documentation updates, and the measured same-frame/multi-frame
    decision.
 
-Steps 1 and 2 are implemented on `feature/14`. `MyCore::Rollback` now provides the generic
+Steps 1 through 3 are implemented on `feature/14`. `MyCore::Rollback` now provides the generic
 timeline and consequence machinery. Dots Simulation now provides immutable `WorldRules`, sorted
 complete checkpoints, atomic restore, one owner-scoped command batch per tick, typed food and
 absorption journals, stable keys, and predicted identity storage. Radius and spatial indexes are
-rebuilt on restore. The server and offline client both use the shared atomic tick.
+rebuilt on restore. `Dots::Prediction` now provides static mechanic contracts, the three
+prediction profiles, conservative causal/spatial closure, safe incomplete-state fallback, scope
+projection, exact retained local/remote movement causes, canonical digests, typed differences,
+and the complete-World adapter to `MyCore::Rollback`. Offline play runs its full local World
+through that adapter; movement, food consumption, and player absorption have authoritative
+correction/replay coverage.
 
 Split/merge fields are present in the checkpoint schema so their future state has an explicit
 home, but their rules, commands, and journal variants remain step 4 work. The production network
-client still uses the Feature 11 position predictor until steps 3, 5, and 6 integrate complete
-World authority and replay.
+client still uses the Feature 11 position predictor until protocol step 5 and client-runtime
+step 6 integrate complete World authority and replay.
 
 ## Test Plan
 

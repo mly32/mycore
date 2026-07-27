@@ -69,8 +69,9 @@ public:
 
     // Installs the owner commands, advances one fixed tick, and publishes World plus journal as
     // one transaction. A TickError leaves the previous checkpoint and journal intact.
-    [[nodiscard]] TickResult advance(std::span<const TickCommand> commands);
-    [[nodiscard]] TickResult advance(const TickCommand& command);
+    [[nodiscard]] TickResult advance(std::span<const TickCommand> commands,
+                                     TickMechanics mechanics = {});
+    [[nodiscard]] TickResult advance(const TickCommand& command, TickMechanics mechanics = {});
     // Convenience for a tick with no newly sampled commands; held owner movement still applies.
     [[nodiscard]] bool step();
 
@@ -95,6 +96,7 @@ private:
     apply_commands(std::span<const TickCommand> commands,
                    std::vector<OwnerCheckpoint>& next_owners) const;
     [[nodiscard]] bool advance_simulation(std::vector<OwnerCheckpoint> next_owners,
+                                          TickMechanics mechanics,
                                           TickJournal& journal);
     void reserve_player_capacity();
     void reserve_food_capacity();

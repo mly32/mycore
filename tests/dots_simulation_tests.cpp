@@ -125,6 +125,30 @@ TEST_CASE("Shared player movement normalizes and advances exactly one fixed tick
               position, dots::simulation::normalized_player_movement({})) == position);
 }
 
+TEST_CASE("Held remote movement assumptions preserve authoritative command identity",
+          "[dots][simulation][movement][rollback]") {
+    constexpr auto owner = dots::simulation::PlayerOwnerId{7};
+    dots::simulation::World world;
+    REQUIRE(world.spawn_player(owner).has_value());
+    REQUIRE(advance_with_input(world, owner, dots::simulation::InputCommandId{5}, {1.0F, 0.0F}));
+
+    const dots::simulation::TickCommand assumption{
+        .type = dots::simulation::TickCommandType::AssumeMovement,
+        .input_id = dots::simulation::InputCommandId::invalid(),
+        .owner_id = owner,
+        .movement = {0.0F, 1.0F},
+    };
+    REQUIRE(std::holds_alternative<dots::simulation::TickJournal>(world.advance(assumption)));
+    const auto assumed = world.checkpoint();
+    REQUIRE(assumed.owners.size() == 1);
+    CHECK(assumed.owners.front().movement == mycore::math::Vector2{0.0F, 1.0F});
+    CHECK(assumed.owners.front().last_non_zero_movement == mycore::math::Vector2{0.0F, 1.0F});
+    CHECK(assumed.owners.front().last_input_id == dots::simulation::InputCommandId{5});
+
+    REQUIRE(advance_with_input(world, owner, dots::simulation::InputCommandId{6}, {-1.0F, 0.0F}));
+    CHECK(world.checkpoint().owners.front().last_input_id == dots::simulation::InputCommandId{6});
+}
+
 TEST_CASE("World applies persistent movement over multiple ticks", "[dots][simulation]") {
     dots::simulation::World world;
     const auto player_result =

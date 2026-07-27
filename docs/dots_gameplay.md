@@ -36,7 +36,10 @@ clients never choose or predict them. The implementation and alternatives are re
 [authoritative spawn search plan](plans/authoritative-spawn-search.md).
 
 Offline play starts its local player at the origin; the food field deliberately leaves that point
-empty. Native and in-memory multiplayer use server-assigned spawns.
+empty. It advances the complete local World through the Dots rollback model using the
+full-replicated profile; because no server exists in this mode, it periodically promotes the
+committed local checkpoint as its new history baseline. Native and in-memory multiplayer use
+server-assigned spawns.
 
 ## Movement and connection loss
 

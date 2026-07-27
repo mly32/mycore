@@ -15,6 +15,8 @@ inline constexpr auto kTickDuration =
 [[nodiscard]] mycore::math::Vector2
 normalized_player_movement(mycore::math::Vector2 desired_movement) noexcept;
 
+[[nodiscard]] bool is_valid_player_movement(mycore::math::Vector2 movement) noexcept;
+
 // The movement argument must be the result of normalized_player_movement. Keeping normalization
 // separate lets World retain the last installed desired movement when no new input is available.
 [[nodiscard]] mycore::math::Vector2

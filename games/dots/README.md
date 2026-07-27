@@ -163,6 +163,8 @@ reaches SDL_GPU through MyCore's renderer.
 
 - `simulation/` owns deterministic rules and remains independent of SDL, rendering, transport,
   and presentation.
+- `prediction/` adapts complete Dots Worlds to `MyCore::Rollback` and owns mechanic contracts,
+  causal scope construction, profile fallback, checkpoint digests, and typed differences.
 - `protocol/` owns Dots wire messages and binary encoding.
 - `replication/`, `server/`, and `client_runtime/` own authoritative sessions and replicated
   client state.

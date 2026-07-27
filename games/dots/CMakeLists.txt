@@ -1,5 +1,6 @@
 add_subdirectory(protocol)
 add_subdirectory(simulation)
+add_subdirectory(prediction)
 add_subdirectory(replication)
 add_subdirectory(server)
 add_subdirectory(client_runtime)

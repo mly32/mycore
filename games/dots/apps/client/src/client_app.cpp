@@ -2,6 +2,7 @@
 
 #include "dots/client/controls.hpp"
 #include "dots/client_runtime/client_runtime.hpp"
+#include "dots/prediction/prediction.hpp"
 #include "dots/presentation/presentation.hpp"
 #include "dots/presentation/spectator_camera.hpp"
 #include "dots/protocol/codec.hpp"
@@ -35,6 +36,7 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace dots::client {
 namespace {
@@ -1434,18 +1436,58 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
         return run_native_game(config, window, renderer, debug_ui, render_settings, options);
     }
 
-    dots::simulation::World world;
-    const auto player = world.spawn_player(dots::simulation::PlayerOwnerId{0});
+    constexpr auto kOfflineScopeEpoch = mycore::rollback::ScopeEpoch{1};
+    constexpr auto kOfflineReplayHorizon = mycore::time::TickDelta{64};
+    dots::simulation::World initial_world;
+    const auto player = initial_world.spawn_player(dots::simulation::PlayerOwnerId{0});
     if (!player) {
         throw dots::client::StartupError{"Could not spawn the local player"};
     }
-    if (!dots::simulation::spawn_default_food_field(world)) {
+    if (!dots::simulation::spawn_default_food_field(initial_world)) {
         throw dots::client::StartupError{"Could not spawn the local food field"};
+    }
+    const auto initial_checkpoint = initial_world.checkpoint();
+    auto scope_result = dots::prediction::build_prediction_scope(
+        initial_checkpoint,
+        {
+            .profile = dots::prediction::PredictionProfile::FullReplicated,
+            .mechanics = dots::prediction::kCurrentPredictionMechanics,
+            .owned_owner_ids = {dots::simulation::PlayerOwnerId{0}},
+            .replay_horizon = kOfflineReplayHorizon,
+            .scope_epoch = kOfflineScopeEpoch,
+            .coverage = {},
+        });
+    const auto* offline_scope = std::get_if<dots::prediction::PredictionScope>(&scope_result);
+    if (offline_scope == nullptr) {
+        throw dots::client::StartupError{"Could not build the offline prediction scope"};
+    }
+    auto projected_result =
+        dots::prediction::project_checkpoint(initial_checkpoint, *offline_scope);
+    const auto* projected_checkpoint =
+        std::get_if<dots::simulation::WorldCheckpoint>(&projected_result);
+    if (projected_checkpoint == nullptr) {
+        throw dots::client::StartupError{"Could not project the offline prediction checkpoint"};
+    }
+    dots::prediction::Timeline timeline{
+        dots::prediction::WorldModel{},
+        {.capacity = static_cast<std::size_t>(kOfflineReplayHorizon.value())},
+    };
+    const auto initialized = timeline.initialize(
+        {
+            .tick = projected_checkpoint->tick,
+            .acknowledged_through = std::nullopt,
+            .scope_epoch = kOfflineScopeEpoch,
+            .checkpoint = *projected_checkpoint,
+            .events = {},
+        },
+        *offline_scope);
+    if (!std::holds_alternative<dots::prediction::Commit>(initialized)) {
+        throw dots::client::StartupError{"Could not initialize the offline rollback timeline"};
     }
 
     mycore::time::FixedStepAccumulator accumulator{dots::simulation::kTickDuration};
     auto previous_time = std::chrono::steady_clock::now();
-    const auto initial_position = world.position(*player);
+    const auto initial_position = timeline.state()->position(*player);
     if (!initial_position) {
         throw dots::client::StartupError{"Could not get player position"};
     }
@@ -1493,7 +1535,7 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
                                            ? accumulator.discard_pending_steps()
                                            : mycore::time::Duration::zero();
 
-        const auto player_radius = world.radius(*player);
+        const auto player_radius = timeline.state()->radius(*player);
         if (!player_radius) {
             throw dots::client::StartupError{"The local player disappeared from the world"};
         }
@@ -1520,18 +1562,52 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
                                       dots::simulation::InputCommandId{next_command_id},
                                       viewport,
                                       mouse_input_available);
-                ++next_command_id;
                 previous_player_position = current_player_position;
-                if (!std::holds_alternative<dots::simulation::TickJournal>(
-                        world.advance(command))) {
-                    throw dots::client::StartupError{"The local world rejected an atomic tick"};
+                const auto sequence = mycore::rollback::CommandSequence{next_command_id};
+                ++next_command_id;
+                const auto advanced = timeline.advance(sequence,
+                                                       dots::prediction::TickStimulus{
+                                                           .commands = {command},
+                                                           .remote_movement_assumptions = {},
+                                                       });
+                if (!std::holds_alternative<dots::prediction::Commit>(advanced)) {
+                    throw dots::client::StartupError{
+                        "The offline rollback timeline rejected an atomic tick"};
                 }
-                const auto position = world.position(*player);
+                if (timeline.history().size() ==
+                    static_cast<std::size_t>(kOfflineReplayHorizon.value())) {
+                    std::vector<dots::prediction::AuthorityEvent> confirmed_events;
+                    for (const auto& frame_record : timeline.history()) {
+                        for (const auto& event : frame_record.events) {
+                            confirmed_events.push_back({
+                                .disposition =
+                                    mycore::rollback::AuthorityEventDisposition::Confirmed,
+                                .key = dots::simulation::simulation_event_key(event),
+                                .event = event,
+                            });
+                        }
+                    }
+                    const auto rebased_checkpoint = timeline.state()->checkpoint();
+                    const auto rebased = timeline.hard_resync(
+                        {
+                            .tick = rebased_checkpoint.tick,
+                            .acknowledged_through = sequence,
+                            .scope_epoch = kOfflineScopeEpoch,
+                            .checkpoint = rebased_checkpoint,
+                            .events = std::move(confirmed_events),
+                        },
+                        *offline_scope);
+                    if (!std::holds_alternative<dots::prediction::Commit>(rebased)) {
+                        throw dots::client::StartupError{
+                            "Could not prune the offline rollback history"};
+                    }
+                }
+                const auto position = timeline.state()->position(*player);
                 if (!position) {
                     throw dots::client::StartupError{"The local player disappeared from the world"};
                 }
                 current_player_position = *position;
-                const auto current_radius = world.radius(*player);
+                const auto current_radius = timeline.state()->radius(*player);
                 if (!current_radius) {
                     throw dots::client::StartupError{"The local player disappeared from the world"};
                 }
@@ -1560,7 +1636,7 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
         {
             MYCORE_PROFILE_ZONE("Dots presentation extraction");
             frame = dots::presentation::extract_interpolated_follow_frame(
-                world,
+                *timeline.state(),
                 {
                     .entity_id = *player,
                     .previous_position = previous_player_position,
@@ -1578,11 +1654,11 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
                 config,
                 {
                     .presentation = presentation_mode_name(config.debug.presentation_mode),
-                    .tick = world.tick().value(),
-                    .player_count = world.player_count(),
-                    .food_count = world.food_count(),
+                    .tick = timeline.state()->tick().value(),
+                    .player_count = timeline.state()->player_count(),
+                    .food_count = timeline.state()->food_count(),
                     .current_player_position = current_player_position,
-                    .occupied_grid_cells = world.occupied_spatial_cell_count(),
+                    .occupied_grid_cells = timeline.state()->occupied_spatial_cell_count(),
                     .snapshot_id = std::nullopt,
                     .transport = std::nullopt,
                     .replication = std::nullopt,
