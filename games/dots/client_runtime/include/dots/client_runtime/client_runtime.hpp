@@ -133,6 +133,7 @@ public:
     [[nodiscard]] std::span<const protocol::EntityId> owned_entity_ids() const noexcept;
     [[nodiscard]] protocol::EntityId primary_entity_id() const noexcept;
     [[nodiscard]] protocol::EntityId follow_entity_id() const noexcept;
+    [[nodiscard]] std::optional<protocol::WorldRules> world_rules() const noexcept;
     [[nodiscard]] std::optional<std::uint32_t> defeat_tick() const noexcept;
     [[nodiscard]] std::optional<std::uint32_t> respawn_available_tick() const noexcept;
     [[nodiscard]] std::uint32_t respawn_cooldown_ticks() const noexcept;

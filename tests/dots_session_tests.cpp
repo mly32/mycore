@@ -60,7 +60,41 @@ public:
     std::optional<std::size_t> fail_send_at;
 };
 
-[[nodiscard]] std::vector<std::byte> encode_bytes(const dots::protocol::Message& message) {
+[[nodiscard]] dots::protocol::WorldRules world_rules() {
+    return dots::replication::to_protocol(dots::simulation::WorldRules{});
+}
+
+void complete_protocol_fixture(dots::protocol::Message& message) {
+    if (auto* welcome = std::get_if<dots::protocol::ServerWelcome>(&message)) {
+        if (welcome->world_rules.initial_player_mass == 0.0F) {
+            welcome->world_rules = world_rules();
+        }
+        return;
+    }
+    auto* snapshot = std::get_if<dots::protocol::FullSnapshot>(&message);
+    if (snapshot == nullptr || !snapshot->owners.empty()) {
+        return;
+    }
+    for (const auto& entity : snapshot->entities) {
+        if (entity.kind != dots::protocol::EntityKind::Player ||
+            std::any_of(snapshot->owners.begin(),
+                        snapshot->owners.end(),
+                        [&entity](const dots::protocol::OwnerState& owner) {
+                            return owner.owner_id == entity.owner_id;
+                        })) {
+            continue;
+        }
+        snapshot->owners.push_back({.owner_id = entity.owner_id});
+    }
+    std::sort(snapshot->owners.begin(),
+              snapshot->owners.end(),
+              [](const dots::protocol::OwnerState& lhs, const dots::protocol::OwnerState& rhs) {
+                  return lhs.owner_id < rhs.owner_id;
+              });
+}
+
+[[nodiscard]] std::vector<std::byte> encode_bytes(dots::protocol::Message message) {
+    complete_protocol_fixture(message);
     auto result = dots::protocol::encode(message);
     auto* bytes = std::get_if<dots::protocol::EncodedMessage>(&result);
     REQUIRE(bytes != nullptr);
@@ -105,9 +139,12 @@ player_state(dots::protocol::EntityId entity_id = dots::protocol::EntityId{8}) {
 
 void send_input_packet(mycore::net_transport::Endpoint& endpoint,
                        mycore::net_transport::ConnectionHandle connection,
-                       std::vector<dots::protocol::InputSample> samples) {
+                       std::vector<dots::protocol::InputSample> samples,
+                       dots::protocol::AuthorityReceiptSequenceId receipt_acknowledgement =
+                           dots::protocol::AuthorityReceiptSequenceId::invalid()) {
     const auto bytes = encode_bytes(dots::protocol::InputPacket{
         .last_received_snapshot_id = dots::protocol::SnapshotId{0},
+        .last_received_authority_receipt_sequence = receipt_acknowledgement,
         .samples = std::move(samples),
     });
     REQUIRE(endpoint.send(connection, bytes, mycore::net_transport::DeliveryMode::Unreliable) ==
@@ -190,6 +227,8 @@ TEST_CASE("Two in-memory clients receive authoritative identities and snapshots"
 
     REQUIRE(first.state() == dots::client_runtime::State::Ready);
     REQUIRE(second.state() == dots::client_runtime::State::Ready);
+    REQUIRE(first.world_rules().has_value());
+    CHECK(*first.world_rules() == dots::replication::to_protocol(server.world().rules()));
     REQUIRE(first.client_id() != second.client_id());
     REQUIRE(first.controlled_entity_id() != second.controlled_entity_id());
     REQUIRE(server.client_count() == 2);
@@ -239,6 +278,88 @@ TEST_CASE("Authoritative input moves only the owning player and is acknowledged"
     CHECK(second_entity->position_x == Catch::Approx(12.0F));
     CHECK(first.world().last_processed_input_id() == dots::protocol::InputSequenceId{0});
     CHECK_FALSE(second.world().last_processed_input_id().is_valid());
+}
+
+TEST_CASE("Protocol version 4 split receipts repeat until the client acknowledges them",
+          "[dots][session][rollback][receipts]") {
+    mycore::net_transport::InMemoryNetwork network;
+    dots::server::Runtime server{network.server_endpoint()};
+    auto& client = network.connect_client();
+    const auto connection = complete_raw_handshake(client, server);
+
+    auto split = input_sample(0, 0, {1.0F, 0.0F});
+    split.action_bits = dots::protocol::kSplitActionBit;
+    send_input_packet(client, connection, {split});
+    REQUIRE_FALSE(server.process_events().has_value());
+    REQUIRE_FALSE(server.step().has_value());
+    REQUIRE_FALSE(server.step().has_value());
+
+    const auto split_snapshot = find_snapshot(client.poll());
+    REQUIRE(split_snapshot.has_value());
+    REQUIRE(split_snapshot->recipient.owned_entity_ids.size() == 2);
+    REQUIRE(split_snapshot->owners.size() == 1);
+    REQUIRE(split_snapshot->entities.size() == 2);
+    REQUIRE(split_snapshot->authority_receipts.size() == 1);
+    CHECK(split_snapshot->authority_receipts[0].sequence_id ==
+          dots::protocol::AuthorityReceiptSequenceId{0});
+    const auto* split_event =
+        std::get_if<dots::protocol::PlayerSplit>(&split_snapshot->authority_receipts[0].event);
+    REQUIRE(split_event != nullptr);
+    CHECK(split_event->input_id == dots::protocol::InputSequenceId{0});
+    CHECK(split_event->child_entity_id == split_snapshot->recipient.owned_entity_ids[1]);
+    CHECK(split_snapshot->entities[1].prediction_key ==
+          dots::protocol::PredictionKey{
+              .owner_id = split_event->owner_id,
+              .input_id = split_event->input_id,
+              .child_ordinal = split_event->child_ordinal,
+          });
+
+    send_input_packet(client,
+                      connection,
+                      {input_sample(1, 1, {})},
+                      dots::protocol::AuthorityReceiptSequenceId{0});
+    REQUIRE_FALSE(server.process_events().has_value());
+    REQUIRE_FALSE(server.step().has_value());
+    REQUIRE_FALSE(server.step().has_value());
+    const auto acknowledged_snapshot = find_snapshot(client.poll());
+    REQUIRE(acknowledged_snapshot.has_value());
+    CHECK(acknowledged_snapshot->authority_receipts.empty());
+}
+
+TEST_CASE("Client input acknowledges the highest contiguous authority receipt",
+          "[dots][session][rollback][receipts]") {
+    ManualEndpoint endpoint;
+    dots::client_runtime::Runtime client{endpoint};
+    const mycore::net_transport::ConnectionHandle connection{24};
+    complete_manual_handshake(endpoint, client, connection);
+
+    endpoint.events.push_back(mycore::net_transport::PayloadReceived{
+        .connection = connection,
+        .delivery = mycore::net_transport::DeliveryMode::Unreliable,
+        .payload = encode_bytes(dots::protocol::FullSnapshot{
+            .snapshot_id = dots::protocol::SnapshotId{1},
+            .recipient = playing_session(),
+            .entities = {player_state()},
+            .authority_receipts = {{
+                .sequence_id = dots::protocol::AuthorityReceiptSequenceId{0},
+                .event =
+                    dots::protocol::FoodConsumed{
+                        .food_entity_id = dots::protocol::EntityId{30},
+                        .consumer_entity_id = dots::protocol::EntityId{8},
+                        .consumer_owner_id = dots::protocol::PlayerOwnerId{3},
+                        .transferred_mass = 1.0F,
+                    },
+            }},
+        }),
+    });
+    REQUIRE_FALSE(client.process_events().has_value());
+    REQUIRE(client.send_input(0, {}) == dots::client_runtime::InputSendResult::Sent);
+    REQUIRE(endpoint.sent_payloads.size() == 1);
+    auto message = decode_bytes(endpoint.sent_payloads.front());
+    const auto* input = std::get_if<dots::protocol::InputPacket>(&message);
+    REQUIRE(input != nullptr);
+    CHECK(input->last_received_authority_receipt_sequence ==
+          dots::protocol::AuthorityReceiptSequenceId{0});
 }
 
 TEST_CASE("Respawn requests while playing are acknowledged and explicitly rejected",
@@ -587,6 +708,82 @@ TEST_CASE("Server input queue overflow disconnects only the offending session",
     REQUIRE(position.has_value());
     CHECK(position->x == Catch::Approx(healthy_spawn->x));
     CHECK(position->y == Catch::Approx(healthy_spawn->y + 0.2F));
+}
+
+TEST_CASE("Authority receipt retention overflow fails only the affected session",
+          "[dots][session][rollback][receipts]") {
+    dots::simulation::World initial_world;
+    for (std::size_t index = 0; index < dots::protocol::kMaximumPendingAuthorityReceipts + 1;
+         ++index) {
+        REQUIRE(initial_world.spawn_food({}).has_value());
+    }
+
+    mycore::net_transport::InMemoryNetwork network;
+    dots::server::Runtime server{network.server_endpoint(), std::move(initial_world)};
+    auto& client = network.connect_client();
+    static_cast<void>(complete_raw_handshake(client, server));
+    REQUIRE(server.client_count() == 1);
+
+    REQUIRE_FALSE(server.step().has_value());
+    CHECK(server.client_count() == 0);
+    CHECK(server.rejected_packet_count() == 0);
+    CHECK(server.world().player_count() == 0);
+}
+
+TEST_CASE("Authority receipt snapshots send bounded batches from the contiguous frontier",
+          "[dots][session][rollback][receipts]") {
+    dots::simulation::World initial_world;
+    constexpr auto kReceiptCount = dots::protocol::kMaximumAuthorityReceiptsPerSnapshot + 4;
+    for (std::size_t index = 0; index < kReceiptCount; ++index) {
+        REQUIRE(initial_world.spawn_food({}).has_value());
+    }
+
+    mycore::net_transport::InMemoryNetwork network;
+    dots::server::Runtime server{network.server_endpoint(), std::move(initial_world)};
+    auto& client = network.connect_client();
+    const auto connection = complete_raw_handshake(client, server);
+
+    REQUIRE_FALSE(server.step().has_value());
+    REQUIRE_FALSE(server.step().has_value());
+    const auto first_batch = find_snapshot(client.poll());
+    REQUIRE(first_batch.has_value());
+    REQUIRE(first_batch->authority_receipts.size() ==
+            dots::protocol::kMaximumAuthorityReceiptsPerSnapshot);
+    CHECK(first_batch->authority_receipts.front().sequence_id ==
+          dots::protocol::AuthorityReceiptSequenceId{0});
+    CHECK(first_batch->authority_receipts.back().sequence_id ==
+          dots::protocol::AuthorityReceiptSequenceId{15});
+
+    send_input_packet(client,
+                      connection,
+                      {input_sample(0, 0, {})},
+                      dots::protocol::AuthorityReceiptSequenceId{15});
+    REQUIRE_FALSE(server.process_events().has_value());
+    REQUIRE_FALSE(server.step().has_value());
+    REQUIRE_FALSE(server.step().has_value());
+    const auto second_batch = find_snapshot(client.poll());
+    REQUIRE(second_batch.has_value());
+    REQUIRE(second_batch->authority_receipts.size() == 4);
+    CHECK(second_batch->authority_receipts.front().sequence_id ==
+          dots::protocol::AuthorityReceiptSequenceId{16});
+    CHECK(second_batch->authority_receipts.back().sequence_id ==
+          dots::protocol::AuthorityReceiptSequenceId{19});
+}
+
+TEST_CASE("Server rejects authority receipt acknowledgements beyond its issued frontier",
+          "[dots][session][rollback][receipts]") {
+    mycore::net_transport::InMemoryNetwork network;
+    dots::server::Runtime server{network.server_endpoint()};
+    auto& client = network.connect_client();
+    const auto connection = complete_raw_handshake(client, server);
+
+    send_input_packet(client,
+                      connection,
+                      {input_sample(0, 0, {})},
+                      dots::protocol::AuthorityReceiptSequenceId{0});
+    REQUIRE_FALSE(server.process_events().has_value());
+    CHECK(server.client_count() == 0);
+    CHECK(server.rejected_packet_count() == 1);
 }
 
 TEST_CASE("Server rejects conflicting data for a queued input sequence",

@@ -20,8 +20,12 @@ enum class MessageKind : std::uint8_t {
 
 inline constexpr std::size_t kMaximumInputSamplesPerPacket = 3;
 inline constexpr std::uint8_t kMaximumPendingInputCount = 64;
+inline constexpr std::size_t kMaximumAuthorityReceiptsPerSnapshot = 16;
+inline constexpr std::size_t kMaximumPendingAuthorityReceipts = 256;
+inline constexpr std::uint16_t kCheckpointSchemaId = 1;
 inline constexpr std::uint16_t kRespawnActionBit = 1U << 0U;
-inline constexpr std::uint16_t kKnownInputActionBits = kRespawnActionBit;
+inline constexpr std::uint16_t kSplitActionBit = 1U << 1U;
+inline constexpr std::uint16_t kKnownInputActionBits = kRespawnActionBit | kSplitActionBit;
 
 enum class EntityKind : std::uint8_t {
     Player = 1,
@@ -45,12 +49,29 @@ struct ClientHello {
     auto operator<=>(const ClientHello&) const = default;
 };
 
+struct WorldRules {
+    float initial_player_mass{};
+    float food_mass{};
+    float spatial_grid_cell_size{};
+    float player_speed_units_per_second{};
+    std::uint32_t split_recast_ticks{};
+    std::uint32_t merge_delay_ticks{};
+    std::uint16_t maximum_pieces_per_owner{};
+    float minimum_split_mass{};
+    float child_launch_speed_units_per_second{};
+    float launch_decay_units_per_second_squared{};
+    float cohesion_speed_units_per_second{};
+
+    bool operator==(const WorldRules&) const = default;
+};
+
 struct ServerWelcome {
     ClientId client_id;
     std::uint32_t server_tick{};
     std::uint32_t respawn_cooldown_ticks{};
+    WorldRules world_rules;
 
-    auto operator<=>(const ServerWelcome&) const = default;
+    bool operator==(const ServerWelcome&) const = default;
 };
 
 struct InputSample {
@@ -65,9 +86,30 @@ struct InputSample {
 
 struct InputPacket {
     SnapshotId last_received_snapshot_id;
+    AuthorityReceiptSequenceId last_received_authority_receipt_sequence;
     std::vector<InputSample> samples;
 
     auto operator<=>(const InputPacket&) const = default;
+};
+
+struct PredictionKey {
+    PlayerOwnerId owner_id;
+    InputSequenceId input_id;
+    std::uint16_t child_ordinal{};
+
+    auto operator<=>(const PredictionKey&) const = default;
+};
+
+struct OwnerState {
+    PlayerOwnerId owner_id;
+    float movement_x{};
+    float movement_y{};
+    float last_non_zero_movement_x{};
+    float last_non_zero_movement_y{};
+    InputSequenceId last_input_id;
+    std::uint32_t split_cooldown_end_tick{};
+
+    bool operator==(const OwnerState&) const = default;
 };
 
 struct EntityState {
@@ -77,8 +119,22 @@ struct EntityState {
     float position_x{};
     float position_y{};
     float mass{};
+    float launch_velocity_x{};
+    float launch_velocity_y{};
+    std::uint32_t merge_eligible_tick{};
+    std::optional<PredictionKey> prediction_key;
 
-    auto operator<=>(const EntityState&) const = default;
+    bool operator==(const EntityState&) const = default;
+};
+
+struct FoodConsumed {
+    std::uint32_t server_tick{};
+    EntityId food_entity_id;
+    EntityId consumer_entity_id;
+    PlayerOwnerId consumer_owner_id;
+    float transferred_mass{};
+
+    bool operator==(const FoodConsumed&) const = default;
 };
 
 struct PlayerAbsorbed {
@@ -90,6 +146,38 @@ struct PlayerAbsorbed {
     float transferred_mass{};
 
     auto operator<=>(const PlayerAbsorbed&) const = default;
+};
+
+struct PlayerSplit {
+    std::uint32_t server_tick{};
+    PlayerOwnerId owner_id;
+    InputSequenceId input_id;
+    std::uint16_t child_ordinal{};
+    EntityId parent_entity_id;
+    EntityId child_entity_id;
+    float parent_mass{};
+    float child_mass{};
+
+    bool operator==(const PlayerSplit&) const = default;
+};
+
+struct PiecesMerged {
+    std::uint32_t server_tick{};
+    PlayerOwnerId owner_id;
+    EntityId survivor_entity_id;
+    EntityId consumed_entity_id;
+    float combined_mass{};
+
+    bool operator==(const PiecesMerged&) const = default;
+};
+
+using AuthorityEvent = std::variant<FoodConsumed, PlayerAbsorbed, PlayerSplit, PiecesMerged>;
+
+struct AuthorityReceipt {
+    AuthorityReceiptSequenceId sequence_id;
+    AuthorityEvent event;
+
+    bool operator==(const AuthorityReceipt&) const = default;
 };
 
 struct RecipientSessionState {
@@ -111,10 +199,15 @@ struct FullSnapshot {
     std::uint32_t server_tick{};
     InputSequenceId last_processed_input_id;
     std::uint8_t pending_input_count{};
+    std::uint16_t checkpoint_schema_id{kCheckpointSchemaId};
+    std::uint64_t checkpoint_digest{};
+    EntityId next_entity_id;
     RecipientSessionState recipient;
+    std::vector<OwnerState> owners;
     std::vector<EntityState> entities;
+    std::vector<AuthorityReceipt> authority_receipts;
 
-    auto operator<=>(const FullSnapshot&) const = default;
+    bool operator==(const FullSnapshot&) const = default;
 };
 
 using Message = std::variant<ClientHello, ServerWelcome, InputPacket, FullSnapshot>;

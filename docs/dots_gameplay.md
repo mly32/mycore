@@ -8,8 +8,9 @@ future mechanics outlined in feature plans. The server is authoritative for ever
 Dots is an early Agar.io-like movement and growth slice. Players move through a shared field,
 consume food, and can absorb smaller opponents. The shared deterministic World and offline
 rollback model also implement split, launch, cohesion, and merge rules. The current graphical
-controls and network protocol do not submit split actions yet, so that mechanic is exercised
-through the simulation and prediction APIs until the remaining Feature 14 runtime integration.
+controls do not submit split actions yet, although protocol v4 and the authoritative server now
+carry and execute the edge action. The mechanic is exercised through simulation, prediction,
+protocol, and session tests until the remaining Feature 14 client-runtime integration.
 There is no score, win condition, or separate energy system. Food is the current resource that
 fills the role an energy pickup might later fill.
 
@@ -71,8 +72,8 @@ server-assigned spawns.
 Clients submit normalized movement intent at 30 Hz. A player moves at 6 world units per second.
 The server consumes at most one queued input sample per owner per tick. The simulation installs
 at most one owner command and applies its held movement to every piece owned by that owner. A
-live network session currently has one piece because the version 3 protocol and client controls
-do not carry the implemented split edge action yet.
+A live graphical network session currently has one piece because its controls do not expose the
+protocol-v4 split edge action yet.
 
 Brief missing input does not immediately stop a player: the server holds the last applied movement
 for five ticks. On the following missing-input tick it neutralizes movement, while keeping the
@@ -134,7 +135,7 @@ color.
 ## Planned gameplay, not current rules
 
 Future plans may add scoring or winning, richer resource/energy mechanics, and additional
-cooldowns. Feature 14 still has to expose the implemented split action through network input,
-add authoritative checkpoint/receipt transport, and attach persistent presentation cues. These
-must be specified here as they become implemented gameplay behavior; feature plans remain design
-documents until then.
+cooldowns. Feature 14 still has to expose the implemented protocol action through graphical
+input, replace the temporary position predictor with the complete rollback timeline, and attach
+persistent presentation cues. These must be specified here as they become implemented gameplay
+behavior; feature plans remain design documents until then.

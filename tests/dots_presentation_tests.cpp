@@ -85,6 +85,9 @@ TEST_CASE("Remote endpoint diagnostics include a visible interpolation connector
     REQUIRE(world.apply({
                 .snapshot_id = dots::protocol::SnapshotId{1},
                 .recipient = playing_session(dots::protocol::EntityId{1}),
+                .owners = {{
+                    .owner_id = dots::protocol::PlayerOwnerId{4},
+                }},
                 .entities =
                     {
                         {
@@ -279,6 +282,9 @@ TEST_CASE("Dots presentation extracts replicated state around its controlled pla
     REQUIRE(world.apply({
                 .snapshot_id = dots::protocol::SnapshotId{1},
                 .recipient = playing_session(dots::protocol::EntityId{3}),
+                .owners = {{
+                    .owner_id = dots::protocol::PlayerOwnerId{4},
+                }},
                 .entities =
                     {
                         {
@@ -579,6 +585,9 @@ TEST_CASE("Predicted replicated extraction separates presentation and known stat
     REQUIRE(world.apply({
                 .snapshot_id = dots::protocol::SnapshotId{1},
                 .recipient = playing_session(dots::protocol::EntityId{3}),
+                .owners = {{
+                    .owner_id = dots::protocol::PlayerOwnerId{4},
+                }},
                 .entities =
                     {
                         {

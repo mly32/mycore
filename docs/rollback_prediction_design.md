@@ -208,9 +208,11 @@ include piece IDs, movement, last movement, input ID, and split cooldown. Player
 identity, owner, position, mass, launch velocity, merge deadline, and the tagged optional
 prediction key. Food records include identity and position. Counts and ticks use 64 bits; entity,
 owner, and input IDs use 32 bits; the prediction-key ordinal uses 16 bits; floats use their
-32-bit IEEE representation. Protocol version 4 will carry the schema identifier and this digest.
-The client hydrates and validates the typed checkpoint before mutation. Digest equality remains
-diagnostic; typed validation and differences are the correctness gate.
+32-bit IEEE representation. Protocol version 4 carries the schema identifier and this digest.
+`Dots::Replication` can rehydrate and restore-validate the exact typed checkpoint before timeline
+mutation, then recomputes the digest to reject wire corruption or schema disagreement. Digest
+equality remains diagnostic during reconciliation; typed validation and differences are the
+correctness gate.
 
 Feature 16 delta snapshots must first materialize the same coherent checkpoint contract. A
 partial delta record is not a rollback checkpoint.
@@ -383,9 +385,10 @@ than pretending to provide external exactly-once delivery.
 The timeline reports when an event key is no longer reachable from retained replay stimuli.
 That replay-retirement hint alone is not enough to discard an at-most-once tombstone: a repeated
 authority receipt could otherwise expose the key again. The initial engine-kernel increment
-therefore retains router tombstones for the connected session. Protocol integration later in
-Feature 14 pairs retirement with the monotonic authority-receipt watermark before adding bounded
-pruning. Stable game keys must never be reused.
+therefore retains router tombstones for the connected session. Protocol v4 now supplies the
+monotonic authority-receipt watermark needed to pair receipt retirement with replay retirement;
+timeline/router integration and bounded pruning remain later Feature 14 work. Stable game keys
+must never be reused.
 
 The router does not claim persistent exactly-once behavior across a process crash, and it cannot
 erase audio, haptics, or pixels the player already perceived. Cancelable handlers stop or fade
@@ -425,6 +428,12 @@ loss-tolerant receipt:
 - Identical duplicates are ignored, conflicting duplicates reject the frame, and a receipt is
   delivered to the consequence router only with an accepted authority commit at or beyond its
   server tick.
+
+Protocol v4, the authoritative server queues, and the replicated client inbox implement the
+transport portion of this contract. Receipts are relevant-owner scoped for the current complete
+replication model. The temporary network client acknowledges the highest contiguous validated
+sequence but does not deliver receipts to persistent consequence handlers until the complete
+timeline and presentation integration steps.
 
 Repeated Feature 13 session fields remain authoritative state. Receipts control one-time
 consequence delivery and do not replace those state fields.

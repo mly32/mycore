@@ -403,7 +403,7 @@ Keep commits focused and reviewable, but do not add approval gates between these
    entity-scale workloads, documentation updates, and the measured same-frame/multi-frame
    decision.
 
-Steps 1 through 4 are implemented on `feature/14`. `MyCore::Rollback` now provides the generic
+Steps 1 through 5 are implemented on `feature/14`. `MyCore::Rollback` now provides the generic
 timeline and consequence machinery. Dots Simulation now provides immutable `WorldRules`, sorted
 complete checkpoints, atomic restore, one owner-scoped command batch per tick, typed food and
 absorption, split, and merge journals, stable keys, and predicted identity storage. Its scratch
@@ -416,9 +416,19 @@ projection, exact retained local/remote movement causes, canonical digests, type
 and the complete-World adapter to `MyCore::Rollback`. Offline tests cover structural correction
 and exercise `PredictOnce`, `PredictCancelable`, and `ConfirmOnce` with Dots events.
 
-The production network client still uses the Feature 11 position predictor until protocol step
-5 and client-runtime step 6 integrate complete World authority, split input, receipts, and
-replay. Persistent visual consequence handlers remain step 7 work.
+Protocol v4 now carries immutable rules, the schema-1 canonical checkpoint and digest, allocator
+and complete owner/entity state, optional prediction keys, the split action bit, and monotonic
+typed authority receipts. Replication builds and exactly rehydrates `WorldCheckpoint`, rejecting
+restore or digest failures. The server retains at most 256 relevant receipts per session, repeats
+at most 16 from the unacknowledged frontier, accepts only issued ACKs, and fails only a session
+that exhausts retention. Protocol, replication, and in-memory session tests cover malformed
+checkpoint state, all receipt event variants, duplicate/conflicting/gapped receipts, batching,
+ACK retirement, split identity, and overflow.
+
+The production network client still uses the Feature 11 position predictor until client-runtime
+step 6 installs complete World authority, interaction-closed replay, and graphical split input.
+It already ACKs the highest contiguous validated receipt so the server queue remains bounded.
+Persistent visual consequence handlers remain step 7 work.
 
 ## Test Plan
 

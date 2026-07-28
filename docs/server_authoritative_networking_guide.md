@@ -60,9 +60,9 @@ The Dots protocol is a game-owned contract. It defines four messages today:
 | Message | Direction | Delivery | Purpose |
 |---|---|---|---|
 | `ClientHello` | Client to server | Reliable | Request a session using the supported protocol version. |
-| `ServerWelcome` | Server to client | Reliable | Assign the client ID and immutable respawn cooldown. |
-| `InputPacket` | Client to server | Unreliable | Submit one to three sequenced movement/action samples and acknowledge the latest received snapshot. |
-| `FullSnapshot` | Server to client | Unreliable | Atomically replace replicated entities plus recipient lifecycle state. |
+| `ServerWelcome` | Server to client | Reliable | Assign the client ID and immutable match/session rules. |
+| `InputPacket` | Client to server | Unreliable | Submit one to three sequenced movement/action samples and acknowledge the latest snapshot and contiguous authority receipt. |
+| `FullSnapshot` | Server to client | Unreliable | Carry a complete schema-tagged checkpoint, recipient lifecycle state, and repeated authority receipts. |
 
 Every encoded message starts with a 12-byte header containing:
 
@@ -70,12 +70,14 @@ Every encoded message starts with a 12-byte header containing:
 magic "DOTS" + protocol version + message kind + flags + payload length
 ```
 
-The current protocol version is 3. Version 1, used by Features 8--10, carried one input sample
+The current protocol version is 4. Version 1, used by Features 8--10, carried one input sample
 and no pending-input depth. Version 2 added one-to-three-sample redundancy and per-client queue
 depth. Version 3 adds player owner IDs, respawn actions/configuration, and a recipient-specific
 session block containing mode, owned/primary/follow entities, defeat/deadline ticks, latest
-absorption, and explicit respawn result. There is no dual-version negotiation: older binaries
-receive `UnsupportedVersion` rather than having their payload interpreted as version 3.
+absorption, and explicit respawn result. Version 4 adds immutable `WorldRules`, complete
+rollback-checkpoint fields, prediction keys, a canonical schema/digest, the split action bit,
+and sequenced typed authority receipts. There is no dual-version negotiation: older binaries
+receive `UnsupportedVersion` rather than having their payload interpreted as version 4.
 
 Integers and floating-point bit patterns have defined widths and use big-endian network byte
 order. Fields are encoded individually; the implementation never copies a C++ struct directly
@@ -83,10 +85,12 @@ onto the wire. This keeps the format independent of compiler padding, machine by
 the server's in-memory component layout.
 
 The decoder treats every packet as hostile input. It checks framing, lengths, version, enums,
-IDs, finite numbers, movement ranges, known action bits, entity/ownership uniqueness, lifecycle
-combinations, deadline ordering, and size limits before accepting a message. A malformed packet
-produces a typed codec error. At the server boundary, malformed or wrong-direction messages
-disconnect only the offending peer.
+IDs, finite numbers, movement ranges, known action bits, canonical entity/owner ordering,
+checkpoint closure and prediction-key invariants, receipt order/identity, lifecycle combinations,
+deadline ordering, and size limits before accepting a message. Replication separately restores a
+typed scratch `WorldCheckpoint` and verifies its schema-1 FNV-1a digest. A malformed packet
+produces a typed error. At the server boundary, malformed or wrong-direction messages disconnect
+only the offending peer.
 
 ### Why reliable and unreliable are both useful
 
@@ -110,7 +114,7 @@ small ordered handshake, but not for a continuous stream of replaceable gameplay
 
 Input and snapshots are time-sensitive. A delayed old movement sample or snapshot is usually
 less useful than the newest one, so they are sent unreliably and carry application sequence IDs.
-The receiver can ignore stale data without waiting for retransmission. Protocol-v2 input packets
+The receiver can ignore stale data without waiting for retransmission. Protocol-v4 input packets
 contain the current sample and, by default, up to two prior unacknowledged samples. The server
 deduplicates overlapping packets before its bounded scheduling queue. The current server also
 sends another full snapshot at 15 Hz, so a lost snapshot is replaced by a newer complete view.
@@ -383,7 +387,8 @@ After the handshake, each current in-memory fixed step is composed in this order
 
 1. The client maps keyboard or mouse state to a normalized movement vector.
 2. It creates the next sequenced input sample and a bounded `InputPacket`, including its latest
-   snapshot ID and, when enabled, up to two prior unacknowledged samples.
+   snapshot ID, highest contiguous authority-receipt sequence, and, when enabled, up to two prior
+   unacknowledged samples.
 3. The protocol encoder produces bytes and the client sends them unreliably.
 4. The server polls, decodes, validates, deduplicates, and orders fresh samples in that
    connection's bounded queue.
@@ -395,17 +400,32 @@ After the handshake, each current in-memory fixed step is composed in this order
    centers the camera on that primary. While Spectating, it draws the complete delayed remote
    sample and uses confirmed-killer follow or a presentation-only free camera.
 
-Each full snapshot currently contains every player and food entity, sorted by protocol entity
-ID, plus:
+Each full snapshot currently contains every player and food entity in canonical identity order,
+plus:
 
 - Its snapshot sequence ID.
 - The authoritative server tick.
 - The last input sequence processed for that client.
 - That client's current pending-input queue depth after the tick.
+- Checkpoint schema `1`, the canonical 64-bit diagnostic digest, and the next entity ID.
+- Complete owner movement, last-movement/input, split-cooldown, per-player launch/merge state,
+  and optional predicted-child identity.
+- The recipient's repeated lifecycle state.
+- Up to 16 relevant unacknowledged typed authority receipts.
 
 `ReplicatedWorld` rejects invalid snapshots, ignores stale snapshots, and fully replaces its
-entity collection when it accepts a newer one. It is a client view, not a second authoritative
-`simulation::World`.
+entity collection when it accepts a newer one. It accepts only identical receipt duplicates and
+a gap-free extension of its receipt frontier. `Dots::Replication` also exposes exact typed
+checkpoint hydration for the complete rollback timeline used in the next Feature 14 step.
+`ReplicatedWorld` remains a client view, not a second authoritative `simulation::World`.
+
+Authority receipts deliver transient confirmed food, absorption, split, and merge events without
+turning snapshots into reliable transport. Each session has its own monotonic sequence and
+receives events relevant to its owner. The server retains up to 256 unacknowledged receipts and
+repeats the first 16 in each snapshot; input packets retire them through the highest contiguous
+ACK. A gap, conflicting duplicate, ACK beyond the issued frontier, or retention overflow is an
+explicit session failure. Repeated Playing/Spectating and respawn fields remain ordinary
+authoritative state rather than receipt-driven one-shots.
 
 ## The baseline no-compensation mental model
 
@@ -435,9 +455,10 @@ allow it to be amplified with fake lag and loss: owned movement responds immedia
 authoritative samples and remote entities remain delayed. Feature 12 makes remote motion smooth
 by presenting historical known samples rather than guessing remote input or velocity.
 
-Input samples have sequence IDs, protocol-v3 packets retain bounded redundancy, the server
+Input samples have sequence IDs, protocol-v4 packets retain bounded redundancy, the server
 schedules at most one queued sample per client per tick, snapshots acknowledge
-`last_processed_input`, and inputs report the latest received snapshot. The client runtime now
+`last_processed_input`, and inputs report the latest received snapshot and highest contiguous
+authority receipt. The client runtime now
 retains a fixed 256-entry input/result history and atomically replays the unacknowledged suffix
 from each validated authoritative controlled-player sample. The server does not yet use snapshot
 acknowledgements for delta baselines.

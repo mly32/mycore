@@ -12,5 +12,7 @@ target_link_libraries(
     PUBLIC
         Dots::Protocol
         Dots::Simulation
+    PRIVATE
+        Dots::Prediction
 )
 mycore_configure_target(dots_replication)

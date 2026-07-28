@@ -63,7 +63,41 @@ public:
     bool disconnect_called{};
 };
 
-[[nodiscard]] std::vector<std::byte> encode_bytes(const dots::protocol::Message& message) {
+[[nodiscard]] dots::protocol::WorldRules world_rules() {
+    return dots::replication::to_protocol(dots::simulation::WorldRules{});
+}
+
+void complete_protocol_fixture(dots::protocol::Message& message) {
+    if (auto* welcome = std::get_if<dots::protocol::ServerWelcome>(&message)) {
+        if (welcome->world_rules.initial_player_mass == 0.0F) {
+            welcome->world_rules = world_rules();
+        }
+        return;
+    }
+    auto* value = std::get_if<dots::protocol::FullSnapshot>(&message);
+    if (value == nullptr || !value->owners.empty()) {
+        return;
+    }
+    for (const auto& entity : value->entities) {
+        if (entity.kind != dots::protocol::EntityKind::Player ||
+            std::any_of(value->owners.begin(),
+                        value->owners.end(),
+                        [&entity](const dots::protocol::OwnerState& owner) {
+                            return owner.owner_id == entity.owner_id;
+                        })) {
+            continue;
+        }
+        value->owners.push_back({.owner_id = entity.owner_id});
+    }
+    std::sort(value->owners.begin(),
+              value->owners.end(),
+              [](const dots::protocol::OwnerState& lhs, const dots::protocol::OwnerState& rhs) {
+                  return lhs.owner_id < rhs.owner_id;
+              });
+}
+
+[[nodiscard]] std::vector<std::byte> encode_bytes(dots::protocol::Message message) {
+    complete_protocol_fixture(message);
     auto result = dots::protocol::encode(message);
     auto* bytes = std::get_if<dots::protocol::EncodedMessage>(&result);
     REQUIRE(bytes != nullptr);

@@ -179,6 +179,7 @@ public:
                 }
                 client_id_ = welcome->client_id;
                 respawn_cooldown_ticks_ = welcome->respawn_cooldown_ticks;
+                world_rules_ = welcome->world_rules;
                 if (const auto error = update_ready_state()) {
                     result.error = error;
                     return result;
@@ -343,6 +344,10 @@ public:
         return world_.recipient().follow_entity_id;
     }
 
+    [[nodiscard]] std::optional<protocol::WorldRules> world_rules() const noexcept {
+        return world_rules_;
+    }
+
     [[nodiscard]] std::optional<std::uint32_t> defeat_tick() const noexcept {
         return world_.recipient().defeat_tick;
     }
@@ -494,6 +499,7 @@ private:
     make_input_packet(const protocol::InputSample& current_sample) const {
         protocol::InputPacket packet{
             .last_received_snapshot_id = world_.snapshot_id(),
+            .last_received_authority_receipt_sequence = world_.authority_receipt_acknowledgement(),
             .samples = {},
         };
         packet.samples.reserve(protocol::kMaximumInputSamplesPerPacket);
@@ -869,6 +875,7 @@ private:
     State state_{State::Connecting};
     protocol::ClientId client_id_;
     std::uint32_t respawn_cooldown_ticks_{};
+    std::optional<protocol::WorldRules> world_rules_;
     replication::ReplicatedWorld world_;
     std::uint32_t next_input_id_{};
     std::optional<std::uint32_t> last_sent_client_tick_;
@@ -961,6 +968,10 @@ protocol::EntityId Runtime::primary_entity_id() const noexcept {
 
 protocol::EntityId Runtime::follow_entity_id() const noexcept {
     return impl_->follow_entity_id();
+}
+
+std::optional<protocol::WorldRules> Runtime::world_rules() const noexcept {
+    return impl_->world_rules();
 }
 
 std::optional<std::uint32_t> Runtime::defeat_tick() const noexcept {

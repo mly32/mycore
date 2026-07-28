@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <limits>
 #include <map>
 #include <optional>
@@ -57,6 +58,9 @@ struct Session {
     std::uint64_t last_activity_tick{};
     std::uint32_t consecutive_missing_input_ticks{};
     std::uint32_t next_snapshot_id{};
+    protocol::AuthorityReceiptSequenceId last_acknowledged_authority_receipt;
+    std::deque<protocol::AuthorityReceipt> pending_authority_receipts;
+    std::uint32_t next_authority_receipt_sequence{};
 
     [[nodiscard]] bool ready() const noexcept {
         return client_id.is_valid() && owner_id.is_valid();
@@ -67,6 +71,11 @@ enum class InputEnqueueResult : std::uint8_t {
     Accepted,
     ConflictingDuplicate,
     Overflow,
+};
+
+enum class ReceiptAcknowledgementResult : std::uint8_t {
+    Accepted,
+    Invalid,
 };
 
 } // namespace
@@ -103,6 +112,9 @@ public:
                         .last_activity_tick = world_.tick().value(),
                         .consecutive_missing_input_ticks = 0,
                         .next_snapshot_id = 0,
+                        .last_acknowledged_authority_receipt = {},
+                        .pending_authority_receipts = {},
+                        .next_authority_receipt_sequence = 0,
                     });
                 static_cast<void>(unused);
                 if (inserted) {
@@ -150,6 +162,11 @@ public:
                 continue;
             }
             auto& session = session_iterator->second;
+            if (acknowledge_authority_receipts(session, *input) ==
+                ReceiptAcknowledgementResult::Invalid) {
+                reject(received.connection, "invalid authority receipt acknowledgement");
+                continue;
+            }
             const auto enqueue_result = enqueue_input(session, *input);
             if (enqueue_result == InputEnqueueResult::Accepted) {
                 session.last_activity_tick = world_.tick().value();
@@ -205,6 +222,7 @@ public:
                     .input_id = replication::to_simulation(sample.sequence_id),
                     .owner_id = session.owner_id,
                     .movement = {sample.movement_x, sample.movement_y},
+                    .split_requested = (sample.action_bits & protocol::kSplitActionBit) != 0U,
                 });
             }
             session.consecutive_missing_input_ticks = 0;
@@ -219,7 +237,7 @@ public:
                        ? RuntimeError::SimulationStepFailed
                        : RuntimeError::SimulationInputRejected;
         }
-        if (const auto error = process_absorption_events(*journal)) {
+        if (const auto error = process_simulation_events(*journal)) {
             return error;
         }
         for (const auto& [connection_value, sequence_id] : applied_inputs) {
@@ -266,6 +284,28 @@ public:
     }
 
 private:
+    [[nodiscard]] static ReceiptAcknowledgementResult
+    acknowledge_authority_receipts(Session& session, const protocol::InputPacket& packet) {
+        const auto acknowledgement = packet.last_received_authority_receipt_sequence;
+        if (!acknowledgement.is_valid()) {
+            return ReceiptAcknowledgementResult::Accepted;
+        }
+        if (session.next_authority_receipt_sequence == 0 ||
+            acknowledgement.value() >= session.next_authority_receipt_sequence) {
+            return ReceiptAcknowledgementResult::Invalid;
+        }
+        if (session.last_acknowledged_authority_receipt.is_valid() &&
+            acknowledgement <= session.last_acknowledged_authority_receipt) {
+            return ReceiptAcknowledgementResult::Accepted;
+        }
+        while (!session.pending_authority_receipts.empty() &&
+               session.pending_authority_receipts.front().sequence_id <= acknowledgement) {
+            session.pending_authority_receipts.pop_front();
+        }
+        session.last_acknowledged_authority_receipt = acknowledgement;
+        return ReceiptAcknowledgementResult::Accepted;
+    }
+
     [[nodiscard]] static InputEnqueueResult enqueue_input(Session& session,
                                                           const protocol::InputPacket& packet) {
         std::vector<protocol::InputSample> fresh_samples;
@@ -401,58 +441,119 @@ private:
         return std::nullopt;
     }
 
+    [[nodiscard]] bool enqueue_authority_receipt(Session& session,
+                                                 const protocol::AuthorityEvent& event) {
+        if (session.pending_authority_receipts.size() >=
+                protocol::kMaximumPendingAuthorityReceipts ||
+            session.next_authority_receipt_sequence ==
+                protocol::AuthorityReceiptSequenceId::kInvalidValue) {
+            return false;
+        }
+        session.pending_authority_receipts.push_back({
+            .sequence_id =
+                protocol::AuthorityReceiptSequenceId{session.next_authority_receipt_sequence},
+            .event = event,
+        });
+        ++session.next_authority_receipt_sequence;
+        return true;
+    }
+
     [[nodiscard]] std::optional<RuntimeError>
-    process_absorption_events(const simulation::TickJournal& journal) {
+    process_simulation_events(const simulation::TickJournal& journal) {
+        std::vector<ConnectionHandle> receipt_failures;
         for (const auto& simulation_event : journal.events) {
-            const auto* event = std::get_if<simulation::PlayerAbsorbed>(&simulation_event);
-            if (event == nullptr) {
-                continue;
-            }
-            if (event->tick.value() >= std::numeric_limits<std::uint32_t>::max()) {
+            const auto converted = replication::to_protocol(simulation_event);
+            const auto* authority_event = std::get_if<protocol::AuthorityEvent>(&converted);
+            if (authority_event == nullptr) {
                 return RuntimeError::TickOutOfRange;
             }
-            const auto defeat_tick = static_cast<std::uint32_t>(event->tick.value());
-            if (settings_.respawn_cooldown_ticks >
-                std::numeric_limits<std::uint32_t>::max() - defeat_tick) {
-                return RuntimeError::TickOutOfRange;
-            }
-            const protocol::PlayerAbsorbed replicated_event{
-                .server_tick = defeat_tick,
-                .absorber_entity_id = replication::to_protocol(event->absorber_entity_id),
-                .victim_entity_id = replication::to_protocol(event->victim_entity_id),
-                .absorber_owner_id = replication::to_protocol(event->absorber_owner_id),
-                .victim_owner_id = replication::to_protocol(event->victim_owner_id),
-                .transferred_mass = event->transferred_mass,
-            };
-            if (auto* absorber = session_for_owner(event->absorber_owner_id)) {
-                absorber->latest_absorption = replicated_event;
-            }
-            auto* victim = session_for_owner(event->victim_owner_id);
-            if (victim == nullptr) {
-                continue;
-            }
-            victim->latest_absorption = replicated_event;
-            std::erase(victim->player_ids, event->victim_entity_id);
-            if (!victim->player_ids.empty()) {
-                if (victim->primary_player_id == event->victim_entity_id) {
-                    victim->primary_player_id = victim->player_ids.front();
+
+            std::vector<Session*> recipients;
+            const auto add_recipient = [&recipients](Session* session) {
+                if (session != nullptr &&
+                    std::find(recipients.begin(), recipients.end(), session) == recipients.end()) {
+                    recipients.push_back(session);
                 }
-                continue;
+            };
+            if (const auto* food_event = std::get_if<simulation::FoodConsumed>(&simulation_event)) {
+                add_recipient(session_for_owner(food_event->consumer_owner_id));
+            } else if (const auto* split_event =
+                           std::get_if<simulation::PlayerSplit>(&simulation_event)) {
+                auto* owner = session_for_owner(split_event->owner_id);
+                if (owner != nullptr) {
+                    owner->player_ids.push_back(split_event->child_entity_id);
+                    std::sort(owner->player_ids.begin(), owner->player_ids.end());
+                }
+                add_recipient(owner);
+            } else if (const auto* merge_event =
+                           std::get_if<simulation::PiecesMerged>(&simulation_event)) {
+                auto* owner = session_for_owner(merge_event->owner_id);
+                if (owner != nullptr) {
+                    std::erase(owner->player_ids, merge_event->consumed_entity_id);
+                    if (owner->primary_player_id == merge_event->consumed_entity_id) {
+                        owner->primary_player_id = merge_event->survivor_entity_id;
+                    }
+                }
+                add_recipient(owner);
+            } else {
+                const auto& absorption_event =
+                    std::get<simulation::PlayerAbsorbed>(simulation_event);
+                if (absorption_event.tick.value() >= std::numeric_limits<std::uint32_t>::max()) {
+                    return RuntimeError::TickOutOfRange;
+                }
+                const auto defeat_tick = static_cast<std::uint32_t>(absorption_event.tick.value());
+                if (settings_.respawn_cooldown_ticks >
+                    std::numeric_limits<std::uint32_t>::max() - defeat_tick) {
+                    return RuntimeError::TickOutOfRange;
+                }
+                const auto& replicated_event = std::get<protocol::PlayerAbsorbed>(*authority_event);
+                auto* absorber = session_for_owner(absorption_event.absorber_owner_id);
+                if (absorber != nullptr) {
+                    absorber->latest_absorption = replicated_event;
+                }
+                add_recipient(absorber);
+                auto* victim = session_for_owner(absorption_event.victim_owner_id);
+                add_recipient(victim);
+                if (victim != nullptr) {
+                    victim->latest_absorption = replicated_event;
+                    std::erase(victim->player_ids, absorption_event.victim_entity_id);
+                    if (!victim->player_ids.empty()) {
+                        if (victim->primary_player_id == absorption_event.victim_entity_id) {
+                            victim->primary_player_id = victim->player_ids.front();
+                        }
+                    } else {
+                        victim->mode = protocol::SessionMode::Spectating;
+                        victim->primary_player_id = {};
+                        victim->follow_player_id = absorption_event.absorber_entity_id;
+                        victim->defeat_tick = defeat_tick;
+                        victim->respawn_available_tick =
+                            defeat_tick + settings_.respawn_cooldown_ticks;
+                        victim->consecutive_missing_input_ticks = 0;
+                        mycore::debug::log_info(
+                            "dots.server.session",
+                            "Client {} entered spectating after entity {} was absorbed by entity "
+                            "{}; respawn available at tick {}",
+                            victim->client_id.value(),
+                            absorption_event.victim_entity_id.value(),
+                            absorption_event.absorber_entity_id.value(),
+                            *victim->respawn_available_tick);
+                    }
+                }
             }
-            victim->mode = protocol::SessionMode::Spectating;
-            victim->primary_player_id = {};
-            victim->follow_player_id = event->absorber_entity_id;
-            victim->defeat_tick = defeat_tick;
-            victim->respawn_available_tick = defeat_tick + settings_.respawn_cooldown_ticks;
-            victim->consecutive_missing_input_ticks = 0;
-            mycore::debug::log_info(
-                "dots.server.session",
-                "Client {} entered spectating after entity {} was absorbed by entity {}; "
-                "respawn available at tick {}",
-                victim->client_id.value(),
-                event->victim_entity_id.value(),
-                event->absorber_entity_id.value(),
-                *victim->respawn_available_tick);
+
+            for (auto* recipient : recipients) {
+                if (!enqueue_authority_receipt(*recipient, *authority_event)) {
+                    receipt_failures.push_back(recipient->connection);
+                }
+            }
+        }
+        std::sort(receipt_failures.begin(), receipt_failures.end());
+        receipt_failures.erase(std::unique(receipt_failures.begin(), receipt_failures.end()),
+                               receipt_failures.end());
+        for (const auto connection : receipt_failures) {
+            if (sessions_.contains(connection.value())) {
+                fail_session(connection, "authority receipt retention overflow");
+            }
         }
         return std::nullopt;
     }
@@ -505,6 +606,7 @@ private:
             .client_id = session.client_id,
             .server_tick = static_cast<std::uint32_t>(world_.tick().value()),
             .respawn_cooldown_ticks = settings_.respawn_cooldown_ticks,
+            .world_rules = replication::to_protocol(world_.rules()),
         };
         if (const auto error = transmit(connection, welcome, DeliveryMode::Reliable)) {
             return error;
@@ -537,12 +639,20 @@ private:
         if (session.next_snapshot_id == protocol::SnapshotId::kInvalidValue) {
             return RuntimeError::SnapshotIdExhausted;
         }
+        const auto receipt_count = std::min(session.pending_authority_receipts.size(),
+                                            protocol::kMaximumAuthorityReceiptsPerSnapshot);
+        std::vector<protocol::AuthorityReceipt> authority_receipts;
+        authority_receipts.reserve(receipt_count);
+        std::copy_n(session.pending_authority_receipts.begin(),
+                    receipt_count,
+                    std::back_inserter(authority_receipts));
         const auto snapshot = replication::build_full_snapshot(
             world_,
             protocol::SnapshotId{session.next_snapshot_id},
             session.last_processed_input_id,
             static_cast<std::uint8_t>(session.pending_inputs.size()),
-            recipient_state(session));
+            recipient_state(session),
+            std::move(authority_receipts));
         if (const auto* error = std::get_if<replication::SnapshotBuildError>(&snapshot)) {
             switch (*error) {
             case replication::SnapshotBuildError::InvalidSnapshotId:
@@ -584,6 +694,15 @@ private:
                                    "Rejected {} on connection {}; disconnecting peer",
                                    reason,
                                    connection.value());
+        static_cast<void>(endpoint_.disconnect(connection));
+        remove_session(connection);
+    }
+
+    void fail_session(ConnectionHandle connection, std::string_view reason) {
+        mycore::debug::log_warning("dots.server.session",
+                                   "Session failure on connection {}: {}; disconnecting peer",
+                                   connection.value(),
+                                   reason);
         static_cast<void>(endpoint_.disconnect(connection));
         remove_session(connection);
     }

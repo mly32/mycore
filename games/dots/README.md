@@ -64,7 +64,7 @@ Run an executable with `--help` for its complete CLI.
 | `dots_server` | Headless authoritative 30 Hz native server |
 | `dots_bot` | Headless native client that repeatedly moves in a wide rectangle |
 
-Networked clients send protocol-v3 input packets at 30 Hz and receive authoritative snapshots at
+Networked clients send protocol-v4 input packets at 30 Hz and receive authoritative snapshots at
 15 Hz. Each input packet can repeat up to two unacknowledged samples by default. The controlled
 player responds from bounded movement prediction immediately, reconciles against server ACKs,
 and smooths only visible corrections over 100 ms. Remote players use six-tick delayed
@@ -116,10 +116,12 @@ not one request per input tick. Press Escape to quit. Mouse steering and spectat
 pause while the debug panel owns the mouse.
 
 Split, launch, cohesion, and merge are implemented in the shared deterministic simulation and
-rollback adapter, but protocol v3 and the graphical input path cannot submit a split action yet.
-Consequently there is no split binding in the client configuration or schema. The mechanic's
-immutable match rules are simulation-owned rather than client presentation settings; protocol
-and client-runtime integration are the next Feature 14 steps.
+rollback adapter. Protocol v4 carries the split edge, complete checkpoints, immutable rules,
+prediction identities, digests, and authority receipts, and the server executes a submitted
+split. The graphical input path does not set that action bit yet, so there is still no split
+binding in the client configuration or schema. The mechanic's immutable match rules are
+simulation-owned rather than client presentation settings; complete client-timeline integration
+is the next Feature 14 step.
 
 [`config/dots-client.toml`](config/dots-client.toml) documents window, network, input, simulation,
 view, spectator, debug, and color settings. Its `#:schema` header connects the checked-in JSON
