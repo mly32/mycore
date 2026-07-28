@@ -536,6 +536,10 @@ Feature 14 exposes:
 - Per-policy delivered, suppressed, updated, canceled, and confirmed consequence counts.
 - Receipt queue/ACK depth and duplicate/conflict counts.
 - Authoritative, predicted, interpolated/extrapolated, pre-correction, and presentation layers.
+- A bounded recent pre-correction history shared by local and remote predicted entities. Remote
+  entries require equal before/after predicted-head ticks so ordinary forward progress is never
+  classified as a correction; entry opacity communicates age while the semantic layer hue stays
+  fixed.
 
 The canonical labels and troubleshooting rules remain in `debugging_and_observability.md`.
 

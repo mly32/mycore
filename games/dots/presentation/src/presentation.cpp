@@ -195,6 +195,100 @@ void LocalPredictionPresentation::initialize(const LocalPredictionSample& sample
     clear_correction_visuals();
 }
 
+PredictionCorrectionHistory::PredictionCorrectionHistory(std::size_t capacity)
+    : capacity_(capacity) {
+    if (capacity_ == 0) {
+        throw std::invalid_argument{"Dots correction history capacity must be positive"};
+    }
+    retained_.reserve(capacity_);
+    ghosts_.reserve(capacity_);
+}
+
+void PredictionCorrectionHistory::update(std::span<const PredictionCorrectionSample> samples,
+                                         std::uint64_t hard_resync_sequence,
+                                         std::chrono::steady_clock::time_point now) {
+    if (!initialized_ || hard_resync_sequence != last_hard_resync_sequence_ ||
+        (!samples.empty() && samples.back().sequence < last_event_sequence_)) {
+        retained_.clear();
+        ghosts_.clear();
+        last_event_sequence_ = 0;
+        last_hard_resync_sequence_ = hard_resync_sequence;
+        initialized_ = true;
+    }
+
+    for (const auto& sample : samples) {
+        if (sample.sequence <= last_event_sequence_) {
+            continue;
+        }
+        if (!sample.entity_id.is_valid() || !finite(sample.pre_correction_position) ||
+            !std::isfinite(sample.mass) || sample.mass <= 0.0F) {
+            throw std::runtime_error{"Dots correction history encountered invalid geometry"};
+        }
+        if (retained_.size() == capacity_) {
+            retained_.erase(retained_.begin());
+        }
+        retained_.push_back({
+            .ghost =
+                {
+                    .entity_id = sample.entity_id,
+                    .position = sample.pre_correction_position,
+                    .mass = sample.mass,
+                    .opacity = 1.0F,
+                    .remote = sample.remote,
+                },
+            .observed_at = now,
+        });
+        last_event_sequence_ = sample.sequence;
+    }
+
+    const auto expiry = now - kPredictionDebugRetentionDuration;
+    std::erase_if(retained_, [expiry](const RetainedCorrection& correction) {
+        return correction.observed_at <= expiry;
+    });
+    ghosts_.clear();
+    for (const auto& correction : retained_) {
+        const auto age =
+            std::max(now - correction.observed_at, std::chrono::steady_clock::duration::zero());
+        const auto age_fraction =
+            std::clamp(std::chrono::duration<float>{age}.count() /
+                           std::chrono::duration<float>{kPredictionDebugRetentionDuration}.count(),
+                       0.0F,
+                       1.0F);
+        auto ghost = correction.ghost;
+        ghost.opacity = 1.0F - (0.8F * age_fraction);
+        ghosts_.push_back(ghost);
+    }
+}
+
+void PredictionCorrectionHistory::clear() noexcept {
+    retained_.clear();
+    ghosts_.clear();
+}
+
+std::span<const PredictionCorrectionGhost> PredictionCorrectionHistory::ghosts() const noexcept {
+    return ghosts_;
+}
+
+std::size_t PredictionCorrectionHistory::size() const noexcept {
+    return ghosts_.size();
+}
+
+std::size_t PredictionCorrectionHistory::capacity() const noexcept {
+    return capacity_;
+}
+
+std::size_t PredictionCorrectionHistory::local_count() const noexcept {
+    return static_cast<std::size_t>(std::ranges::count_if(ghosts_, [](const auto& ghost) {
+        return !ghost.remote;
+    }));
+}
+
+std::size_t PredictionCorrectionHistory::remote_count() const noexcept {
+    return static_cast<std::size_t>(std::ranges::count_if(ghosts_, [](const auto& ghost) {
+        return ghost.remote;
+    }));
+}
+
 FrameData extract_frame(const simulation::World& world,
                         mycore::math::Vector2 camera,
                         std::span<const EntityPositionOverride> position_overrides) {
@@ -346,6 +440,23 @@ FrameData extract_predicted_replicated_frame(const replication::ReplicatedWorld&
             append_ghost(*controlled_player.pre_correction_position,
                          CircleKind::PreCorrectionGhost);
         }
+        for (const auto& correction : controlled_player.correction_ghosts) {
+            if (!correction.entity_id.is_valid() || !finite(correction.position) ||
+                !std::isfinite(correction.mass) || correction.mass <= 0.0F ||
+                !std::isfinite(correction.opacity) || correction.opacity < 0.0F ||
+                correction.opacity > 1.0F) {
+                throw std::runtime_error{
+                    "Dots correction visualization encountered invalid geometry"};
+            }
+            frame.circles.push_back({
+                .position = correction.position,
+                .mass = correction.mass,
+                .radius = simulation::radius_for_mass(correction.mass),
+                .kind = CircleKind::PreCorrectionGhost,
+                .entity_id = correction.entity_id,
+                .opacity = correction.opacity,
+            });
+        }
     }
     if (controlled_player.show_replay_path) {
         for (const auto position : controlled_player.correction_replay_path) {
@@ -392,7 +503,8 @@ FrameData extract_remote_interpolated_predicted_frame_impl(
             ? std::size_t{}
             : predicted_world->player_count() + predicted_world->food_count();
     frame.circles.reserve(remotes.entities.size() + predicted_entity_count + 6U +
-                          controlled_player.correction_replay_path.size());
+                          controlled_player.correction_replay_path.size() +
+                          controlled_player.correction_ghosts.size());
     const auto predicted_scope_contains =
         [predicted_scope_entity_ids](protocol::EntityId entity_id) {
             return std::ranges::find(predicted_scope_entity_ids, entity_id) !=
@@ -510,6 +622,23 @@ FrameData extract_remote_interpolated_predicted_frame_impl(
         if (controlled_player.pre_correction_position) {
             append_ghost(*controlled_player.pre_correction_position,
                          CircleKind::PreCorrectionGhost);
+        }
+        for (const auto& correction : controlled_player.correction_ghosts) {
+            if (!correction.entity_id.is_valid() || !finite(correction.position) ||
+                !std::isfinite(correction.mass) || correction.mass <= 0.0F ||
+                !std::isfinite(correction.opacity) || correction.opacity < 0.0F ||
+                correction.opacity > 1.0F) {
+                throw std::runtime_error{
+                    "Dots correction visualization encountered invalid geometry"};
+            }
+            frame.circles.push_back({
+                .position = correction.position,
+                .mass = correction.mass,
+                .radius = simulation::radius_for_mass(correction.mass),
+                .kind = CircleKind::PreCorrectionGhost,
+                .entity_id = correction.entity_id,
+                .opacity = correction.opacity,
+            });
         }
     }
     if (controlled_player.show_replay_path) {
@@ -656,11 +785,10 @@ mycore::render_2d::DrawList build_draw_list(const FrameData& frame, const Settin
             continue;
         }
         if (circle.kind == CircleKind::PreCorrectionGhost) {
-            append_outline(draw_list,
-                           circle,
-                           settings.pre_correction_outline,
-                           kPreCorrectionOutlineRadiusOffsetPixels,
-                           settings);
+            auto color = settings.pre_correction_outline;
+            color.alpha *= circle.opacity;
+            append_outline(
+                draw_list, circle, color, kPreCorrectionOutlineRadiusOffsetPixels, settings);
             continue;
         }
         if (circle.kind == CircleKind::ReplayMarker) {

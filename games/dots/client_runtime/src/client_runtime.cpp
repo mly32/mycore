@@ -31,6 +31,7 @@ constexpr float kCorrectionTolerance = 0.0001F;
 constexpr auto kReplayBudget = std::chrono::milliseconds{2};
 constexpr auto kWarningInterval = std::chrono::seconds{5};
 constexpr std::size_t kReplayDurationSampleCapacity = 120;
+constexpr std::size_t kRecentPredictionCorrectionCapacity = 256;
 constexpr auto kInitialScopeEpoch = mycore::rollback::ScopeEpoch{0};
 constexpr auto kPredictionScopeHorizonFloor = mycore::time::TickDelta{5};
 
@@ -151,13 +152,14 @@ struct RemotePlayerDisplacement {
     mycore::math::Vector2 previous;
     mycore::math::Vector2 current;
     float distance{};
+    float mass{};
 };
 
-[[nodiscard]] std::optional<RemotePlayerDisplacement>
-maximum_remote_player_displacement(const simulation::WorldCheckpoint& previous,
-                                   const simulation::WorldCheckpoint& current,
-                                   simulation::PlayerOwnerId owned_owner_id) {
-    std::optional<RemotePlayerDisplacement> result;
+[[nodiscard]] std::vector<RemotePlayerDisplacement>
+remote_player_displacements(const simulation::WorldCheckpoint& previous,
+                            const simulation::WorldCheckpoint& current,
+                            simulation::PlayerOwnerId owned_owner_id) {
+    std::vector<RemotePlayerDisplacement> result;
     auto previous_index = std::size_t{};
     auto current_index = std::size_t{};
     while (previous_index < previous.players.size() && current_index < current.players.size()) {
@@ -173,13 +175,14 @@ maximum_remote_player_displacement(const simulation::WorldCheckpoint& previous,
         }
         if (new_player.owner_id != owned_owner_id) {
             const auto distance = mycore::math::length(old_player.position - new_player.position);
-            if (!result || distance > result->distance) {
-                result = RemotePlayerDisplacement{
+            if (distance > kCorrectionTolerance) {
+                result.push_back(RemotePlayerDisplacement{
                     .entity_id = new_player.entity_id,
                     .previous = old_player.position,
                     .current = new_player.position,
                     .distance = distance,
-                };
+                    .mass = old_player.mass,
+                });
             }
         }
         ++previous_index;
@@ -590,6 +593,11 @@ public:
         return latest_prediction_identity_remaps_;
     }
 
+    [[nodiscard]] std::span<const PredictionCorrection>
+    recent_prediction_corrections() const noexcept {
+        return recent_prediction_corrections_;
+    }
+
     [[nodiscard]] std::optional<mycore::math::Vector2> predicted_position() const noexcept {
         return predicted_position_;
     }
@@ -666,8 +674,12 @@ public:
             .maximum_replay_milliseconds = maximum_replay_milliseconds_,
             .reconciliation_count = reconciliation_count_,
             .nonzero_correction_count = nonzero_correction_count_,
+            .remote_entity_correction_count = remote_entity_correction_count_,
+            .latest_remote_entity_correction_count = latest_remote_entity_correction_count_,
             .latest_correction_distance = latest_correction_distance_,
             .maximum_correction_distance = maximum_correction_distance_,
+            .latest_remote_correction_distance = latest_remote_correction_distance_,
+            .maximum_remote_correction_distance = maximum_remote_correction_distance_,
             .corrections_per_minute = 0.0F,
             .accumulated_correction_displacement = accumulated_correction_displacement_,
             .correction_sequence_since_hard_resync = correction_sequence_since_hard_resync_,
@@ -1172,6 +1184,18 @@ private:
                                                  : mycore::math::Vector2{};
         const auto correction_distance = mycore::math::length(correction_displacement);
         const auto nonzero_correction = correction_distance > kCorrectionTolerance;
+        const auto remote_displacements =
+            previous_checkpoint
+                ? remote_player_displacements(*previous_checkpoint, current_checkpoint, *owner)
+                : std::vector<RemotePlayerDisplacement>{};
+        const auto comparable_remote_corrections =
+            previous_checkpoint && previous_checkpoint->tick == current_checkpoint.tick;
+        const auto maximum_remote_displacement =
+            std::max_element(remote_displacements.begin(),
+                             remote_displacements.end(),
+                             [](const auto& lhs, const auto& rhs) {
+                                 return lhs.distance < rhs.distance;
+                             });
 
         timeline_ = std::move(scratch_timeline);
         latest_authority_checkpoint_ = *authority;
@@ -1206,36 +1230,68 @@ private:
                     selected_scope.food_ids.size());
             }
         }
-        if (settings_.log_prediction_reconciliation_details && previous_checkpoint) {
-            if (const auto displacement = maximum_remote_player_displacement(
-                    *previous_checkpoint, current_checkpoint, *owner);
-                displacement && displacement->distance > kCorrectionTolerance) {
-                mycore::debug::log_info(
-                    "dots.client.prediction.reconciliation",
-                    "{} at snapshot {} authority tick {} moved predicted head {} -> {}; remote "
-                    "entity {} ({:.3f}, {:.3f}) -> ({:.3f}, {:.3f}), delta {:.3f}, "
-                    "same-head-tick {}, retained inputs {}",
-                    reason == AuthorityInstallReason::ScopeRebase ? "Scope rebase"
-                                                                  : "Authority reconciliation",
-                    candidate_world.snapshot_id().value(),
-                    candidate_world.server_tick(),
-                    previous_checkpoint->tick.value(),
-                    current_checkpoint.tick.value(),
-                    displacement->entity_id.value(),
-                    displacement->previous.x,
-                    displacement->previous.y,
-                    displacement->current.x,
-                    displacement->current.y,
-                    displacement->distance,
-                    previous_checkpoint->tick == current_checkpoint.tick ? "YES" : "NO",
-                    input_history_.size());
-            }
+        if (settings_.log_prediction_reconciliation_details && previous_checkpoint &&
+            maximum_remote_displacement != remote_displacements.end()) {
+            const auto& displacement = *maximum_remote_displacement;
+            mycore::debug::log_info(
+                "dots.client.prediction.reconciliation",
+                "{} at snapshot {} authority tick {} moved predicted head {} -> {}; remote "
+                "entity {} ({:.3f}, {:.3f}) -> ({:.3f}, {:.3f}), delta {:.3f}, "
+                "same-head-tick {}, retained inputs {}",
+                reason == AuthorityInstallReason::ScopeRebase ? "Scope rebase"
+                                                              : "Authority reconciliation",
+                candidate_world.snapshot_id().value(),
+                candidate_world.server_tick(),
+                previous_checkpoint->tick.value(),
+                current_checkpoint.tick.value(),
+                displacement.entity_id.value(),
+                displacement.previous.x,
+                displacement.previous.y,
+                displacement.current.x,
+                displacement.current.y,
+                displacement.distance,
+                comparable_remote_corrections ? "YES" : "NO",
+                input_history_.size());
         }
-        if (nonzero_correction) {
+        if (nonzero_correction && previous_prediction && next_prediction) {
             pre_correction_position_ = previous_prediction;
             latest_correction_replay_path_ = latest_replay_path_;
             accumulated_correction_displacement_ =
                 accumulated_correction_displacement_ + correction_displacement;
+            if (projection.primary_entity_id.is_valid()) {
+                const auto mass = timeline_->state()->mass(
+                    simulation::EntityId{projection.primary_entity_id.value()});
+                if (mass) {
+                    append_prediction_correction({
+                        .entity_id = projection.primary_entity_id,
+                        .pre_correction_position = *previous_prediction,
+                        .corrected_position = *next_prediction,
+                        .mass = *mass,
+                        .distance = correction_distance,
+                        .source = PredictionCorrectionSource::Local,
+                    });
+                }
+            }
+        }
+        latest_remote_entity_correction_count_ = 0;
+        latest_remote_correction_distance_ = 0.0F;
+        if (comparable_remote_corrections) {
+            for (const auto& displacement : remote_displacements) {
+                append_prediction_correction({
+                    .entity_id = protocol::EntityId{displacement.entity_id.value()},
+                    .pre_correction_position = displacement.previous,
+                    .corrected_position = displacement.current,
+                    .mass = displacement.mass,
+                    .distance = displacement.distance,
+                    .source = PredictionCorrectionSource::Remote,
+                });
+                ++latest_remote_entity_correction_count_;
+                ++remote_entity_correction_count_;
+                latest_remote_correction_distance_ =
+                    std::max(latest_remote_correction_distance_, displacement.distance);
+                maximum_remote_correction_distance_ =
+                    std::max(maximum_remote_correction_distance_, displacement.distance);
+            }
         }
 
         const auto replay_duration = std::chrono::steady_clock::now() - replay_start;
@@ -1349,6 +1405,7 @@ private:
         pre_correction_position_.reset();
         latest_replay_path_.clear();
         latest_correction_replay_path_.clear();
+        recent_prediction_corrections_.clear();
         accumulated_correction_displacement_ = {};
         correction_sequence_since_hard_resync_ = 0;
         ++hard_resync_count_;
@@ -1427,6 +1484,7 @@ private:
         predicted_owned_entity_ids_.clear();
         predicted_scope_entity_ids_.clear();
         latest_prediction_identity_remaps_.clear();
+        recent_prediction_corrections_.clear();
         predicted_position_.reset();
         prediction_debug_offset_ = {};
         pre_correction_position_.reset();
@@ -1434,6 +1492,14 @@ private:
         latest_correction_replay_path_.clear();
         accumulated_correction_displacement_ = {};
         correction_sequence_since_hard_resync_ = 0;
+    }
+
+    void append_prediction_correction(PredictionCorrection correction) {
+        if (recent_prediction_corrections_.size() == kRecentPredictionCorrectionCapacity) {
+            recent_prediction_corrections_.erase(recent_prediction_corrections_.begin());
+        }
+        correction.sequence = ++prediction_correction_sequence_;
+        recent_prediction_corrections_.push_back(correction);
     }
 
     void prune_correction_times(std::chrono::steady_clock::time_point now) {
@@ -1509,6 +1575,7 @@ private:
     std::vector<protocol::EntityId> predicted_owned_entity_ids_;
     std::vector<protocol::EntityId> predicted_scope_entity_ids_;
     std::vector<PredictionIdentityRemap> latest_prediction_identity_remaps_;
+    std::vector<PredictionCorrection> recent_prediction_corrections_;
     std::optional<mycore::math::Vector2> predicted_position_;
     mycore::math::Vector2 prediction_debug_offset_;
     std::optional<mycore::math::Vector2> pre_correction_position_;
@@ -1530,10 +1597,15 @@ private:
     std::uint64_t reconciliation_count_{};
     std::uint64_t scope_rebase_count_{};
     std::uint64_t nonzero_correction_count_{};
+    std::uint64_t remote_entity_correction_count_{};
+    std::size_t latest_remote_entity_correction_count_{};
     float latest_correction_distance_{};
     float maximum_correction_distance_{};
+    float latest_remote_correction_distance_{};
+    float maximum_remote_correction_distance_{};
     mycore::math::Vector2 accumulated_correction_displacement_;
     std::uint64_t correction_sequence_since_hard_resync_{};
+    std::uint64_t prediction_correction_sequence_{};
     std::deque<std::chrono::steady_clock::time_point> correction_times_;
     std::uint64_t replay_over_budget_count_{};
     std::uint64_t hard_resync_count_{};
@@ -1652,6 +1724,10 @@ std::span<const protocol::EntityId> Runtime::predicted_scope_entity_ids() const 
 std::span<const PredictionIdentityRemap>
 Runtime::latest_prediction_identity_remaps() const noexcept {
     return impl_->latest_prediction_identity_remaps();
+}
+
+std::span<const PredictionCorrection> Runtime::recent_prediction_corrections() const noexcept {
+    return impl_->recent_prediction_corrections();
 }
 
 std::optional<mycore::math::Vector2> Runtime::predicted_position() const noexcept {

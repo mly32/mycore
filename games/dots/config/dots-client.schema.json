@@ -360,6 +360,13 @@
               "pattern": "^(?:[oO][fF][fF]|[iI][nN][fF][oO]|[dD][eE][bB][uU][gG])$"
             }
           ]
+        },
+        "correction_history_count": {
+          "description": "Maximum number of recent local and remote prediction-correction ghosts retained for world-space diagnostics.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64,
+          "default": 8
         }
       }
     },

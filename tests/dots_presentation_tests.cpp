@@ -702,6 +702,70 @@ TEST_CASE("Overlapping corrections compound residuals and hard resync clears pre
     CHECK_FALSE(presentation.correction_visual_active());
 }
 
+TEST_CASE("Prediction correction history is bounded and fades stable semantic colors",
+          "[dots][presentation][prediction][debug]") {
+    using namespace std::chrono_literals;
+    dots::presentation::PredictionCorrectionHistory history{2};
+    const std::array first{
+        dots::presentation::PredictionCorrectionSample{
+            .sequence = 1,
+            .entity_id = dots::protocol::EntityId{3},
+            .pre_correction_position = {1.0F, 0.0F},
+            .mass = 16.0F,
+        },
+    };
+    history.update(first, 0, clock_time(0ms));
+    const std::array second{
+        first.front(),
+        dots::presentation::PredictionCorrectionSample{
+            .sequence = 2,
+            .entity_id = dots::protocol::EntityId{7},
+            .pre_correction_position = {2.0F, 0.0F},
+            .mass = 9.0F,
+            .remote = true,
+        },
+    };
+    history.update(second, 0, clock_time(500ms));
+    const std::array third{
+        first.front(),
+        second.back(),
+        dots::presentation::PredictionCorrectionSample{
+            .sequence = 3,
+            .entity_id = dots::protocol::EntityId{8},
+            .pre_correction_position = {3.0F, 0.0F},
+            .mass = 4.0F,
+            .remote = true,
+        },
+    };
+    history.update(third, 0, clock_time(1000ms));
+
+    REQUIRE(history.size() == 2);
+    CHECK(history.capacity() == 2);
+    CHECK(history.local_count() == 0);
+    CHECK(history.remote_count() == 2);
+    CHECK(history.ghosts()[0].entity_id == dots::protocol::EntityId{7});
+    CHECK(history.ghosts()[0].opacity == Catch::Approx(0.8F));
+    CHECK(history.ghosts()[1].entity_id == dots::protocol::EntityId{8});
+    CHECK(history.ghosts()[1].opacity == Catch::Approx(1.0F));
+
+    history.clear();
+    history.update(third, 0, clock_time(1100ms));
+    CHECK(history.size() == 0);
+
+    const std::array fourth{
+        dots::presentation::PredictionCorrectionSample{
+            .sequence = 4,
+            .entity_id = dots::protocol::EntityId{9},
+            .pre_correction_position = {4.0F, 0.0F},
+            .mass = 25.0F,
+        },
+    };
+    history.update(fourth, 0, clock_time(1200ms));
+    REQUIRE(history.size() == 1);
+    history.update(fourth, 0, clock_time(3200ms));
+    CHECK(history.size() == 0);
+}
+
 TEST_CASE("A correction observed after a hard resync starts from the reset presentation",
           "[dots][presentation][prediction]") {
     using namespace std::chrono_literals;
@@ -798,4 +862,47 @@ TEST_CASE("Predicted replicated extraction separates presentation and known stat
             .show_replay_path = false,
         });
     CHECK(hidden.circles.size() == 2);
+}
+
+TEST_CASE("Prediction correction ghosts retain entity geometry and fade outline opacity",
+          "[dots][presentation][prediction][debug]") {
+    dots::replication::ReplicatedWorld world;
+    REQUIRE(world.apply({
+                .snapshot_id = dots::protocol::SnapshotId{1},
+                .recipient = playing_session(dots::protocol::EntityId{3}),
+                .owners = {{
+                    .owner_id = dots::protocol::PlayerOwnerId{4},
+                }},
+                .entities = {{
+                    .entity_id = dots::protocol::EntityId{3},
+                    .kind = dots::protocol::EntityKind::Player,
+                    .owner_id = dots::protocol::PlayerOwnerId{4},
+                    .mass = 16.0F,
+                }},
+            }) == dots::replication::SnapshotApplyResult::Applied);
+    const std::array corrections{
+        dots::presentation::PredictionCorrectionGhost{
+            .entity_id = dots::protocol::EntityId{9},
+            .position = {5.0F, 6.0F},
+            .mass = 9.0F,
+            .opacity = 0.25F,
+            .remote = true,
+        },
+    };
+
+    const auto frame = dots::presentation::extract_predicted_replicated_frame(
+        world,
+        {
+            .entity_id = dots::protocol::EntityId{3},
+            .presentation_position = {},
+            .predicted_position = {},
+            .correction_ghosts = corrections,
+        });
+
+    REQUIRE(frame.circles.size() == 4);
+    CHECK(frame.circles.back().kind == dots::presentation::CircleKind::PreCorrectionGhost);
+    CHECK(frame.circles.back().entity_id == dots::protocol::EntityId{9});
+    CHECK(frame.circles.back().radius == Catch::Approx(3.0F));
+    const auto draw_list = dots::presentation::build_draw_list(frame, {});
+    CHECK(draw_list.circles.back().outline_color.alpha == Catch::Approx(0.2375F));
 }

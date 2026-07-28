@@ -119,6 +119,9 @@ to quit. Mouse steering and spectator wheel zoom pause while the debug panel own
 For deterministic prediction investigation, set `[input].mode = "keyboard"` and
 `[debug].prediction_log_level = "debug"` in a client config. The `info` level logs only prediction
 scope changes; `debug` also reports nonzero remote-player displacement across reconciliation.
+`[debug].correction_history_count` controls how many recent local and comparable same-head remote
+corrections are drawn; it defaults to 8 and accepts 1 through 64. Correction circles retain their
+magenta state-layer color and fade with age.
 The [Feature 14 prediction-stutter postmortem](../../docs/feature14_prediction_stutter_postmortem.md)
 explains the two-bot reproduction and how to interpret same-head corrections.
 
@@ -159,7 +162,8 @@ server-assigned client/entity IDs, simulation and frame health, transport statis
 and history pressure, replay/correction metrics, authoritative/predicted/presentation state, and
 confirmed absorption, defeat, follow, respawn-deadline, and respawn-result state. The Gameplay
 countdown projects the latest server tick using snapshot receipt age for presentation only; the
-server tick decides eligibility.
+server tick decides eligibility. The compact top-left game-state panel repeats an active respawn
+countdown so it remains visible without selecting the Gameplay tab.
 Tools can inject prediction errors or a three-packet drop burst without changing measured
 transport loss. Native connections expose RTT, loss, rates, and queues; unavailable in-memory
 measurements are labeled rather than displayed as zero. See the

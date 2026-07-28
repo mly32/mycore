@@ -84,6 +84,7 @@ TEST_CASE("Client configuration defaults match the playable client", "[dots][cli
     REQUIRE(config.debug.enabled);
     REQUIRE(config.debug.presentation_mode == dots::client::PresentationMode::Interpolated);
     REQUIRE(config.debug.prediction_log_level == dots::client::PredictionLogLevel::Off);
+    REQUIRE(config.debug.correction_history_count == dots::client::kDefaultCorrectionHistoryCount);
     REQUIRE(config.colors.player == dots::client::RgbColor{0x4C, 0xC9, 0xF0});
     REQUIRE(config.colors.player_growth == dots::client::RgbColor{0xFF, 0xD1, 0x66});
     REQUIRE(config.colors.food == dots::client::RgbColor{0xF7, 0x25, 0x85});
@@ -155,6 +156,7 @@ maximum_pixels_per_world_unit = 70.0
 enabled = false
 presentation_mode = "comparison"
 prediction_log_level = "debug"
+correction_history_count = 12
 
 [colors]
 background = "#010203"
@@ -190,6 +192,7 @@ food = "#FEDCBA"
     REQUIRE_FALSE(config.debug.enabled);
     REQUIRE(config.debug.presentation_mode == dots::client::PresentationMode::Comparison);
     REQUIRE(config.debug.prediction_log_level == dots::client::PredictionLogLevel::Debug);
+    REQUIRE(config.debug.correction_history_count == 12);
     REQUIRE(config.colors.background == dots::client::RgbColor{0x01, 0x02, 0x03});
     REQUIRE(config.colors.grid == dots::client::RgbColor{0xA0, 0xB1, 0xC2});
     REQUIRE(config.colors.player == dots::client::RgbColor{0x11, 0x22, 0x33});
@@ -327,6 +330,8 @@ TEST_CASE("Invalid client TOML reports the source and field", "[dots][client][co
         InvalidDocument{"[debug]\npresentation_mode = \"predicted\"", "debug.presentation_mode"},
         InvalidDocument{"[debug]\nprediction_log_level = \"verbose\"",
                         "debug.prediction_log_level"},
+        InvalidDocument{"[debug]\ncorrection_history_count = 0", "debug.correction_history_count"},
+        InvalidDocument{"[debug]\ncorrection_history_count = 65", "debug.correction_history_count"},
         InvalidDocument{"[debug]\nghost = true", "debug.ghost"},
         InvalidDocument{"[colors]\nplayer = \"#12345Z\"", "colors.player"},
         InvalidDocument{"[colors]\nplayer_growth = \"gold\"", "colors.player_growth"},

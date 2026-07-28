@@ -131,7 +131,9 @@ interaction/state output.
 
 The top-left game-state panel shows **Players** and **Authoritative player**. The latter is the
 controlled player's latest position in the offline world or latest accepted replicated snapshot;
-it is not the locally smoothed presentation position.
+it is not the locally smoothed presentation position. While a confirmed respawn deadline exists,
+the panel also shows the authoritative deadline tick and the same presentation-only countdown as
+the Gameplay tab. It labels a zero estimate `eligible`; the server still decides eligibility.
 
 | Label | Source and units | Meaning |
 |---|---|---|
@@ -308,8 +310,11 @@ The **Prediction** tab rows are:
 | Replay duration | Latest, last-120-reconciliation average, and runtime maximum scratch-replay/commit CPU duration in milliseconds. |
 | Reconciliation count | Newer accepted checkpoints reconciled after the complete timeline became ready. |
 | Correction count | Reconciliations whose final prediction moved by more than `0.0001` world units. |
+| Remote entity corrections | Latest and lifetime counts of common remote players whose rebuilt predicted positions moved by more than `0.0001` world units at the same predicted head tick. Ordinary forward progress between different head ticks is excluded. |
 | Correction distance | Latest and runtime-maximum distance between prediction before reconciliation and the fully replayed result. |
+| Remote correction distance | Latest and runtime-maximum comparable same-head correction distance across remote predicted players. |
 | Corrections/min | Count of nonzero corrections in the trailing 60 seconds of the client steady clock. |
+| Correction ghosts | Active bounded history count/capacity, split into local and remote entries. |
 | Replay over budget | Lifetime count of reconciliations exceeding 2 ms; warnings are rate-limited to once per five seconds. |
 | Hard resync | Lifetime count of full-ring recoveries that rebuild prediction from the newest verified authoritative checkpoint and clear retained input/debug replay state. |
 | Smoothing offset | Current presentation-only displacement vector and magnitude. It decays linearly to zero over 100 ms without modifying predicted state. |
@@ -324,6 +329,9 @@ history utilization green below 50%, yellow at 50%, orange at 75%, and red at 90
 `debug` to add nonzero remote reconciliation detail. The latter is meant for short reproduction
 sessions and does not change prediction or presentation state.
 
+`debug.correction_history_count` selects the combined local/remote world-space correction-history
+capacity from 1 through 64 and defaults to 8. This changes diagnostics only.
+
 ### Current prediction world-space legend
 
 | Visual | Meaning |
@@ -331,11 +339,16 @@ sessions and does not change prediction or presentation state.
 | Filled player/food | Predicted interaction-island topology combined with interpolated outside-closure entities; the primary uses its smoothed presentation position. |
 | White outline | Corrected predicted simulation position. |
 | Orange outline | Latest received authoritative sample. It is historical, not the server's live position. |
-| Magenta outline | Prediction immediately before the most recent nonzero correction. |
+| Magenta outline | An entity position immediately before a recent nonzero correction. This includes the local primary and comparable remote players. New entries are opaque and older entries fade without changing hue. |
 | Purple markers | Results of replayed unacknowledged inputs after the rollback base. |
 
-Correction-specific magenta/purple visuals remain for two seconds. Slight radius offsets keep
-coincident outlines visible.
+Each magenta entry remains for at most two seconds and the combined history retains only the
+configured last N entries. Remote entries are recorded only when authority rebuilds the same
+predicted head tick; movement from an older head tick to a newer one is forward simulation, not a
+misprediction. Purple markers still describe the latest local replay and remain for two seconds.
+Slight radius offsets keep coincident outlines visible. Stable magenta preserves layer meaning;
+opacity communicates age, avoiding rotating hues that could be confused with authority,
+prediction, or interpolation layers.
 
 ### Current prediction fault controls
 

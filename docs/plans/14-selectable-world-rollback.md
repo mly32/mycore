@@ -462,7 +462,10 @@ receipts into confirmed timeline events and ACKs their contiguous sequence. Pers
 consequence handlers, structural presentation transitions, and bounded outside-closure
 extrapolation remain step 7 work. Remote interpolation endpoint ghosts remain visible for
 in-scope players when enabled so the predicted and authoritative presentation layers can still
-be compared.
+be compared. Local and comparable same-head remote corrections now emit entity-specific runtime
+records into a configurable bounded presentation history. The history keeps the magenta
+pre-correction hue stable, fades opacity over two seconds, and excludes ordinary movement between
+different predicted head ticks.
 
 ## Test Plan
 

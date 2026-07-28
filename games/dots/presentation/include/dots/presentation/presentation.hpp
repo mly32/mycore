@@ -37,6 +37,7 @@ struct CircleInstance {
     float radius{};
     CircleKind kind{};
     protocol::EntityId entity_id;
+    float opacity{1.0F};
 
     auto operator<=>(const CircleInstance&) const = default;
 };
@@ -108,12 +109,58 @@ private:
     bool correction_visual_active_{};
 };
 
+struct PredictionCorrectionSample {
+    std::uint64_t sequence{};
+    protocol::EntityId entity_id;
+    mycore::math::Vector2 pre_correction_position;
+    float mass{};
+    bool remote{};
+};
+
+struct PredictionCorrectionGhost {
+    protocol::EntityId entity_id;
+    mycore::math::Vector2 position;
+    float mass{};
+    float opacity{1.0F};
+    bool remote{};
+};
+
+class PredictionCorrectionHistory {
+public:
+    explicit PredictionCorrectionHistory(std::size_t capacity);
+
+    void update(std::span<const PredictionCorrectionSample> samples,
+                std::uint64_t hard_resync_sequence,
+                std::chrono::steady_clock::time_point now);
+    void clear() noexcept;
+
+    [[nodiscard]] std::span<const PredictionCorrectionGhost> ghosts() const noexcept;
+    [[nodiscard]] std::size_t size() const noexcept;
+    [[nodiscard]] std::size_t capacity() const noexcept;
+    [[nodiscard]] std::size_t local_count() const noexcept;
+    [[nodiscard]] std::size_t remote_count() const noexcept;
+
+private:
+    struct RetainedCorrection {
+        PredictionCorrectionGhost ghost;
+        std::chrono::steady_clock::time_point observed_at;
+    };
+
+    std::vector<RetainedCorrection> retained_;
+    std::vector<PredictionCorrectionGhost> ghosts_;
+    std::size_t capacity_{};
+    std::uint64_t last_event_sequence_{};
+    std::uint64_t last_hard_resync_sequence_{};
+    bool initialized_{};
+};
+
 struct PredictedReplicatedPlayer {
     protocol::EntityId entity_id;
     mycore::math::Vector2 presentation_position;
     mycore::math::Vector2 predicted_position;
     std::optional<mycore::math::Vector2> pre_correction_position;
     std::span<const mycore::math::Vector2> correction_replay_path;
+    std::span<const PredictionCorrectionGhost> correction_ghosts;
     bool show_prediction_layers{true};
     bool show_replay_path{true};
 };

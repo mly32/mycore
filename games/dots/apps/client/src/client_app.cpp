@@ -116,6 +116,10 @@ struct DebugWorldStats {
         std::optional<Vector2> presentation_position;
         std::optional<Vector2> smoothing_offset;
         std::optional<Vector2> last_nonzero_movement_input;
+        std::size_t retained_correction_count{};
+        std::size_t correction_history_capacity{};
+        std::size_t retained_local_correction_count{};
+        std::size_t retained_remote_correction_count{};
     };
     std::optional<NetworkSession> network_session;
     struct GameplaySession {
@@ -541,10 +545,21 @@ void draw_prediction_debug_tab(const DebugWorldStats& world) {
     ImGui::Text("Reconciliations / corrections: %llu / %llu",
                 static_cast<unsigned long long>(prediction.reconciliation_count),
                 static_cast<unsigned long long>(prediction.nonzero_correction_count));
+    ImGui::Text("Remote entity corrections last / total: %zu / %llu",
+                prediction.latest_remote_entity_correction_count,
+                static_cast<unsigned long long>(prediction.remote_entity_correction_count));
     ImGui::Text("Correction last / max: %.4f / %.4f units",
                 prediction.latest_correction_distance,
                 prediction.maximum_correction_distance);
+    ImGui::Text("Remote correction last / max: %.4f / %.4f units",
+                prediction.latest_remote_correction_distance,
+                prediction.maximum_remote_correction_distance);
     ImGui::Text("Corrections/min: %.0f", prediction.corrections_per_minute);
+    ImGui::Text("Correction ghosts: %zu / %zu (local %zu, remote %zu)",
+                session.retained_correction_count,
+                session.correction_history_capacity,
+                session.retained_local_correction_count,
+                session.retained_remote_correction_count);
     ImGui::Text("Authority sample: (%.3f, %.3f)",
                 session.latest_authoritative_sample->x,
                 session.latest_authoritative_sample->y);
@@ -704,7 +719,8 @@ void draw_prediction_tools_tab(const DebugWorldStats& world,
         }
         mycore::debug_ui::description("White: predicted position");
         mycore::debug_ui::description("Orange: latest authoritative sample");
-        mycore::debug_ui::description("Magenta: pre-correction; Purple: replay");
+        mycore::debug_ui::description(
+            "Magenta: local/remote pre-correction (fades with age); Purple: replay");
         mycore::debug_ui::description("Cyan / Blue: older / newer remote snapshot");
         mycore::debug_ui::description("Fill: presentation position");
         return;
@@ -744,6 +760,21 @@ void draw_debug_overlay(const ClientConfig& config,
                         world.current_player_position->y);
         } else {
             ImGui::TextDisabled("Authoritative player: unavailable");
+        }
+        if (world.gameplay_session && world.gameplay_session->respawn_available_tick) {
+            const auto& gameplay = *world.gameplay_session;
+            if (gameplay.respawn_seconds_remaining && *gameplay.respawn_seconds_remaining > 0.0) {
+                ImGui::TextColored({1.0F, 0.75F, 0.25F, 1.0F},
+                                   "Respawn: %.1f s (tick %u)",
+                                   *gameplay.respawn_seconds_remaining,
+                                   *gameplay.respawn_available_tick);
+            } else if (gameplay.respawn_seconds_remaining) {
+                ImGui::TextColored({0.35F, 0.9F, 0.45F, 1.0F},
+                                   "Respawn: eligible (tick %u)",
+                                   *gameplay.respawn_available_tick);
+            } else {
+                ImGui::Text("Respawn: unavailable (tick %u)", *gameplay.respawn_available_tick);
+            }
         }
     }
     ImGui::End();
@@ -941,6 +972,9 @@ int run_networked_game(
     mycore::debug::FixedStepMetrics simulation_metrics{dots::simulation::kTickDuration};
     SimulationHealthReporter simulation_health_reporter;
     dots::presentation::LocalPredictionPresentation local_prediction_presentation;
+    dots::presentation::PredictionCorrectionHistory prediction_correction_history{
+        config.debug.correction_history_count};
+    std::vector<dots::presentation::PredictionCorrectionSample> prediction_correction_samples;
     dots::presentation::SpectatorCamera spectator_camera{{
         .pan_speed_world_units_per_second = config.spectator.pan_speed_world_units_per_second,
         .minimum_pixels_per_world_unit = config.spectator.minimum_pixels_per_world_unit,
@@ -1163,6 +1197,20 @@ int run_networked_game(
                     .correction_replay_path = client.latest_correction_replay_path(),
                 },
                 now);
+            prediction_correction_samples.clear();
+            prediction_correction_samples.reserve(client.recent_prediction_corrections().size());
+            for (const auto& correction : client.recent_prediction_corrections()) {
+                prediction_correction_samples.push_back({
+                    .sequence = correction.sequence,
+                    .entity_id = correction.entity_id,
+                    .pre_correction_position = correction.pre_correction_position,
+                    .mass = correction.mass,
+                    .remote = correction.source ==
+                              dots::client_runtime::PredictionCorrectionSource::Remote,
+                });
+            }
+            prediction_correction_history.update(
+                prediction_correction_samples, prediction_statistics.hard_resync_count, now);
         };
         if (playing) {
             if (spectator_camera_active) {
@@ -1179,6 +1227,7 @@ int run_networked_game(
                                        remote_frame);
                 spectator_camera_active = true;
                 local_prediction_presentation.reset();
+                prediction_correction_history.clear();
             }
             spectator_camera.update(remote_frame,
                                     client.follow_entity_id(),
@@ -1265,6 +1314,12 @@ int run_networked_game(
                                                                         .smoothing_offset()}
                                                     : std::nullopt,
                             .last_nonzero_movement_input = last_nonzero_movement_input,
+                            .retained_correction_count = prediction_correction_history.size(),
+                            .correction_history_capacity = prediction_correction_history.capacity(),
+                            .retained_local_correction_count =
+                                prediction_correction_history.local_count(),
+                            .retained_remote_correction_count =
+                                prediction_correction_history.remote_count(),
                         },
                     .gameplay_session =
                         DebugWorldStats::GameplaySession{
@@ -1305,6 +1360,7 @@ int run_networked_game(
         }
         if (playing && prediction_debug_controls.clear_correction_visuals_requested) {
             local_prediction_presentation.clear_correction_visuals();
+            prediction_correction_history.clear();
             prediction_debug_controls.clear_correction_visuals_requested = false;
         }
 
@@ -1341,14 +1397,12 @@ int run_networked_game(
                     .entity_id = predicted_primary,
                     .presentation_position = local_prediction_presentation.presentation_position(),
                     .predicted_position = local_prediction_presentation.predicted_position(),
-                    .pre_correction_position =
-                        correction_visual_active
-                            ? local_prediction_presentation.retained_pre_correction_position()
-                            : std::nullopt,
+                    .pre_correction_position = std::nullopt,
                     .correction_replay_path =
                         correction_visual_active
                             ? local_prediction_presentation.retained_correction_replay_path()
                             : std::span<const Vector2>{},
+                    .correction_ghosts = prediction_correction_history.ghosts(),
                     .show_prediction_layers =
                         config.debug.enabled && prediction_debug_controls.show_prediction_layers,
                     .show_replay_path =

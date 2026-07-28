@@ -610,8 +610,67 @@ TEST_CASE("Future remote assumptions use newest authority after replaying an old
 
     REQUIRE(client.predicted_world() != nullptr);
     check_position(client.predicted_world()->position(dots::simulation::EntityId{9}), 10.2F, 0.2F);
+    const auto corrections = client.recent_prediction_corrections();
+    REQUIRE(corrections.size() == 1);
+    CHECK(corrections.front().entity_id == dots::protocol::EntityId{9});
+    CHECK(corrections.front().pre_correction_position == mycore::math::Vector2{10.4F, 0.0F});
+    CHECK(corrections.front().corrected_position == mycore::math::Vector2{10.2F, 0.2F});
+    CHECK(corrections.front().source == dots::client_runtime::PredictionCorrectionSource::Remote);
+    const auto correction_statistics = client.prediction_statistics(clock_time(11s));
+    CHECK(correction_statistics.latest_remote_entity_correction_count == 1);
+    CHECK(correction_statistics.remote_entity_correction_count == 1);
+    CHECK(correction_statistics.latest_remote_correction_distance ==
+          Catch::Approx(std::sqrt(0.08F)));
+    CHECK(correction_statistics.maximum_remote_correction_distance ==
+          correction_statistics.latest_remote_correction_distance);
     REQUIRE(client.send_input(2, {}) == dots::client_runtime::InputSendResult::Sent);
     check_position(client.predicted_world()->position(dots::simulation::EntityId{9}), 10.2F, 0.4F);
+}
+
+TEST_CASE("Remote forward progress across different predicted head ticks is not a correction",
+          "[dots][prediction][remote][reconciliation]") {
+    ManualEndpoint endpoint;
+    dots::client_runtime::Runtime client{endpoint};
+    const mycore::net_transport::ConnectionHandle connection{30};
+    complete_handshake(endpoint, client, connection);
+
+    auto remote = dots::protocol::EntityState{
+        .entity_id = dots::protocol::EntityId{9},
+        .kind = dots::protocol::EntityKind::Player,
+        .owner_id = dots::protocol::PlayerOwnerId{4},
+        .position_x = 10.0F,
+        .mass = 16.0F,
+    };
+    auto authority = snapshot(1, 0, dots::protocol::InputSequenceId::invalid(), {});
+    authority.owners.push_back({
+        .owner_id = remote.owner_id,
+        .movement_x = 1.0F,
+        .last_non_zero_movement_x = 1.0F,
+    });
+    authority.entities.push_back(remote);
+    push_snapshot(endpoint, connection, authority);
+    REQUIRE_FALSE(client.process_events(clock_time(10s)).has_value());
+    REQUIRE(client.send_input(0, {}) == dots::client_runtime::InputSendResult::Sent);
+    REQUIRE(client.predicted_world() != nullptr);
+    check_position(client.predicted_world()->position(dots::simulation::EntityId{9}), 10.2F, 0.0F);
+
+    remote.position_x = 10.4F;
+    auto advanced = snapshot(2, 2, dots::protocol::InputSequenceId{0}, {});
+    advanced.owners.push_back({
+        .owner_id = remote.owner_id,
+        .movement_x = 1.0F,
+        .last_non_zero_movement_x = 1.0F,
+    });
+    advanced.entities.push_back(remote);
+    push_snapshot(endpoint, connection, advanced);
+    REQUIRE_FALSE(client.process_events(clock_time(11s)).has_value());
+
+    REQUIRE(client.predicted_world() != nullptr);
+    check_position(client.predicted_world()->position(dots::simulation::EntityId{9}), 10.4F, 0.0F);
+    CHECK(client.recent_prediction_corrections().empty());
+    const auto statistics = client.prediction_statistics(clock_time(11s));
+    CHECK(statistics.latest_remote_entity_correction_count == 0);
+    CHECK(statistics.remote_entity_correction_count == 0);
 }
 
 TEST_CASE("Misprediction corrects simulation immediately and records its replay path",
@@ -895,4 +954,10 @@ TEST_CASE("Injected prediction error is corrected and exposed separately from pa
     CHECK(statistics.accumulated_correction_displacement.x == Catch::Approx(1.0F));
     CHECK(statistics.accumulated_correction_displacement.y == Catch::Approx(1.0F));
     CHECK(client.latest_correction_replay_path().empty());
+    REQUIRE(client.recent_prediction_corrections().size() == 1);
+    CHECK(client.recent_prediction_corrections().front().entity_id == kControlledEntity);
+    CHECK(client.recent_prediction_corrections().front().source ==
+          dots::client_runtime::PredictionCorrectionSource::Local);
+    CHECK(client.recent_prediction_corrections().front().pre_correction_position ==
+          mycore::math::Vector2{1.2F, 1.0F});
 }

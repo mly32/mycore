@@ -562,7 +562,11 @@ void parse_spectator(const toml::table& table,
 void parse_debug(const toml::table& table,
                  ClientConfig& config,
                  const std::filesystem::path& source) {
-    validate_keys(table, {"enabled", "presentation_mode", "prediction_log_level"}, source, "debug");
+    validate_keys(
+        table,
+        {"enabled", "presentation_mode", "prediction_log_level", "correction_history_count"},
+        source,
+        "debug");
     if (table.contains("enabled")) {
         config.debug.enabled = read_bool(table, "enabled", source, "debug.enabled");
     }
@@ -577,6 +581,14 @@ void parse_debug(const toml::table& table,
             read_string(table, "prediction_log_level", source, "debug.prediction_log_level"),
             source,
             "debug.prediction_log_level");
+    }
+    if (table.contains("correction_history_count")) {
+        const auto value = read_integer(
+            table, "correction_history_count", source, "debug.correction_history_count");
+        if (value <= 0 || value > static_cast<std::int64_t>(kMaximumCorrectionHistoryCount)) {
+            fail(source, "debug.correction_history_count", "must be in the range 1..64");
+        }
+        config.debug.correction_history_count = static_cast<std::size_t>(value);
     }
 }
 

@@ -75,6 +75,23 @@ struct PredictionIdentityRemap {
     bool operator==(const PredictionIdentityRemap&) const = default;
 };
 
+enum class PredictionCorrectionSource : std::uint8_t {
+    Local,
+    Remote,
+};
+
+struct PredictionCorrection {
+    std::uint64_t sequence{};
+    protocol::EntityId entity_id;
+    mycore::math::Vector2 pre_correction_position;
+    mycore::math::Vector2 corrected_position;
+    float mass{};
+    float distance{};
+    PredictionCorrectionSource source{PredictionCorrectionSource::Local};
+
+    bool operator==(const PredictionCorrection&) const = default;
+};
+
 struct ProcessEventsResult {
     std::optional<RuntimeError> error;
     std::vector<AcceptedSnapshot> accepted_snapshots;
@@ -117,8 +134,12 @@ struct PredictionStatistics {
     double maximum_replay_milliseconds{};
     std::uint64_t reconciliation_count{};
     std::uint64_t nonzero_correction_count{};
+    std::uint64_t remote_entity_correction_count{};
+    std::size_t latest_remote_entity_correction_count{};
     float latest_correction_distance{};
     float maximum_correction_distance{};
+    float latest_remote_correction_distance{};
+    float maximum_remote_correction_distance{};
     float corrections_per_minute{};
     mycore::math::Vector2 accumulated_correction_displacement;
     std::uint64_t correction_sequence_since_hard_resync{};
@@ -168,6 +189,8 @@ public:
     [[nodiscard]] std::span<const protocol::EntityId> predicted_scope_entity_ids() const noexcept;
     [[nodiscard]] std::span<const PredictionIdentityRemap>
     latest_prediction_identity_remaps() const noexcept;
+    [[nodiscard]] std::span<const PredictionCorrection>
+    recent_prediction_corrections() const noexcept;
     [[nodiscard]] std::optional<mycore::math::Vector2> predicted_position() const noexcept;
     [[nodiscard]] std::optional<mycore::math::Vector2> pre_correction_position() const noexcept;
     [[nodiscard]] std::span<const mycore::math::Vector2> latest_replay_path() const noexcept;

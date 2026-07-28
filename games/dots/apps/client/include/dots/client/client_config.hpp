@@ -64,6 +64,8 @@ public:
 // client_config.cpp whenever accepted fields, types, defaults, or validation rules change.
 inline constexpr int kMinimumWindowWidth = 500;
 inline constexpr int kMinimumWindowHeight = 500;
+inline constexpr std::size_t kDefaultCorrectionHistoryCount = 8;
+inline constexpr std::size_t kMaximumCorrectionHistoryCount = 64;
 
 struct WindowSettings {
     std::string title{"Dots"};
@@ -102,6 +104,7 @@ struct DebugSettings {
     bool enabled{true};
     PresentationMode presentation_mode{PresentationMode::Interpolated};
     PredictionLogLevel prediction_log_level{PredictionLogLevel::Off};
+    std::size_t correction_history_count{kDefaultCorrectionHistoryCount};
 };
 
 struct RgbColor {
