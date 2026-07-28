@@ -3,6 +3,7 @@
 #include "dots/simulation/world_setup.hpp"
 
 #include <algorithm>
+#include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <variant>
 
@@ -188,6 +189,51 @@ TEST_CASE("Replicated worlds accept contiguous receipts and reject gaps or confl
     }};
     CHECK(replicated.apply(gap) == dots::replication::SnapshotApplyResult::Invalid);
     CHECK(replicated.snapshot_id() == dots::protocol::SnapshotId{2});
+}
+
+TEST_CASE("Authority events round-trip through protocol receipts",
+          "[dots][replication][receipts]") {
+    const std::array<dots::simulation::SimulationEvent, 4> events{
+        dots::simulation::FoodConsumed{
+            .tick = mycore::time::Tick{3},
+            .food_entity_id = dots::simulation::EntityId{10},
+            .consumer_entity_id = dots::simulation::EntityId{11},
+            .consumer_owner_id = dots::simulation::PlayerOwnerId{1},
+            .transferred_mass = 1.0F,
+        },
+        dots::simulation::PlayerAbsorbed{
+            .tick = mycore::time::Tick{4},
+            .absorber_entity_id = dots::simulation::EntityId{11},
+            .victim_entity_id = dots::simulation::EntityId{12},
+            .absorber_owner_id = dots::simulation::PlayerOwnerId{1},
+            .victim_owner_id = dots::simulation::PlayerOwnerId{2},
+            .transferred_mass = 8.0F,
+        },
+        dots::simulation::PlayerSplit{
+            .tick = mycore::time::Tick{5},
+            .owner_id = dots::simulation::PlayerOwnerId{1},
+            .input_id = dots::simulation::InputCommandId{6},
+            .child_ordinal = 0,
+            .parent_entity_id = dots::simulation::EntityId{11},
+            .child_entity_id = dots::simulation::EntityId{13},
+            .parent_mass = 8.0F,
+            .child_mass = 8.0F,
+        },
+        dots::simulation::PiecesMerged{
+            .tick = mycore::time::Tick{6},
+            .owner_id = dots::simulation::PlayerOwnerId{1},
+            .survivor_entity_id = dots::simulation::EntityId{11},
+            .consumed_entity_id = dots::simulation::EntityId{13},
+            .combined_mass = 16.0F,
+        },
+    };
+
+    for (const auto& event : events) {
+        const auto encoded = dots::replication::to_protocol(event);
+        const auto* protocol_event = std::get_if<dots::protocol::AuthorityEvent>(&encoded);
+        REQUIRE(protocol_event != nullptr);
+        CHECK(dots::replication::to_simulation(*protocol_event) == event);
+    }
 }
 
 TEST_CASE("Replicated worlds replace newer state and reject stale snapshots",

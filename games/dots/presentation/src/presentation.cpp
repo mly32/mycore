@@ -358,29 +358,55 @@ FrameData extract_predicted_replicated_frame(const replication::ReplicatedWorld&
     return frame;
 }
 
-FrameData
-extract_remote_interpolated_predicted_frame(const replication::ReplicatedWorld& world,
-                                            const RemotePresentationFrame& remotes,
-                                            std::span<const RemoteEntityEndpoints> remote_endpoints,
-                                            const PredictedReplicatedPlayer& controlled_player) {
+namespace {
+
+FrameData extract_remote_interpolated_predicted_frame_impl(
+    const replication::ReplicatedWorld& world,
+    const simulation::World* predicted_world,
+    std::span<const protocol::EntityId> predicted_scope_entity_ids,
+    const RemotePresentationFrame& remotes,
+    std::span<const RemoteEntityEndpoints> remote_endpoints,
+    const PredictedReplicatedPlayer& controlled_player) {
     if (!finite(controlled_player.presentation_position) ||
         !finite(controlled_player.predicted_position) ||
         (controlled_player.pre_correction_position &&
          !finite(*controlled_player.pre_correction_position))) {
         throw std::runtime_error{"Dots remote presentation encountered invalid local geometry"};
     }
-    const auto* controlled = world.find(controlled_player.entity_id);
-    if (controlled == nullptr || controlled->kind != protocol::EntityKind::Player) {
+    const auto* authoritative_controlled = world.find(world.recipient().primary_entity_id);
+    if (authoritative_controlled == nullptr ||
+        authoritative_controlled->kind != protocol::EntityKind::Player) {
         throw std::runtime_error{"Dots remote presentation could not find its player"};
+    }
+    auto controlled_mass = authoritative_controlled->mass;
+    if (predicted_world != nullptr) {
+        if (const auto mass =
+                predicted_world->mass(simulation::EntityId{controlled_player.entity_id.value()})) {
+            controlled_mass = *mass;
+        }
     }
 
     FrameData frame{.camera = controlled_player.presentation_position, .circles = {}};
-    frame.circles.reserve(remotes.entities.size() + 6U +
+    const auto predicted_entity_count =
+        predicted_world == nullptr
+            ? std::size_t{}
+            : predicted_world->player_count() + predicted_world->food_count();
+    frame.circles.reserve(remotes.entities.size() + predicted_entity_count + 6U +
                           controlled_player.correction_replay_path.size());
+    const auto predicted_scope_contains =
+        [predicted_scope_entity_ids](protocol::EntityId entity_id) {
+            return std::ranges::find(predicted_scope_entity_ids, entity_id) !=
+                   predicted_scope_entity_ids.end();
+        };
     for (const auto& entity : remotes.entities) {
         if (!finite(entity.position) || !std::isfinite(entity.mass) || entity.mass <= 0.0F) {
             throw std::runtime_error{
                 "Dots remote presentation encountered invalid remote geometry"};
+        }
+        if (predicted_world != nullptr &&
+            (predicted_world->contains(simulation::EntityId{entity.entity_id.value()}) ||
+             predicted_scope_contains(entity.entity_id))) {
+            continue;
         }
         frame.circles.push_back({
             .position = entity.position,
@@ -391,13 +417,40 @@ extract_remote_interpolated_predicted_frame(const replication::ReplicatedWorld& 
             .entity_id = entity.entity_id,
         });
     }
-    frame.circles.push_back({
-        .position = controlled_player.presentation_position,
-        .mass = controlled->mass,
-        .radius = simulation::radius_for_mass(controlled->mass),
-        .kind = CircleKind::Player,
-        .entity_id = controlled_player.entity_id,
-    });
+    auto rendered_controlled = false;
+    if (predicted_world != nullptr) {
+        const auto checkpoint = predicted_world->checkpoint();
+        for (const auto& food : checkpoint.food) {
+            frame.circles.push_back({
+                .position = food.position,
+                .mass = checkpoint.rules.food_mass,
+                .radius = simulation::radius_for_mass(checkpoint.rules.food_mass),
+                .kind = CircleKind::Food,
+                .entity_id = protocol::EntityId{food.entity_id.value()},
+            });
+        }
+        for (const auto& player : checkpoint.players) {
+            const auto entity_id = protocol::EntityId{player.entity_id.value()};
+            const auto controlled = entity_id == controlled_player.entity_id;
+            rendered_controlled = rendered_controlled || controlled;
+            frame.circles.push_back({
+                .position = controlled ? controlled_player.presentation_position : player.position,
+                .mass = player.mass,
+                .radius = simulation::radius_for_mass(player.mass),
+                .kind = CircleKind::Player,
+                .entity_id = entity_id,
+            });
+        }
+    }
+    if (!rendered_controlled) {
+        frame.circles.push_back({
+            .position = controlled_player.presentation_position,
+            .mass = controlled_mass,
+            .radius = simulation::radius_for_mass(controlled_mass),
+            .kind = CircleKind::Player,
+            .entity_id = controlled_player.entity_id,
+        });
+    }
     const auto append_remote_endpoint = [&frame](const RemoteEntitySample& entity,
                                                  CircleKind kind) {
         frame.circles.push_back({
@@ -411,6 +464,14 @@ extract_remote_interpolated_predicted_frame(const replication::ReplicatedWorld& 
     for (const auto& endpoints : remote_endpoints) {
         const auto& older_endpoint = endpoints.older;
         const auto& newer_endpoint = endpoints.newer;
+        const auto entity_id = older_endpoint   ? older_endpoint->entity_id
+                               : newer_endpoint ? newer_endpoint->entity_id
+                                                : protocol::EntityId{};
+        if (predicted_world != nullptr && entity_id.is_valid() &&
+            (predicted_world->contains(simulation::EntityId{entity_id.value()}) ||
+             predicted_scope_contains(entity_id))) {
+            continue;
+        }
         if (older_endpoint) {
             append_remote_endpoint(*older_endpoint, CircleKind::RemoteOlderEndpointGhost);
         }
@@ -439,12 +500,12 @@ extract_remote_interpolated_predicted_frame(const replication::ReplicatedWorld& 
         }
     }
 
-    const auto radius = simulation::radius_for_mass(controlled->mass);
-    const auto append_ghost = [&frame, controlled, radius, &controlled_player](
+    const auto radius = simulation::radius_for_mass(controlled_mass);
+    const auto append_ghost = [&frame, controlled_mass, radius, &controlled_player](
                                   mycore::math::Vector2 position, CircleKind kind) {
         frame.circles.push_back({
             .position = position,
-            .mass = controlled->mass,
+            .mass = controlled_mass,
             .radius = radius,
             .kind = kind,
             .entity_id = controlled_player.entity_id,
@@ -452,7 +513,7 @@ extract_remote_interpolated_predicted_frame(const replication::ReplicatedWorld& 
     };
     if (controlled_player.show_prediction_layers) {
         append_ghost(controlled_player.predicted_position, CircleKind::PredictedPositionGhost);
-        append_ghost({controlled->position_x, controlled->position_y},
+        append_ghost({authoritative_controlled->position_x, authoritative_controlled->position_y},
                      CircleKind::AuthoritativeSampleGhost);
         if (controlled_player.pre_correction_position) {
             append_ghost(*controlled_player.pre_correction_position,
@@ -465,6 +526,32 @@ extract_remote_interpolated_predicted_frame(const replication::ReplicatedWorld& 
         }
     }
     return frame;
+}
+
+} // namespace
+
+FrameData
+extract_remote_interpolated_predicted_frame(const replication::ReplicatedWorld& world,
+                                            const RemotePresentationFrame& remotes,
+                                            std::span<const RemoteEntityEndpoints> remote_endpoints,
+                                            const PredictedReplicatedPlayer& controlled_player) {
+    return extract_remote_interpolated_predicted_frame_impl(
+        world, nullptr, {}, remotes, remote_endpoints, controlled_player);
+}
+
+FrameData extract_remote_interpolated_predicted_frame(
+    const replication::ReplicatedWorld& world,
+    const simulation::World& predicted_world,
+    std::span<const protocol::EntityId> predicted_scope_entity_ids,
+    const RemotePresentationFrame& remotes,
+    std::span<const RemoteEntityEndpoints> remote_endpoints,
+    const PredictedReplicatedPlayer& controlled_player) {
+    return extract_remote_interpolated_predicted_frame_impl(world,
+                                                            &predicted_world,
+                                                            predicted_scope_entity_ids,
+                                                            remotes,
+                                                            remote_endpoints,
+                                                            controlled_player);
 }
 
 FrameData

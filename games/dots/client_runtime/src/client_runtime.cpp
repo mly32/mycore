@@ -1,7 +1,7 @@
 #include "dots/client_runtime/client_runtime.hpp"
 
+#include "dots/prediction/model.hpp"
 #include "dots/protocol/codec.hpp"
-#include "dots/simulation/movement.hpp"
 #include "mycore/debug/log.hpp"
 #include "mycore/debug/profile.hpp"
 
@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <deque>
 #include <limits>
+#include <map>
 #include <numeric>
 #include <optional>
 #include <string_view>
@@ -30,6 +31,9 @@ constexpr float kCorrectionTolerance = 0.0001F;
 constexpr auto kReplayBudget = std::chrono::milliseconds{2};
 constexpr auto kWarningInterval = std::chrono::seconds{5};
 constexpr std::size_t kReplayDurationSampleCapacity = 120;
+constexpr auto kInitialScopeEpoch = mycore::rollback::ScopeEpoch{0};
+constexpr auto kReplayHorizon =
+    mycore::time::TickDelta{static_cast<std::uint64_t>(kPredictionHistoryCapacity)};
 
 [[nodiscard]] constexpr std::string_view
 disconnect_reason_name(mycore::net_transport::DisconnectReason reason) noexcept {
@@ -61,13 +65,6 @@ respawn_result_name(protocol::RespawnResult result) noexcept {
         return "rejected: no safe spawn";
     }
     return "unknown";
-}
-
-[[nodiscard]] mycore::math::Vector2
-advance_prediction(mycore::math::Vector2 position, const protocol::InputSample& sample) noexcept {
-    const auto movement =
-        simulation::normalized_player_movement({sample.movement_x, sample.movement_y});
-    return simulation::advance_player_position(position, movement);
 }
 
 struct PredictionEntry {
@@ -128,6 +125,135 @@ struct SnapshotProcessResult {
     bool applied{};
 };
 
+enum class TimelineAdvanceResult : std::uint8_t {
+    Advanced,
+    Deferred,
+    Failed,
+};
+
+struct PredictedProjection {
+    std::vector<protocol::EntityId> owned_entity_ids;
+    protocol::EntityId primary_entity_id;
+    std::optional<mycore::math::Vector2> position;
+};
+
+[[nodiscard]] std::optional<mycore::rollback::CommandSequence>
+command_sequence(protocol::InputSequenceId input_id) noexcept {
+    if (!input_id.is_valid()) {
+        return std::nullopt;
+    }
+    return mycore::rollback::CommandSequence{input_id.value()};
+}
+
+[[nodiscard]] protocol::PredictionKey to_protocol(const simulation::PredictionKey& key) noexcept {
+    return {
+        .owner_id = protocol::PlayerOwnerId{key.owner_id.value()},
+        .input_id = protocol::InputSequenceId{key.input_id.value()},
+        .child_ordinal = key.child_ordinal,
+    };
+}
+
+[[nodiscard]] bool contains(std::span<const simulation::PlayerOwnerId> values,
+                            simulation::PlayerOwnerId value) {
+    return std::binary_search(values.begin(), values.end(), value);
+}
+
+[[nodiscard]] bool scope_covers(const prediction::PredictionScope& current,
+                                const prediction::PredictionScope& required) {
+    const auto contains_all = [](const auto& superset, const auto& subset) {
+        return std::ranges::includes(superset, subset);
+    };
+    return current.requested_profile == required.requested_profile &&
+           current.active_profile == required.active_profile &&
+           current.fallback_reason == required.fallback_reason &&
+           current.requested_mechanics == required.requested_mechanics &&
+           current.mechanics == required.mechanics &&
+           current.required_domains == required.required_domains &&
+           current.required_causal_channels == required.required_causal_channels &&
+           current.owned_owner_ids == required.owned_owner_ids &&
+           current.owner_ids == required.owner_ids && current.rules == required.rules &&
+           current.replay_horizon == required.replay_horizon &&
+           contains_all(current.player_ids, required.player_ids) &&
+           contains_all(current.food_ids, required.food_ids);
+}
+
+[[nodiscard]] std::vector<protocol::EntityId>
+scope_entity_ids(const prediction::PredictionScope& scope) {
+    std::vector<protocol::EntityId> result;
+    result.reserve(scope.player_ids.size() + scope.food_ids.size());
+    for (const auto entity_id : scope.player_ids) {
+        result.push_back(protocol::EntityId{entity_id.value()});
+    }
+    for (const auto entity_id : scope.food_ids) {
+        result.push_back(protocol::EntityId{entity_id.value()});
+    }
+    std::ranges::sort(result);
+    return result;
+}
+
+[[nodiscard]] PredictedProjection
+project_predicted_owner(const simulation::World& world,
+                        simulation::PlayerOwnerId owner_id,
+                        protocol::EntityId confirmed_primary_entity_id,
+                        std::optional<mycore::math::Vector2> fallback_position = std::nullopt) {
+    PredictedProjection result{
+        .owned_entity_ids = {},
+        .primary_entity_id = {},
+        .position = fallback_position,
+    };
+    for (const auto entity_id : world.player_ids()) {
+        if (world.player_owner(entity_id) != owner_id) {
+            continue;
+        }
+        const auto protocol_id = protocol::EntityId{entity_id.value()};
+        result.owned_entity_ids.push_back(protocol_id);
+        if (protocol_id == confirmed_primary_entity_id) {
+            result.primary_entity_id = protocol_id;
+        }
+    }
+    if (!result.primary_entity_id.is_valid() && !result.owned_entity_ids.empty()) {
+        result.primary_entity_id = result.owned_entity_ids.front();
+    }
+    if (result.primary_entity_id.is_valid()) {
+        result.position = world.position(simulation::EntityId{result.primary_entity_id.value()});
+    }
+    return result;
+}
+
+[[nodiscard]] std::variant<std::vector<PredictionIdentityRemap>, RuntimeError>
+prediction_identity_remaps(const std::optional<simulation::WorldCheckpoint>& previous,
+                           const simulation::WorldCheckpoint& current,
+                           simulation::PlayerOwnerId owner_id) {
+    std::vector<PredictionIdentityRemap> result;
+    if (!previous) {
+        return result;
+    }
+    std::map<simulation::PredictionKey, simulation::EntityId> current_by_key;
+    for (const auto& player : current.players) {
+        if (!player.prediction_key || player.owner_id != owner_id) {
+            continue;
+        }
+        if (!current_by_key.emplace(*player.prediction_key, player.entity_id).second) {
+            return RuntimeError::AmbiguousPredictionIdentity;
+        }
+    }
+    for (const auto& player : previous->players) {
+        if (!player.prediction_key || player.owner_id != owner_id) {
+            continue;
+        }
+        const auto match = current_by_key.find(*player.prediction_key);
+        if (match == current_by_key.end() || match->second == player.entity_id) {
+            continue;
+        }
+        result.push_back({
+            .prediction_key = to_protocol(*player.prediction_key),
+            .previous_entity_id = protocol::EntityId{player.entity_id.value()},
+            .current_entity_id = protocol::EntityId{match->second.value()},
+        });
+    }
+    return result;
+}
+
 } // namespace
 
 class Runtime::Impl {
@@ -180,6 +306,14 @@ public:
                 client_id_ = welcome->client_id;
                 respawn_cooldown_ticks_ = welcome->respawn_cooldown_ticks;
                 world_rules_ = welcome->world_rules;
+                if (latest_authority_snapshot_) {
+                    const auto prediction_result =
+                        install_authority(*latest_authority_snapshot_, world_, now);
+                    if (prediction_result) {
+                        result.error = fail(*prediction_result);
+                        return result;
+                    }
+                }
                 if (const auto error = update_ready_state()) {
                     result.error = error;
                     return result;
@@ -226,7 +360,7 @@ public:
             return InputSendResult::InvalidAction;
         }
         const auto playing = world_.recipient().mode == protocol::SessionMode::Playing;
-        if (playing && !predicted_position_) {
+        if (playing && (!timeline_ || !confirmed_owner_id_.is_valid())) {
             return InputSendResult::NotReady;
         }
         if (next_input_id_ == protocol::InputSequenceId::kInvalidValue) {
@@ -280,20 +414,17 @@ public:
         if (!playing) {
             return InputSendResult::Sent;
         }
-        if (!predicted_position_) {
-            return InputSendResult::NotReady;
-        }
-        const auto current_prediction = *predicted_position_;
-
-        const auto resulting_position = advance_prediction(current_prediction, sample);
         if (!input_history_.push_back({
                 .sample = sample,
-                .resulting_position = resulting_position,
+                .resulting_position = predicted_position_.value_or(mycore::math::Vector2{}),
             })) {
             static_cast<void>(fail(RuntimeError::MissingControlledEntity));
             return InputSendResult::NotReady;
         }
-        predicted_position_ = resulting_position;
+        if (const auto error = advance_prediction(sample)) {
+            static_cast<void>(fail(*error));
+            return InputSendResult::NotReady;
+        }
         history_high_water_mark_ = std::max(history_high_water_mark_, input_history_.size());
         report_history_health(std::chrono::steady_clock::now());
         return InputSendResult::Sent;
@@ -376,6 +507,27 @@ public:
         return connection_;
     }
 
+    [[nodiscard]] const simulation::World* predicted_world() const noexcept {
+        return timeline_ ? timeline_->state() : nullptr;
+    }
+
+    [[nodiscard]] protocol::EntityId predicted_primary_entity_id() const noexcept {
+        return predicted_primary_entity_id_;
+    }
+
+    [[nodiscard]] std::span<const protocol::EntityId> predicted_owned_entity_ids() const noexcept {
+        return predicted_owned_entity_ids_;
+    }
+
+    [[nodiscard]] std::span<const protocol::EntityId> predicted_scope_entity_ids() const noexcept {
+        return predicted_scope_entity_ids_;
+    }
+
+    [[nodiscard]] std::span<const PredictionIdentityRemap>
+    latest_prediction_identity_remaps() const noexcept {
+        return latest_prediction_identity_remaps_;
+    }
+
     [[nodiscard]] std::optional<mycore::math::Vector2> predicted_position() const noexcept {
         return predicted_position_;
     }
@@ -402,6 +554,7 @@ public:
         if (!std::isfinite(injected_position.x) || !std::isfinite(injected_position.y)) {
             return false;
         }
+        prediction_debug_offset_ = prediction_debug_offset_ + displacement;
         *predicted_position_ = injected_position;
         ++injected_prediction_error_count_;
         mycore::debug::log_warning("dots.client.prediction",
@@ -535,39 +688,16 @@ private:
         }
         const auto previous_recipient = world_.recipient();
 
-        if (candidate_world.recipient().mode == protocol::SessionMode::Spectating) {
-            world_ = std::move(candidate_world);
-            clear_prediction_state();
-            record_server_pending_input(world_.pending_input_count());
-            log_recipient_changes(previous_recipient, snapshot.snapshot_id);
-            return {.error = {}, .applied = true};
-        }
-
-        const auto primary_entity_id = candidate_world.recipient().primary_entity_id;
-        const auto* controlled = candidate_world.find(primary_entity_id);
-        if (controlled == nullptr || controlled->kind != protocol::EntityKind::Player) {
-            return {.error = RuntimeError::MissingControlledEntity};
-        }
-
-        const auto can_reconcile = state_ == State::Ready && predicted_position_ &&
-                                   world_.recipient().mode == protocol::SessionMode::Playing &&
-                                   world_.recipient().primary_entity_id == primary_entity_id;
-        if (can_reconcile) {
-            const auto controlled_state = *controlled;
-            const auto previous_prediction = *predicted_position_;
-            const auto result = reconcile_snapshot(
-                std::move(candidate_world), controlled_state, previous_prediction, now);
-            if (result.applied) {
-                log_recipient_changes(previous_recipient, snapshot.snapshot_id);
+        if (world_rules_) {
+            if (const auto error = install_authority(snapshot, candidate_world, now)) {
+                return {.error = error};
             }
-            return result;
         }
-
-        const mycore::math::Vector2 authoritative_position{controlled->position_x,
-                                                           controlled->position_y};
         world_ = std::move(candidate_world);
-        clear_prediction_state();
-        predicted_position_ = authoritative_position;
+        latest_authority_snapshot_ = snapshot;
+        if (world_.recipient().mode == protocol::SessionMode::Spectating) {
+            clear_prediction_state();
+        }
         record_server_pending_input(world_.pending_input_count());
         log_recipient_changes(previous_recipient, snapshot.snapshot_id);
         return {.error = {}, .applied = true};
@@ -666,49 +796,264 @@ private:
         return *session.respawn_available_tick == *session.defeat_tick + respawn_cooldown_ticks_;
     }
 
-    [[nodiscard]] SnapshotProcessResult
-    reconcile_snapshot(replication::ReplicatedWorld candidate_world,
-                       const protocol::EntityState& controlled,
-                       mycore::math::Vector2 previous_prediction,
-                       std::chrono::steady_clock::time_point now) {
+    [[nodiscard]] std::optional<simulation::PlayerOwnerId>
+    confirmed_owner(const replication::ReplicatedWorld& candidate_world) const noexcept {
+        const auto primary_entity_id = candidate_world.recipient().primary_entity_id;
+        const auto* controlled = candidate_world.find(primary_entity_id);
+        if (controlled == nullptr || controlled->kind != protocol::EntityKind::Player ||
+            !controlled->owner_id.is_valid()) {
+            return std::nullopt;
+        }
+        return simulation::PlayerOwnerId{controlled->owner_id.value()};
+    }
+
+    [[nodiscard]] prediction::TickStimulus make_stimulus(const prediction::Timeline& timeline,
+                                                         const protocol::InputSample& sample,
+                                                         simulation::PlayerOwnerId owner_id) const {
+        prediction::TickStimulus result;
+        result.commands.push_back({
+            .type = simulation::TickCommandType::ApplyInput,
+            .input_id = simulation::InputCommandId{sample.sequence_id.value()},
+            .owner_id = owner_id,
+            .movement = {sample.movement_x, sample.movement_y},
+            .split_requested = (sample.action_bits & protocol::kSplitActionBit) != 0U,
+        });
+        const auto checkpoint = timeline.state()->checkpoint();
+        for (const auto& owner : checkpoint.owners) {
+            if (contains(timeline.scope()->owned_owner_ids, owner.owner_id)) {
+                continue;
+            }
+            result.remote_movement_assumptions.push_back({
+                .owner_id = owner.owner_id,
+                .source_tick = timeline.authoritative_tick(),
+                .movement = owner.movement,
+            });
+        }
+        return result;
+    }
+
+    [[nodiscard]] TimelineAdvanceResult advance_timeline(prediction::Timeline& timeline,
+                                                         const protocol::InputSample& sample,
+                                                         simulation::PlayerOwnerId owner_id) const {
+        const auto checkpoint = timeline.state()->checkpoint();
+        const auto live_owner = std::lower_bound(
+            checkpoint.owners.begin(),
+            checkpoint.owners.end(),
+            owner_id,
+            [](const simulation::OwnerCheckpoint& owner, simulation::PlayerOwnerId value) {
+                return owner.owner_id < value;
+            });
+        if (live_owner == checkpoint.owners.end() || live_owner->owner_id != owner_id) {
+            return TimelineAdvanceResult::Deferred;
+        }
+        const auto advanced =
+            timeline.advance(mycore::rollback::CommandSequence{sample.sequence_id.value()},
+                             make_stimulus(timeline, sample, owner_id));
+        return std::holds_alternative<prediction::Commit>(advanced)
+                   ? TimelineAdvanceResult::Advanced
+                   : TimelineAdvanceResult::Failed;
+    }
+
+    [[nodiscard]] std::vector<prediction::AuthorityEvent>
+    new_authority_events(const replication::ReplicatedWorld& candidate_world) const {
+        const auto receipts = candidate_world.authority_receipts();
+        const auto first_new_receipt = world_.authority_receipts().size();
+        std::vector<prediction::AuthorityEvent> result;
+        result.reserve(receipts.size() - first_new_receipt);
+        for (std::size_t index = first_new_receipt; index < receipts.size(); ++index) {
+            auto event = replication::to_simulation(receipts[index].event);
+            result.push_back({
+                .disposition = mycore::rollback::AuthorityEventDisposition::Confirmed,
+                .key = simulation::simulation_event_key(event),
+                .event = event,
+            });
+        }
+        return result;
+    }
+
+    [[nodiscard]] std::variant<prediction::PredictionScope, RuntimeError>
+    required_scope(const simulation::WorldCheckpoint& authority,
+                   simulation::PlayerOwnerId owner_id,
+                   mycore::rollback::ScopeEpoch scope_epoch) const {
+        auto result = prediction::build_prediction_scope(
+            authority,
+            {
+                .profile = prediction::PredictionProfile::InteractionClosure,
+                .mechanics = prediction::kCurrentPredictionMechanics,
+                .owned_owner_ids = {owner_id},
+                .replay_horizon = kReplayHorizon,
+                .scope_epoch = scope_epoch,
+                .coverage = {},
+            });
+        if (auto* scope = std::get_if<prediction::PredictionScope>(&result)) {
+            return std::move(*scope);
+        }
+        return RuntimeError::PredictionScopeFailed;
+    }
+
+    [[nodiscard]] std::optional<RuntimeError>
+    install_authority(const protocol::FullSnapshot& snapshot,
+                      const replication::ReplicatedWorld& candidate_world,
+                      std::chrono::steady_clock::time_point now) {
         MYCORE_PROFILE_ZONE("Dots prediction reconciliation");
         const auto replay_start = std::chrono::steady_clock::now();
-        auto scratch_history = input_history_;
-        scratch_history.discard_through(candidate_world.last_processed_input_id());
-
-        mycore::math::Vector2 scratch_position{controlled.position_x, controlled.position_y};
-        std::vector<mycore::math::Vector2> scratch_replay_path;
-        scratch_replay_path.reserve(scratch_history.size());
-        for (std::size_t index = 0; index < scratch_history.size(); ++index) {
-            auto& entry = scratch_history.at(index);
-            scratch_position = advance_prediction(scratch_position, entry.sample);
-            entry.resulting_position = scratch_position;
-            scratch_replay_path.push_back(scratch_position);
+        if (!world_rules_) {
+            return std::nullopt;
+        }
+        const auto hydrated = replication::hydrate_checkpoint(snapshot, *world_rules_);
+        const auto* authority = std::get_if<simulation::WorldCheckpoint>(&hydrated);
+        if (authority == nullptr) {
+            return RuntimeError::CheckpointHydrationFailed;
+        }
+        if (candidate_world.recipient().mode == protocol::SessionMode::Spectating) {
+            return std::nullopt;
+        }
+        const auto owner = confirmed_owner(candidate_world);
+        if (!owner) {
+            return RuntimeError::MissingControlledEntity;
         }
 
-        const auto correction_distance =
-            mycore::math::length(previous_prediction - scratch_position);
+        const auto initial_epoch = timeline_ ? timeline_->scope_epoch() : kInitialScopeEpoch;
+        auto required_result = required_scope(*authority, *owner, initial_epoch);
+        auto* required = std::get_if<prediction::PredictionScope>(&required_result);
+        if (required == nullptr) {
+            return std::get<RuntimeError>(required_result);
+        }
+
+        auto selected_scope = *required;
+        auto rebuild = !timeline_ || !timeline_->scope() ||
+                       !scope_covers(*timeline_->scope(), selected_scope) ||
+                       confirmed_owner_id_ != *owner;
+        if (!rebuild) {
+            selected_scope = *timeline_->scope();
+        } else if (timeline_) {
+            if (timeline_->scope_epoch().value() ==
+                mycore::rollback::ScopeEpoch::kInvalidValue - 1U) {
+                return RuntimeError::PredictionScopeFailed;
+            }
+            const auto next_epoch =
+                mycore::rollback::ScopeEpoch{timeline_->scope_epoch().value() + 1U};
+            required_result = required_scope(*authority, *owner, next_epoch);
+            required = std::get_if<prediction::PredictionScope>(&required_result);
+            if (required == nullptr) {
+                return std::get<RuntimeError>(required_result);
+            }
+            selected_scope = *required;
+        }
+
+        const auto projected_result = prediction::project_checkpoint(*authority, selected_scope);
+        const auto* projected_authority =
+            std::get_if<simulation::WorldCheckpoint>(&projected_result);
+        if (projected_authority == nullptr) {
+            return RuntimeError::PredictionScopeFailed;
+        }
+
+        auto scratch_history = input_history_;
+        scratch_history.discard_through(candidate_world.last_processed_input_id());
+        const auto previous_checkpoint =
+            timeline_ && timeline_->state()
+                ? std::optional<simulation::WorldCheckpoint>{timeline_->state()->checkpoint()}
+                : std::nullopt;
+        const auto previous_prediction = predicted_position_;
+        auto authority_events = new_authority_events(candidate_world);
+        const prediction::AuthorityFrame frame{
+            .tick = projected_authority->tick,
+            .acknowledged_through = command_sequence(candidate_world.last_processed_input_id()),
+            .scope_epoch = selected_scope.scope_epoch,
+            .checkpoint = *projected_authority,
+            .events = std::move(authority_events),
+        };
+
+        prediction::Timeline scratch_timeline{
+            prediction::WorldModel{},
+            {.capacity = kPredictionHistoryCapacity},
+        };
+        if (!rebuild && timeline_->authoritative_tick() < frame.tick) {
+            scratch_timeline = *timeline_;
+            const auto reconciled = scratch_timeline.reconcile(frame);
+            if (!std::holds_alternative<prediction::Commit>(reconciled)) {
+                return RuntimeError::PredictionTimelineFailed;
+            }
+        } else {
+            rebuild = true;
+        }
+
+        if (rebuild) {
+            scratch_timeline = prediction::Timeline{prediction::WorldModel{},
+                                                    {.capacity = kPredictionHistoryCapacity}};
+            const auto initialized = scratch_timeline.initialize(frame, selected_scope);
+            if (!std::holds_alternative<prediction::Commit>(initialized)) {
+                return RuntimeError::PredictionTimelineFailed;
+            }
+        }
+
+        auto last_timeline_sequence = candidate_world.last_processed_input_id();
+        if (!scratch_timeline.history().empty()) {
+            last_timeline_sequence = protocol::InputSequenceId{static_cast<std::uint32_t>(
+                scratch_timeline.history().back().command_sequence.value())};
+        }
+        for (std::size_t index = 0; index < scratch_history.size(); ++index) {
+            const auto& sample = scratch_history.at(index).sample;
+            if (last_timeline_sequence.is_valid() && sample.sequence_id <= last_timeline_sequence) {
+                continue;
+            }
+            const auto advance_result = advance_timeline(scratch_timeline, sample, *owner);
+            if (advance_result == TimelineAdvanceResult::Failed) {
+                return RuntimeError::PredictionTimelineFailed;
+            }
+            if (advance_result == TimelineAdvanceResult::Deferred) {
+                break;
+            }
+            last_timeline_sequence = sample.sequence_id;
+        }
+
+        const auto current_checkpoint = scratch_timeline.state()->checkpoint();
+        auto remaps_result =
+            prediction_identity_remaps(previous_checkpoint, current_checkpoint, *owner);
+        auto* remaps = std::get_if<std::vector<PredictionIdentityRemap>>(&remaps_result);
+        if (remaps == nullptr) {
+            return std::get<RuntimeError>(remaps_result);
+        }
+        const auto projection =
+            project_predicted_owner(*scratch_timeline.state(),
+                                    *owner,
+                                    candidate_world.recipient().primary_entity_id,
+                                    previous_prediction);
+        auto scratch_replay_path = replay_path(scratch_timeline, projection.primary_entity_id);
+        const auto next_prediction = projection.position;
+        const auto correction_displacement = previous_prediction && next_prediction
+                                                 ? *previous_prediction - *next_prediction
+                                                 : mycore::math::Vector2{};
+        const auto correction_distance = mycore::math::length(correction_displacement);
         const auto nonzero_correction = correction_distance > kCorrectionTolerance;
 
-        world_ = std::move(candidate_world);
+        timeline_ = std::move(scratch_timeline);
         input_history_ = scratch_history;
-        predicted_position_ = scratch_position;
+        confirmed_owner_id_ = *owner;
+        predicted_owned_entity_ids_ = projection.owned_entity_ids;
+        predicted_scope_entity_ids_ = scope_entity_ids(selected_scope);
+        predicted_primary_entity_id_ = projection.primary_entity_id;
+        predicted_position_ = next_prediction;
+        prediction_debug_offset_ = {};
+        latest_prediction_identity_remaps_ = std::move(*remaps);
         latest_replay_path_ = std::move(scratch_replay_path);
         if (nonzero_correction) {
             pre_correction_position_ = previous_prediction;
             latest_correction_replay_path_ = latest_replay_path_;
             accumulated_correction_displacement_ =
-                accumulated_correction_displacement_ + (previous_prediction - scratch_position);
+                accumulated_correction_displacement_ + correction_displacement;
         }
-        const auto replay_duration = std::chrono::steady_clock::now() - replay_start;
 
-        rollback_snapshot_id_ = world_.snapshot_id();
-        rollback_server_tick_ = world_.server_tick();
-        rollback_input_acknowledgement_ = world_.last_processed_input_id();
+        const auto replay_duration = std::chrono::steady_clock::now() - replay_start;
+        rollback_snapshot_id_ = candidate_world.snapshot_id();
+        rollback_server_tick_ = candidate_world.server_tick();
+        rollback_input_acknowledgement_ = candidate_world.last_processed_input_id();
         latest_replay_count_ = input_history_.size();
         total_replayed_input_count_ += latest_replay_count_;
         maximum_replay_count_ = std::max(maximum_replay_count_, latest_replay_count_);
-        ++reconciliation_count_;
+        if (previous_checkpoint) {
+            ++reconciliation_count_;
+        }
         latest_correction_distance_ = correction_distance;
         maximum_correction_distance_ = std::max(maximum_correction_distance_, correction_distance);
         prune_correction_times(now);
@@ -718,18 +1063,63 @@ private:
             correction_times_.push_back(now);
         }
         record_replay_duration(replay_duration, now);
-        record_server_pending_input(world_.pending_input_count());
+        history_high_water_mark_ = std::max(history_high_water_mark_, input_history_.size());
         report_history_health(now);
-        return {.error = {}, .applied = true};
+        return std::nullopt;
+    }
+
+    [[nodiscard]] std::vector<mycore::math::Vector2>
+    replay_path(const prediction::Timeline& timeline,
+                protocol::EntityId preferred_entity_id) const {
+        std::vector<mycore::math::Vector2> result;
+        result.reserve(timeline.history().size());
+        for (const auto& frame : timeline.history()) {
+            const auto player =
+                std::find_if(frame.checkpoint.players.begin(),
+                             frame.checkpoint.players.end(),
+                             [preferred_entity_id](const simulation::PlayerCheckpoint& value) {
+                                 return value.entity_id.value() == preferred_entity_id.value();
+                             });
+            if (player != frame.checkpoint.players.end()) {
+                result.push_back(player->position);
+            }
+        }
+        return result;
+    }
+
+    [[nodiscard]] std::optional<RuntimeError>
+    advance_prediction(const protocol::InputSample& sample) {
+        if (!timeline_ || !confirmed_owner_id_.is_valid()) {
+            return RuntimeError::PredictionTimelineFailed;
+        }
+        const auto result = advance_timeline(*timeline_, sample, confirmed_owner_id_);
+        if (result == TimelineAdvanceResult::Failed) {
+            return RuntimeError::PredictionTimelineFailed;
+        }
+        if (result == TimelineAdvanceResult::Deferred) {
+            return std::nullopt;
+        }
+        const auto projection = project_predicted_owner(*timeline_->state(),
+                                                        confirmed_owner_id_,
+                                                        world_.recipient().primary_entity_id,
+                                                        predicted_position_);
+        predicted_owned_entity_ids_ = projection.owned_entity_ids;
+        predicted_primary_entity_id_ = projection.primary_entity_id;
+        if (projection.position) {
+            predicted_position_ = *projection.position + prediction_debug_offset_;
+            input_history_.at(input_history_.size() - 1).resulting_position = *predicted_position_;
+        }
+        return std::nullopt;
     }
 
     [[nodiscard]] bool hard_resync(std::chrono::steady_clock::time_point now) {
-        const auto* controlled = world_.find(world_.recipient().primary_entity_id);
-        if (controlled == nullptr || controlled->kind != protocol::EntityKind::Player) {
+        if (!latest_authority_snapshot_ || !world_rules_) {
             return false;
         }
-        predicted_position_ = {controlled->position_x, controlled->position_y};
         input_history_.clear();
+        if (const auto error = install_authority(*latest_authority_snapshot_, world_, now)) {
+            return false;
+        }
         pre_correction_position_.reset();
         latest_replay_path_.clear();
         latest_correction_replay_path_.clear();
@@ -804,7 +1194,14 @@ private:
 
     void clear_prediction_state() noexcept {
         input_history_.clear();
+        timeline_.reset();
+        confirmed_owner_id_ = {};
+        predicted_primary_entity_id_ = {};
+        predicted_owned_entity_ids_.clear();
+        predicted_scope_entity_ids_.clear();
+        latest_prediction_identity_remaps_.clear();
         predicted_position_.reset();
+        prediction_debug_offset_ = {};
         pre_correction_position_.reset();
         latest_replay_path_.clear();
         latest_correction_replay_path_.clear();
@@ -827,7 +1224,7 @@ private:
     }
 
     [[nodiscard]] std::optional<RuntimeError> update_ready_state() {
-        if (!client_id_.is_valid() || !world_.snapshot_id().is_valid()) {
+        if (!client_id_.is_valid() || !world_rules_ || !world_.snapshot_id().is_valid()) {
             return std::nullopt;
         }
         const auto session_mode = world_.recipient().mode;
@@ -837,14 +1234,11 @@ private:
         const auto primary_entity_id = world_.recipient().primary_entity_id;
         const auto* controlled = world_.find(primary_entity_id);
         if (session_mode == protocol::SessionMode::Playing &&
-            (controlled == nullptr || controlled->kind != protocol::EntityKind::Player)) {
+            (controlled == nullptr || controlled->kind != protocol::EntityKind::Player ||
+             !timeline_ || !predicted_position_)) {
             return fail(RuntimeError::MissingControlledEntity);
         }
         if (state_ != State::Ready) {
-            if (controlled != nullptr) {
-                predicted_position_ = {controlled->position_x, controlled->position_y};
-            }
-            input_history_.clear();
             state_ = State::Ready;
             mycore::debug::log_info("dots.client.session",
                                     "Session ready as client {} with primary entity {}",
@@ -877,10 +1271,18 @@ private:
     std::uint32_t respawn_cooldown_ticks_{};
     std::optional<protocol::WorldRules> world_rules_;
     replication::ReplicatedWorld world_;
+    std::optional<protocol::FullSnapshot> latest_authority_snapshot_;
     std::uint32_t next_input_id_{};
     std::optional<std::uint32_t> last_sent_client_tick_;
     PredictionHistory input_history_;
+    std::optional<prediction::Timeline> timeline_;
+    simulation::PlayerOwnerId confirmed_owner_id_;
+    protocol::EntityId predicted_primary_entity_id_;
+    std::vector<protocol::EntityId> predicted_owned_entity_ids_;
+    std::vector<protocol::EntityId> predicted_scope_entity_ids_;
+    std::vector<PredictionIdentityRemap> latest_prediction_identity_remaps_;
     std::optional<mycore::math::Vector2> predicted_position_;
+    mycore::math::Vector2 prediction_debug_offset_;
     std::optional<mycore::math::Vector2> pre_correction_position_;
     std::vector<mycore::math::Vector2> latest_replay_path_;
     std::vector<mycore::math::Vector2> latest_correction_replay_path_;
@@ -1000,6 +1402,27 @@ protocol::RespawnResult Runtime::latest_respawn_result() const noexcept {
 
 mycore::net_transport::ConnectionHandle Runtime::connection_handle() const noexcept {
     return impl_->connection_handle();
+}
+
+const simulation::World* Runtime::predicted_world() const noexcept {
+    return impl_->predicted_world();
+}
+
+protocol::EntityId Runtime::predicted_primary_entity_id() const noexcept {
+    return impl_->predicted_primary_entity_id();
+}
+
+std::span<const protocol::EntityId> Runtime::predicted_owned_entity_ids() const noexcept {
+    return impl_->predicted_owned_entity_ids();
+}
+
+std::span<const protocol::EntityId> Runtime::predicted_scope_entity_ids() const noexcept {
+    return impl_->predicted_scope_entity_ids();
+}
+
+std::span<const PredictionIdentityRemap>
+Runtime::latest_prediction_identity_remaps() const noexcept {
+    return impl_->latest_prediction_identity_remaps();
 }
 
 std::optional<mycore::math::Vector2> Runtime::predicted_position() const noexcept {

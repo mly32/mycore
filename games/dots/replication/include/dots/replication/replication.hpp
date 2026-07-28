@@ -52,6 +52,7 @@ enum class SnapshotApplyResult : std::uint8_t {
 [[nodiscard]] protocol::WorldRules to_protocol(const simulation::WorldRules& rules) noexcept;
 [[nodiscard]] simulation::InputCommandId to_simulation(protocol::InputSequenceId id) noexcept;
 [[nodiscard]] simulation::WorldRules to_simulation(const protocol::WorldRules& rules) noexcept;
+[[nodiscard]] simulation::SimulationEvent to_simulation(const protocol::AuthorityEvent& event);
 [[nodiscard]] AuthorityEventBuildResult to_protocol(const simulation::SimulationEvent& event);
 
 [[nodiscard]] SnapshotBuildResult

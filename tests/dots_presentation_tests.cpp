@@ -158,6 +158,152 @@ TEST_CASE("Remote endpoint diagnostics include a visible interpolation connector
     CHECK(draw_list.circles[6].color == mycore::render::Color{0.2F, 0.45F, 1.0F, 0.95F});
 }
 
+TEST_CASE("Predicted interaction scope replaces duplicate interpolated entities",
+          "[dots][presentation][prediction]") {
+    const auto owner = dots::protocol::PlayerOwnerId{4};
+    dots::replication::ReplicatedWorld authority;
+    REQUIRE(authority.apply({
+                .snapshot_id = dots::protocol::SnapshotId{1},
+                .recipient =
+                    {
+                        .mode = dots::protocol::SessionMode::Playing,
+                        .owned_entity_ids =
+                            {
+                                dots::protocol::EntityId{1},
+                                dots::protocol::EntityId{2},
+                            },
+                        .primary_entity_id = dots::protocol::EntityId{1},
+                    },
+                .owners = {{.owner_id = owner}},
+                .entities =
+                    {
+                        {
+                            .entity_id = dots::protocol::EntityId{1},
+                            .kind = dots::protocol::EntityKind::Player,
+                            .owner_id = owner,
+                            .mass = 8.0F,
+                        },
+                        {
+                            .entity_id = dots::protocol::EntityId{2},
+                            .kind = dots::protocol::EntityKind::Player,
+                            .owner_id = owner,
+                            .position_x = 1.0F,
+                            .mass = 8.0F,
+                        },
+                    },
+            }) == dots::replication::SnapshotApplyResult::Applied);
+
+    dots::simulation::World predicted;
+    REQUIRE_FALSE(predicted.restore({
+        .rules = {},
+        .tick = mycore::time::Tick{1},
+        .next_entity_id = 4,
+        .owners = {{
+            .owner_id = dots::simulation::PlayerOwnerId{owner.value()},
+            .player_ids =
+                {
+                    dots::simulation::EntityId{1},
+                    dots::simulation::EntityId{2},
+                },
+        }},
+        .players =
+            {
+                {
+                    .entity_id = dots::simulation::EntityId{1},
+                    .owner_id = dots::simulation::PlayerOwnerId{owner.value()},
+                    .position = {1.0F, 0.0F},
+                    .mass = 8.0F,
+                },
+                {
+                    .entity_id = dots::simulation::EntityId{2},
+                    .owner_id = dots::simulation::PlayerOwnerId{owner.value()},
+                    .position = {2.0F, 0.0F},
+                    .mass = 8.0F,
+                },
+            },
+        .food = {{
+            .entity_id = dots::simulation::EntityId{3},
+            .position = {3.0F, 0.0F},
+        }},
+    }));
+
+    const dots::presentation::RemotePresentationFrame remotes{
+        .entities =
+            {
+                {
+                    .entity_id = dots::protocol::EntityId{2},
+                    .kind = dots::protocol::EntityKind::Player,
+                    .position = {20.0F, 0.0F},
+                    .mass = 8.0F,
+                },
+                {
+                    .entity_id = dots::protocol::EntityId{3},
+                    .kind = dots::protocol::EntityKind::Food,
+                    .position = {30.0F, 0.0F},
+                    .mass = 1.0F,
+                },
+                {
+                    .entity_id = dots::protocol::EntityId{4},
+                    .kind = dots::protocol::EntityKind::Player,
+                    .position = {4.0F, 0.0F},
+                    .mass = 16.0F,
+                },
+                {
+                    .entity_id = dots::protocol::EntityId{5},
+                    .kind = dots::protocol::EntityKind::Player,
+                    .position = {50.0F, 0.0F},
+                    .mass = 16.0F,
+                },
+            },
+    };
+    const std::array predicted_scope{
+        dots::protocol::EntityId{1},
+        dots::protocol::EntityId{2},
+        dots::protocol::EntityId{3},
+        dots::protocol::EntityId{5},
+    };
+    const std::array endpoints{dots::presentation::RemoteEntityEndpoints{
+        .older =
+            dots::presentation::RemoteEntitySample{
+                .entity_id = dots::protocol::EntityId{2},
+                .kind = dots::protocol::EntityKind::Player,
+                .position = {10.0F, 0.0F},
+                .mass = 8.0F,
+            },
+        .newer =
+            dots::presentation::RemoteEntitySample{
+                .entity_id = dots::protocol::EntityId{2},
+                .kind = dots::protocol::EntityKind::Player,
+                .position = {20.0F, 0.0F},
+                .mass = 8.0F,
+            },
+    }};
+
+    const auto frame = dots::presentation::extract_remote_interpolated_predicted_frame(
+        authority,
+        predicted,
+        predicted_scope,
+        remotes,
+        endpoints,
+        {
+            .entity_id = dots::protocol::EntityId{1},
+            .presentation_position = {10.0F, 0.0F},
+            .predicted_position = {1.0F, 0.0F},
+            .show_prediction_layers = false,
+            .show_replay_path = false,
+        });
+
+    REQUIRE(frame.circles.size() == 4);
+    CHECK(frame.camera == mycore::math::Vector2{10.0F, 0.0F});
+    CHECK(frame.circles[0].entity_id == dots::protocol::EntityId{4});
+    CHECK(frame.circles[1].entity_id == dots::protocol::EntityId{3});
+    CHECK(frame.circles[1].position == mycore::math::Vector2{3.0F, 0.0F});
+    CHECK(frame.circles[2].entity_id == dots::protocol::EntityId{1});
+    CHECK(frame.circles[2].position == mycore::math::Vector2{10.0F, 0.0F});
+    CHECK(frame.circles[3].entity_id == dots::protocol::EntityId{2});
+    CHECK(frame.circles[3].position == mycore::math::Vector2{2.0F, 0.0F});
+}
+
 TEST_CASE("Spectator camera follows the same interpolated sample used for drawing",
           "[dots][presentation][spectator]") {
     const dots::protocol::EntityId killer{9};

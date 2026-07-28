@@ -21,8 +21,11 @@ For a game-integration recipe and public API reference, use the
   differences, and complete-World rollback tests for movement, food, absorption, split, and
   merge. Dots event handlers demonstrate predicted-once, cancelable, and confirmed-only
   delivery through the engine router. Offline play advances through this adapter.
-- **Current client integration:** the production network client still uses Feature 11's owned
-  position predictor while complete Dots World prediction remains under construction.
+- **Current client integration:** Feature 14 step 6 replaces the position-only predictor with the
+  complete Dots timeline. The client hydrates and verifies authoritative checkpoints, predicts an
+  `InteractionClosure`, replays retained input with recorded remote movement assumptions, maps
+  predicted identities to authority, renders predicted topology, and exposes graphical split.
+  Confirmed session state remains separate from speculative player existence.
 - **Remote presentation baseline:** Feature 12 renders remote entities from delayed known
   snapshots and holds at the newest endpoint.
 - **Authoritative lifecycle baseline:** Feature 13 implements deterministic absorption and
@@ -431,9 +434,10 @@ loss-tolerant receipt:
 
 Protocol v4, the authoritative server queues, and the replicated client inbox implement the
 transport portion of this contract. Receipts are relevant-owner scoped for the current complete
-replication model. The temporary network client acknowledges the highest contiguous validated
-sequence but does not deliver receipts to persistent consequence handlers until the complete
-timeline and presentation integration steps.
+replication model. The network client converts each newly accepted receipt into a confirmed event
+on the same transactional authority frame and acknowledges the highest contiguous validated
+sequence. Persistent consequence handlers attach in Feature 14 step 7; until then, receipt event
+transitions are consumed by the timeline without exposing audio or particle side effects.
 
 Repeated Feature 13 session fields remain authoritative state. Receipts control one-time
 consequence delivery and do not replace those state fields.

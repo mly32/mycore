@@ -235,6 +235,7 @@ up = ["Z", "0", "Digit1", "Up", "Tab", "LeftShift", "RightControl"]
 down = ["2", "Down", "Space", "RightShift", "LeftControl"]
 left = ["3", "Left", "LeftAlt", "RightGui", "Insert", "Home", "F1", "F12"]
 right = ["4", "Right", "RightAlt", "LeftGui", "Delete", "End", "F2", "F11"]
+split = ["Q"]
 follow = ["PageUp"]
 respawn = ["Enter"]
 zoom_in = ["PageDown"]
@@ -248,6 +249,7 @@ quit = ["Escape", "Backspace", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10"]
     REQUIRE(config.controls.bindings.up[2] == mycore::platform_sdl::Key::Digit1);
     REQUIRE(config.controls.bindings.left.back() == mycore::platform_sdl::Key::F12);
     REQUIRE(config.controls.bindings.right[3] == mycore::platform_sdl::Key::LeftGui);
+    REQUIRE(config.controls.bindings.split.front() == mycore::platform_sdl::Key::Q);
     REQUIRE(config.controls.bindings.follow.front() == mycore::platform_sdl::Key::PageUp);
     REQUIRE(config.controls.bindings.respawn.front() == mycore::platform_sdl::Key::Enter);
 }

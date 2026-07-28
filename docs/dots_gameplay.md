@@ -7,10 +7,9 @@ future mechanics outlined in feature plans. The server is authoritative for ever
 
 Dots is an early Agar.io-like movement and growth slice. Players move through a shared field,
 consume food, and can absorb smaller opponents. The shared deterministic World and offline
-rollback model also implement split, launch, cohesion, and merge rules. The current graphical
-controls do not submit split actions yet, although protocol v4 and the authoritative server now
-carry and execute the edge action. The mechanic is exercised through simulation, prediction,
-protocol, and session tests until the remaining Feature 14 client-runtime integration.
+rollback model also implement split, launch, cohesion, and merge rules. The graphical client
+submits split as an edge-triggered action on Space; protocol v4 carries it to authority while the
+complete client rollback timeline predicts its immediate topology and motion.
 There is no score, win condition, or separate energy system. Food is the current resource that
 fills the role an energy pickup might later fill.
 
@@ -71,9 +70,8 @@ server-assigned spawns.
 
 Clients submit normalized movement intent at 30 Hz. A player moves at 6 world units per second.
 The server consumes at most one queued input sample per owner per tick. The simulation installs
-at most one owner command and applies its held movement to every piece owned by that owner. A
-A live graphical network session currently has one piece because its controls do not expose the
-protocol-v4 split edge action yet.
+at most one owner command and applies its held movement to every piece owned by that owner. A live
+graphical network session may own up to eight pieces through edge-triggered split input.
 
 Brief missing input does not immediately stop a player: the server holds the last applied movement
 for five ticks. On the following missing-input tick it neutralizes movement, while keeping the
@@ -100,8 +98,17 @@ communicates whether the gameplay action succeeded.
 ## What each client sees
 
 While `Playing`, the local primary player is responsive through client-side prediction: the
-client applies its own input immediately, then reconciles with the server's acknowledged snapshot
-and smooths only the visual correction.
+client applies its own input immediately to a complete interaction-closed World, then reconciles
+with the server's acknowledged checkpoint and replays the retained input suffix. Movement, food
+consumption, player absorption, split, launch, cohesion, and merge run through the same
+deterministic tick used by authority. Simulation corrects atomically; the primary player's
+position correction alone is visually smoothed.
+
+Space submits one split request per press; holding it does not split every input tick. A predicted
+child appears immediately and is matched to authority by `PredictionKey`, even if the server
+assigns a different entity ID. A predicted absorption may temporarily remove the final local
+piece, but it cannot enter spectator mode or disable input. Only confirmed replicated session
+state can do that.
 
 The network client runtime accepts confirmed spectating snapshots without requiring a permanent
 controlled entity and continues sending session input/heartbeats. The graphical client enters
@@ -122,11 +129,14 @@ Its respawn countdown advances the latest replicated server tick by local time s
 receipt. That display is approximate and presentation-only; only the server's current tick decides
 whether a request is eligible.
 
-Remote players are not extrapolated from guessed inputs. The client stores authoritative snapshots
-and renders remotes about six server ticks (200 ms) behind the newest known server state,
-interpolating between two known samples. If a newer sample is unavailable, the remote holds rather
-than inventing movement. See the [networked prediction and time reference](networked_prediction_reference.md)
-for state ownership and timing terminology.
+Remote entities inside the local interaction closure participate in rollback because their held
+level movement, momentum, topology, and collisions can affect an owned piece. The retained
+assumption uses their newest authoritative movement; unknown remote edge actions are neutral.
+Remote entities outside that closure render about six server ticks (200 ms) behind newest known
+authority, interpolating between two known samples and holding on underrun. They do not run
+gameplay logic or extrapolation yet. See the
+[networked prediction and time reference](networked_prediction_reference.md) for state ownership
+and timing terminology.
 
 Player fill color is a deterministic hash of the authoritative entity ID, so the same player has
 the same color on every client for the life of that server world. Mass changes radius, not fill
@@ -135,7 +145,7 @@ color.
 ## Planned gameplay, not current rules
 
 Future plans may add scoring or winning, richer resource/energy mechanics, and additional
-cooldowns. Feature 14 still has to expose the implemented protocol action through graphical
-input, replace the temporary position predictor with the complete rollback timeline, and attach
-persistent presentation cues. These must be specified here as they become implemented gameplay
-behavior; feature plans remain design documents until then.
+cooldowns. Feature 14 still has to attach persistent presentation consequences, structural
+correction transitions, and bounded visual extrapolation outside the prediction closure. These
+must be specified here as they become implemented gameplay behavior; feature plans remain design
+documents until then.

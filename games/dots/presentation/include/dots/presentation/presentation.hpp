@@ -160,6 +160,14 @@ extract_remote_interpolated_predicted_frame(const replication::ReplicatedWorld& 
                                             std::span<const RemoteEntityEndpoints> remote_endpoints,
                                             const PredictedReplicatedPlayer& controlled_player);
 
+[[nodiscard]] FrameData extract_remote_interpolated_predicted_frame(
+    const replication::ReplicatedWorld& world,
+    const simulation::World& predicted_world,
+    std::span<const protocol::EntityId> predicted_scope_entity_ids,
+    const RemotePresentationFrame& remotes,
+    std::span<const RemoteEntityEndpoints> remote_endpoints,
+    const PredictedReplicatedPlayer& controlled_player);
+
 [[nodiscard]] FrameData
 extract_remote_interpolated_spectator_frame(const RemotePresentationFrame& remotes,
                                             std::span<const RemoteEntityEndpoints> remote_endpoints,

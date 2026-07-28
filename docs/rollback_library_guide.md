@@ -380,4 +380,7 @@ The complete minimal model and consequence examples are in
 [`tests/mycore_rollback_tests.cpp`](../tests/mycore_rollback_tests.cpp). The first production
 adapter is
 [`games/dots/prediction`](../games/dots/prediction/), with its game-specific design in the
-[rollback prediction design](rollback_prediction_design.md).
+[rollback prediction design](rollback_prediction_design.md). Its first network composition is
+[`games/dots/client_runtime`](../games/dots/client_runtime/): it demonstrates verified
+checkpoint hydration, interaction-closure selection, retained input/remote assumptions, atomic
+authority reconciliation, identity remapping, and a separate confirmed session lifecycle.

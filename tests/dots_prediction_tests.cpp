@@ -1,4 +1,5 @@
 #include "dots/client_runtime/client_runtime.hpp"
+#include "dots/prediction/model.hpp"
 #include "dots/protocol/codec.hpp"
 #include "mycore/net_transport/net_transport.hpp"
 
@@ -75,7 +76,7 @@ void complete_protocol_fixture(dots::protocol::Message& message) {
         return;
     }
     auto* value = std::get_if<dots::protocol::FullSnapshot>(&message);
-    if (value == nullptr || !value->owners.empty()) {
+    if (value == nullptr) {
         return;
     }
     for (const auto& entity : value->entities) {
@@ -94,14 +95,79 @@ void complete_protocol_fixture(dots::protocol::Message& message) {
               [](const dots::protocol::OwnerState& lhs, const dots::protocol::OwnerState& rhs) {
                   return lhs.owner_id < rhs.owner_id;
               });
+    auto next_entity_id = std::uint32_t{};
+    for (const auto& entity : value->entities) {
+        next_entity_id = std::max(next_entity_id, entity.entity_id.value() + 1U);
+    }
+    value->next_entity_id = dots::protocol::EntityId{next_entity_id};
+    dots::simulation::WorldCheckpoint checkpoint{
+        .rules = dots::simulation::WorldRules{},
+        .tick = mycore::time::Tick{value->server_tick},
+        .next_entity_id = next_entity_id,
+        .owners = {},
+        .players = {},
+        .food = {},
+    };
+    for (const auto& owner : value->owners) {
+        checkpoint.owners.push_back({
+            .owner_id = dots::simulation::PlayerOwnerId{owner.owner_id.value()},
+            .player_ids = {},
+            .movement = {owner.movement_x, owner.movement_y},
+            .last_non_zero_movement = {owner.last_non_zero_movement_x,
+                                       owner.last_non_zero_movement_y},
+            .last_input_id = dots::simulation::InputCommandId{owner.last_input_id.value()},
+            .split_cooldown_end_tick = mycore::time::Tick{owner.split_cooldown_end_tick},
+        });
+    }
+    for (const auto& entity : value->entities) {
+        if (entity.kind == dots::protocol::EntityKind::Food) {
+            checkpoint.food.push_back({
+                .entity_id = dots::simulation::EntityId{entity.entity_id.value()},
+                .position = {entity.position_x, entity.position_y},
+            });
+            continue;
+        }
+        std::optional<dots::simulation::PredictionKey> prediction_key;
+        if (entity.prediction_key) {
+            prediction_key = dots::simulation::PredictionKey{
+                .owner_id =
+                    dots::simulation::PlayerOwnerId{entity.prediction_key->owner_id.value()},
+                .input_id =
+                    dots::simulation::InputCommandId{entity.prediction_key->input_id.value()},
+                .child_ordinal = entity.prediction_key->child_ordinal,
+            };
+        }
+        checkpoint.players.push_back({
+            .entity_id = dots::simulation::EntityId{entity.entity_id.value()},
+            .owner_id = dots::simulation::PlayerOwnerId{entity.owner_id.value()},
+            .position = {entity.position_x, entity.position_y},
+            .mass = entity.mass,
+            .launch_velocity = {entity.launch_velocity_x, entity.launch_velocity_y},
+            .merge_eligible_tick = mycore::time::Tick{entity.merge_eligible_tick},
+            .prediction_key = prediction_key,
+        });
+        const auto owner =
+            std::find_if(checkpoint.owners.begin(),
+                         checkpoint.owners.end(),
+                         [&entity](const dots::simulation::OwnerCheckpoint& candidate) {
+                             return candidate.owner_id.value() == entity.owner_id.value();
+                         });
+        REQUIRE(owner != checkpoint.owners.end());
+        owner->player_ids.push_back(dots::simulation::EntityId{entity.entity_id.value()});
+    }
+    value->checkpoint_digest = dots::prediction::checkpoint_digest(checkpoint).value;
 }
 
-[[nodiscard]] std::vector<std::byte> encode_bytes(dots::protocol::Message message) {
-    complete_protocol_fixture(message);
+[[nodiscard]] std::vector<std::byte> encode_finalized(const dots::protocol::Message& message) {
     auto result = dots::protocol::encode(message);
     auto* bytes = std::get_if<dots::protocol::EncodedMessage>(&result);
     REQUIRE(bytes != nullptr);
     return std::move(*bytes);
+}
+
+[[nodiscard]] std::vector<std::byte> encode_bytes(dots::protocol::Message message) {
+    complete_protocol_fixture(message);
+    return encode_finalized(message);
 }
 
 [[nodiscard]] dots::protocol::Message decode_bytes(std::span<const std::byte> bytes) {
@@ -329,6 +395,119 @@ TEST_CASE("Prediction remains immediate across a deterministic 200 ms authority 
     CHECK(statistics.latest_correction_distance == Catch::Approx(0.0F));
 }
 
+TEST_CASE("Predicted identity remaps a split child to its authoritative entity",
+          "[dots][prediction][identity][split]") {
+    ManualEndpoint endpoint;
+    dots::client_runtime::Runtime client{endpoint};
+    const mycore::net_transport::ConnectionHandle connection{25};
+    complete_handshake(endpoint, client, connection);
+
+    REQUIRE(client.send_input(0, {}, dots::protocol::kSplitActionBit) ==
+            dots::client_runtime::InputSendResult::Sent);
+    REQUIRE(client.predicted_owned_entity_ids().size() == 2);
+    CHECK(client.predicted_owned_entity_ids()[1] == dots::protocol::EntityId{9});
+
+    auto authority = snapshot(1, 1, dots::protocol::InputSequenceId{0}, {}, 0);
+    authority.recipient.owned_entity_ids = {
+        kControlledEntity,
+        dots::protocol::EntityId{10},
+    };
+    authority.owners = {{
+        .owner_id = kControlledOwner,
+        .last_input_id = dots::protocol::InputSequenceId{0},
+        .split_cooldown_end_tick = 15,
+    }};
+    authority.entities = {
+        {
+            .entity_id = kControlledEntity,
+            .kind = dots::protocol::EntityKind::Player,
+            .owner_id = kControlledOwner,
+            .mass = 8.0F,
+            .merge_eligible_tick = 151,
+        },
+        {
+            .entity_id = dots::protocol::EntityId{10},
+            .kind = dots::protocol::EntityKind::Player,
+            .owner_id = kControlledOwner,
+            .mass = 8.0F,
+            .merge_eligible_tick = 151,
+            .prediction_key =
+                dots::protocol::PredictionKey{
+                    .owner_id = kControlledOwner,
+                    .input_id = dots::protocol::InputSequenceId{0},
+                    .child_ordinal = 0,
+                },
+        },
+    };
+    push_snapshot(endpoint, connection, authority);
+    REQUIRE_FALSE(client.process_events(clock_time(11s)).has_value());
+
+    REQUIRE(client.predicted_world() != nullptr);
+    CHECK_FALSE(client.predicted_world()->contains(dots::simulation::EntityId{9}));
+    CHECK(client.predicted_world()->contains(dots::simulation::EntityId{10}));
+    REQUIRE(client.latest_prediction_identity_remaps().size() == 1);
+    CHECK(client.latest_prediction_identity_remaps().front() ==
+          dots::client_runtime::PredictionIdentityRemap{
+              .prediction_key =
+                  {
+                      .owner_id = kControlledOwner,
+                      .input_id = dots::protocol::InputSequenceId{0},
+                      .child_ordinal = 0,
+                  },
+              .previous_entity_id = dots::protocol::EntityId{9},
+              .current_entity_id = dots::protocol::EntityId{10},
+          });
+}
+
+TEST_CASE("Predicted local elimination preserves confirmed play and buffered input",
+          "[dots][prediction][session][rollback]") {
+    ManualEndpoint endpoint;
+    dots::client_runtime::Runtime client{endpoint};
+    const mycore::net_transport::ConnectionHandle connection{26};
+    complete_handshake(endpoint, client, connection);
+
+    auto dangerous = snapshot(1, 0, dots::protocol::InputSequenceId::invalid(), {});
+    dangerous.entities.push_back({
+        .entity_id = dots::protocol::EntityId{9},
+        .kind = dots::protocol::EntityKind::Player,
+        .owner_id = dots::protocol::PlayerOwnerId{4},
+        .mass = 32.0F,
+    });
+    push_snapshot(endpoint, connection, dangerous);
+    REQUIRE_FALSE(client.process_events(clock_time(10s)).has_value());
+
+    REQUIRE(client.send_input(0, {}) == dots::client_runtime::InputSendResult::Sent);
+    REQUIRE(client.predicted_world() != nullptr);
+    CHECK_FALSE(
+        client.predicted_world()->contains(dots::simulation::EntityId{kControlledEntity.value()}));
+    CHECK(client.predicted_owned_entity_ids().empty());
+    CHECK(std::ranges::find(client.predicted_scope_entity_ids(), kControlledEntity) !=
+          client.predicted_scope_entity_ids().end());
+    CHECK(client.session_mode() == dots::protocol::SessionMode::Playing);
+    check_position(client.predicted_position(), 0.0F, 0.0F);
+
+    REQUIRE(client.send_input(1, {1.0F, 0.0F}) == dots::client_runtime::InputSendResult::Sent);
+    CHECK(client.prediction_statistics(clock_time(10s)).history_count == 2);
+
+    auto corrected = snapshot(2, 1, dots::protocol::InputSequenceId::invalid(), {});
+    corrected.entities.push_back({
+        .entity_id = dots::protocol::EntityId{9},
+        .kind = dots::protocol::EntityKind::Player,
+        .owner_id = dots::protocol::PlayerOwnerId{4},
+        .mass = 16.0F,
+    });
+    push_snapshot(endpoint, connection, corrected);
+    REQUIRE_FALSE(client.process_events(clock_time(11s)).has_value());
+
+    REQUIRE(client.predicted_world() != nullptr);
+    CHECK(
+        client.predicted_world()->contains(dots::simulation::EntityId{kControlledEntity.value()}));
+    REQUIRE(client.predicted_owned_entity_ids().size() == 1);
+    CHECK(client.session_mode() == dots::protocol::SessionMode::Playing);
+    CHECK(client.prediction_statistics(clock_time(11s)).history_count == 2);
+    check_position(client.predicted_position(), 0.2F, 0.0F);
+}
+
 TEST_CASE("Misprediction corrects simulation immediately and records its replay path",
           "[dots][prediction][reconciliation]") {
     ManualEndpoint endpoint;
@@ -489,6 +668,32 @@ TEST_CASE("Client rejects a respawn deadline that conflicts with welcome configu
     CHECK(client.process_events(clock_time(11s)).error ==
           dots::client_runtime::RuntimeError::InvalidSnapshot);
     CHECK(client.world().snapshot_id() == dots::protocol::SnapshotId{0});
+}
+
+TEST_CASE("Client rejects a corrupt checkpoint without replacing committed prediction",
+          "[dots][prediction][transaction]") {
+    ManualEndpoint endpoint;
+    dots::client_runtime::Runtime client{endpoint};
+    const mycore::net_transport::ConnectionHandle connection{27};
+    complete_handshake(endpoint, client, connection);
+    REQUIRE(client.send_input(0, {1.0F, 0.0F}) == dots::client_runtime::InputSendResult::Sent);
+
+    dots::protocol::Message message =
+        snapshot(1, 1, dots::protocol::InputSequenceId::invalid(), {1.0F, 0.0F});
+    complete_protocol_fixture(message);
+    auto& corrupt = std::get<dots::protocol::FullSnapshot>(message);
+    corrupt.checkpoint_digest ^= 1U;
+    endpoint.events.push_back(mycore::net_transport::PayloadReceived{
+        .connection = connection,
+        .delivery = mycore::net_transport::DeliveryMode::Unreliable,
+        .payload = encode_finalized(message),
+    });
+
+    CHECK(client.process_events(clock_time(11s)).error ==
+          dots::client_runtime::RuntimeError::CheckpointHydrationFailed);
+    CHECK(client.world().snapshot_id() == dots::protocol::SnapshotId{0});
+    CHECK(client.prediction_statistics(clock_time(11s)).history_count == 1);
+    check_position(client.predicted_position(), 0.2F, 0.0F);
 }
 
 TEST_CASE("Prediction history capacity hard-resyncs before recording new input",

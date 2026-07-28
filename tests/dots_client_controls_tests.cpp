@@ -128,6 +128,24 @@ TEST_CASE("Client input propagates IDs and handles configured quit bindings",
     REQUIRE(dots::client::quit_requested({.quit_requested = true}, controls));
 }
 
+TEST_CASE("Player split input is edge-triggered and enters the shared tick command",
+          "[dots][client][input][split]") {
+    const auto controls = dots::client::default_client_config().controls;
+    dots::client::PlayerControlTracker tracker;
+    const mycore::platform_sdl::InputSnapshot held{
+        .keyboard = {mycore::platform_sdl::Key::Space},
+    };
+
+    CHECK(tracker.sample(held, controls).request_split);
+    CHECK_FALSE(tracker.sample(held, controls).request_split);
+    static_cast<void>(tracker.sample({}, controls));
+    CHECK(tracker.sample(held, controls).request_split);
+
+    const auto command =
+        dots::client::make_tick_command(held, controls, kOwner, kCommand, kViewport, true, true);
+    CHECK(command.split_requested);
+}
+
 TEST_CASE("Spectator controls reuse movement bindings and edge-trigger actions",
           "[dots][client][input][spectator]") {
     const auto controls = dots::client::default_client_config().controls;

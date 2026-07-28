@@ -931,11 +931,13 @@ int run_networked_game(
         .minimum_pixels_per_world_unit = config.spectator.minimum_pixels_per_world_unit,
         .maximum_pixels_per_world_unit = config.spectator.maximum_pixels_per_world_unit,
     }};
+    PlayerControlTracker player_control_tracker;
     SpectatorControlTracker spectator_control_tracker;
     PredictionDebugControls prediction_debug_controls;
     std::optional<Vector2> last_nonzero_movement_input;
     Vector2 last_camera_position;
     bool spectator_camera_active{};
+    bool split_request_pending{};
     bool respawn_request_pending{};
     while (true) {
         MYCORE_PROFILE_FRAME();
@@ -984,6 +986,7 @@ int run_networked_game(
         }
         const auto spectator_control_intent =
             spectator_control_tracker.sample(spectator_input, config.controls);
+        const auto player_control_intent = player_control_tracker.sample(input, config.controls);
         const auto frame_duration =
             std::chrono::duration_cast<mycore::time::Duration>(now - previous_time);
         frame_metrics.add_sample(frame_duration);
@@ -1005,7 +1008,9 @@ int run_networked_game(
         }
         if (playing_before_steps) {
             respawn_request_pending = false;
+            split_request_pending = split_request_pending || player_control_intent.request_split;
         } else if (spectator_control_intent.request_respawn) {
+            split_request_pending = false;
             respawn_request_pending = true;
         }
         auto viewport = InputViewport{};
@@ -1038,22 +1043,36 @@ int run_networked_game(
                     if (controlled == nullptr) {
                         throw StartupError{"The replicated local player disappeared"};
                     }
-                    viewport.player_radius_pixels =
-                        dots::simulation::radius_for_mass(controlled->mass) *
-                        config.view.pixels_per_world_unit;
+                    const auto predicted_primary = client.predicted_primary_entity_id();
+                    const auto predicted_mass =
+                        client.predicted_world() != nullptr && predicted_primary.is_valid()
+                            ? client.predicted_world()->mass(
+                                  dots::simulation::EntityId{predicted_primary.value()})
+                            : std::nullopt;
+                    viewport.player_radius_pixels = dots::simulation::radius_for_mass(
+                                                        predicted_mass.value_or(controlled->mass)) *
+                                                    config.view.pixels_per_world_unit;
                     movement = movement_from_input(
                         input, config.controls, viewport, mouse_input_available);
                 }
                 if (playing && mycore::math::length_squared(movement) > 0.0F) {
                     last_nonzero_movement_input = movement;
                 }
-                const auto action_bits = static_cast<std::uint16_t>(
-                    !playing && respawn_request_pending ? dots::protocol::kRespawnActionBit : 0U);
+                auto action_bits = std::uint16_t{};
+                if (playing && split_request_pending) {
+                    action_bits |= dots::protocol::kSplitActionBit;
+                }
+                if (!playing && respawn_request_pending) {
+                    action_bits |= dots::protocol::kRespawnActionBit;
+                }
                 if (client.send_input(client_tick++, movement, action_bits) !=
                     dots::client_runtime::InputSendResult::Sent) {
                     throw StartupError{"The networked client could not send input"};
                 }
-                if (action_bits != 0U) {
+                if ((action_bits & dots::protocol::kSplitActionBit) != 0U) {
+                    split_request_pending = false;
+                }
+                if ((action_bits & dots::protocol::kRespawnActionBit) != 0U) {
                     respawn_request_pending = false;
                 }
                 if (embedded_server != nullptr &&
@@ -1073,6 +1092,7 @@ int run_networked_game(
                         config.view.pixels_per_world_unit;
                 } else {
                     controlled = nullptr;
+                    split_request_pending = false;
                 }
             }
         }
@@ -1102,6 +1122,8 @@ int run_networked_game(
         }
         if (playing) {
             respawn_request_pending = false;
+        } else {
+            split_request_pending = false;
         }
         const auto sampled_local_entity =
             playing ? client.primary_entity_id() : dots::protocol::EntityId{};
@@ -1287,12 +1309,21 @@ int run_networked_game(
             const auto correction_visual_active =
                 local_prediction_presentation.correction_visual_active();
             last_camera_position = local_prediction_presentation.presentation_position();
+            const auto* predicted_world = client.predicted_world();
+            if (predicted_world == nullptr) {
+                throw StartupError{"The complete local prediction World disappeared"};
+            }
+            const auto predicted_primary = client.predicted_primary_entity_id().is_valid()
+                                               ? client.predicted_primary_entity_id()
+                                               : client.primary_entity_id();
             frame = dots::presentation::extract_remote_interpolated_predicted_frame(
                 client.world(),
+                *predicted_world,
+                client.predicted_scope_entity_ids(),
                 remote_frame,
                 remote_endpoint_layers,
                 {
-                    .entity_id = client.primary_entity_id(),
+                    .entity_id = predicted_primary,
                     .presentation_position = local_prediction_presentation.presentation_position(),
                     .predicted_position = local_prediction_presentation.predicted_position(),
                     .pre_correction_position =
@@ -1499,6 +1530,8 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
     mycore::debug::FrameMetrics frame_metrics;
     mycore::debug::FixedStepMetrics simulation_metrics{dots::simulation::kTickDuration};
     SimulationHealthReporter simulation_health_reporter;
+    PlayerControlTracker player_control_tracker;
+    bool split_request_pending{};
     MYCORE_PROFILE_THREAD("Dots client");
 
     while (true) {
@@ -1509,6 +1542,8 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
         if (quit_requested(input, config.controls)) {
             return 0;
         }
+        split_request_pending = split_request_pending ||
+                                player_control_tracker.sample(input, config.controls).request_split;
 
         const auto output_size = window.pixel_size();
         const auto logical_size = window.size();
@@ -1561,7 +1596,9 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
                                       dots::simulation::PlayerOwnerId{0},
                                       dots::simulation::InputCommandId{next_command_id},
                                       viewport,
-                                      mouse_input_available);
+                                      mouse_input_available,
+                                      split_request_pending);
+                split_request_pending = false;
                 previous_player_position = current_player_position;
                 const auto sequence = mycore::rollback::CommandSequence{next_command_id};
                 ++next_command_id;

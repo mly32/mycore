@@ -2,8 +2,8 @@
 
 ## Problem
 
-Feature 11 predicts only the controlled position. The server alone steps the complete Dots
-World, while remote presentation uses Feature 12 delayed interpolation. That model cannot
+Before Feature 14, Feature 11 predicted only the controlled position. The server alone stepped
+the complete Dots World, while remote presentation used Feature 12 delayed interpolation. That model cannot
 speculate structural mechanics such as food consumption, player absorption, split, or merge, and
 its position-specific history cannot become a clean shared mechanism by adding more special
 cases.
@@ -403,7 +403,7 @@ Keep commits focused and reviewable, but do not add approval gates between these
    entity-scale workloads, documentation updates, and the measured same-frame/multi-frame
    decision.
 
-Steps 1 through 5 are implemented on `feature/14`. `MyCore::Rollback` now provides the generic
+Steps 1 through 6 are implemented on `feature/14`. `MyCore::Rollback` now provides the generic
 timeline and consequence machinery. Dots Simulation now provides immutable `WorldRules`, sorted
 complete checkpoints, atomic restore, one owner-scoped command batch per tick, typed food and
 absorption, split, and merge journals, stable keys, and predicted identity storage. Its scratch
@@ -425,10 +425,22 @@ that exhausts retention. Protocol, replication, and in-memory session tests cove
 checkpoint state, all receipt event variants, duplicate/conflicting/gapped receipts, batching,
 ACK retirement, split identity, and overflow.
 
-The production network client still uses the Feature 11 position predictor until client-runtime
-step 6 installs complete World authority, interaction-closed replay, and graphical split input.
-It already ACKs the highest contiguous validated receipt so the server queue remains bounded.
-Persistent visual consequence handlers remain step 7 work.
+The production network client now hydrates each validated protocol checkpoint into a complete
+Dots World, selects `InteractionClosure`, and advances that scope through the engine timeline
+with retained local commands and exact held remote-movement assumptions. Authority is installed
+and the unacknowledged suffix replayed in scratch state before the replicated view, timeline, and
+presentation projection commit together. A changed closure rebuilds from the newest authority
+under a new scope epoch because older frames did not record causes for newly admitted entities.
+
+Graphical input now submits an edge-triggered split on Space. Predicted topology, mass, launch,
+food, absorption, merge, and owner state are rendered from the predicted interaction island;
+entities outside it remain on Feature 12 interpolation-and-hold. Predicted children retain their
+`PredictionKey` across replay and report an entity-ID remap when authority assigns a different
+ID. Predicted removal of the final local piece does not enter Spectating or stop input capture;
+only the confirmed replicated session can do that. The client also converts new authority
+receipts into confirmed timeline events and ACKs their contiguous sequence. Persistent
+consequence handlers, structural presentation transitions, and bounded outside-closure
+extrapolation remain step 7 work.
 
 ## Test Plan
 

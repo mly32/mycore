@@ -3,6 +3,7 @@
 #include "dots/protocol/ids.hpp"
 #include "dots/protocol/messages.hpp"
 #include "dots/replication/replication.hpp"
+#include "dots/simulation/world.hpp"
 #include "mycore/math/vector2.hpp"
 #include "mycore/net_transport/net_transport.hpp"
 
@@ -32,6 +33,10 @@ enum class RuntimeError : std::uint8_t {
     InvalidSnapshot,
     InvalidInputAcknowledgement,
     MissingControlledEntity,
+    CheckpointHydrationFailed,
+    PredictionScopeFailed,
+    PredictionTimelineFailed,
+    AmbiguousPredictionIdentity,
     TransportSendFailed,
 };
 
@@ -58,6 +63,14 @@ struct Settings {
 struct AcceptedSnapshot {
     protocol::FullSnapshot snapshot;
     std::chrono::steady_clock::time_point arrival_time;
+};
+
+struct PredictionIdentityRemap {
+    protocol::PredictionKey prediction_key;
+    protocol::EntityId previous_entity_id;
+    protocol::EntityId current_entity_id;
+
+    bool operator==(const PredictionIdentityRemap&) const = default;
 };
 
 struct ProcessEventsResult {
@@ -141,6 +154,12 @@ public:
     [[nodiscard]] protocol::InputSequenceId latest_respawn_request_id() const noexcept;
     [[nodiscard]] protocol::RespawnResult latest_respawn_result() const noexcept;
     [[nodiscard]] mycore::net_transport::ConnectionHandle connection_handle() const noexcept;
+    [[nodiscard]] const simulation::World* predicted_world() const noexcept;
+    [[nodiscard]] protocol::EntityId predicted_primary_entity_id() const noexcept;
+    [[nodiscard]] std::span<const protocol::EntityId> predicted_owned_entity_ids() const noexcept;
+    [[nodiscard]] std::span<const protocol::EntityId> predicted_scope_entity_ids() const noexcept;
+    [[nodiscard]] std::span<const PredictionIdentityRemap>
+    latest_prediction_identity_remaps() const noexcept;
     [[nodiscard]] std::optional<mycore::math::Vector2> predicted_position() const noexcept;
     [[nodiscard]] std::optional<mycore::math::Vector2> pre_correction_position() const noexcept;
     [[nodiscard]] std::span<const mycore::math::Vector2> latest_replay_path() const noexcept;

@@ -19,6 +19,7 @@ struct Bindings {
     std::vector<mycore::platform_sdl::Key> down;
     std::vector<mycore::platform_sdl::Key> left;
     std::vector<mycore::platform_sdl::Key> right;
+    std::vector<mycore::platform_sdl::Key> split;
     std::vector<mycore::platform_sdl::Key> follow;
     std::vector<mycore::platform_sdl::Key> respawn;
     std::vector<mycore::platform_sdl::Key> zoom_in;
@@ -45,6 +46,19 @@ struct SpectatorControlIntent {
     int zoom_steps{};
     bool toggle_follow{};
     bool request_respawn{};
+};
+
+struct PlayerControlIntent {
+    bool request_split{};
+};
+
+class PlayerControlTracker {
+public:
+    [[nodiscard]] PlayerControlIntent sample(const mycore::platform_sdl::InputSnapshot& input,
+                                             const ClientControls& controls) noexcept;
+
+private:
+    bool split_pressed_{};
 };
 
 class SpectatorControlTracker {
@@ -77,6 +91,7 @@ make_tick_command(const mycore::platform_sdl::InputSnapshot& input,
                   dots::simulation::PlayerOwnerId owner_id,
                   dots::simulation::InputCommandId command_id,
                   InputViewport viewport,
-                  bool mouse_input_available = true) noexcept;
+                  bool mouse_input_available = true,
+                  bool split_requested = false) noexcept;
 
 } // namespace dots::client

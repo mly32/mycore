@@ -78,6 +78,51 @@ simulation::WorldRules to_simulation(const protocol::WorldRules& rules) noexcept
     };
 }
 
+simulation::SimulationEvent to_simulation(const protocol::AuthorityEvent& event) {
+    return std::visit(
+        [](const auto& value) -> simulation::SimulationEvent {
+            using Event = std::decay_t<decltype(value)>;
+            if constexpr (std::is_same_v<Event, protocol::FoodConsumed>) {
+                return simulation::FoodConsumed{
+                    .tick = mycore::time::Tick{value.server_tick},
+                    .food_entity_id = simulation::EntityId{value.food_entity_id.value()},
+                    .consumer_entity_id = simulation::EntityId{value.consumer_entity_id.value()},
+                    .consumer_owner_id = simulation::PlayerOwnerId{value.consumer_owner_id.value()},
+                    .transferred_mass = value.transferred_mass,
+                };
+            } else if constexpr (std::is_same_v<Event, protocol::PlayerAbsorbed>) {
+                return simulation::PlayerAbsorbed{
+                    .tick = mycore::time::Tick{value.server_tick},
+                    .absorber_entity_id = simulation::EntityId{value.absorber_entity_id.value()},
+                    .victim_entity_id = simulation::EntityId{value.victim_entity_id.value()},
+                    .absorber_owner_id = simulation::PlayerOwnerId{value.absorber_owner_id.value()},
+                    .victim_owner_id = simulation::PlayerOwnerId{value.victim_owner_id.value()},
+                    .transferred_mass = value.transferred_mass,
+                };
+            } else if constexpr (std::is_same_v<Event, protocol::PlayerSplit>) {
+                return simulation::PlayerSplit{
+                    .tick = mycore::time::Tick{value.server_tick},
+                    .owner_id = simulation::PlayerOwnerId{value.owner_id.value()},
+                    .input_id = simulation::InputCommandId{value.input_id.value()},
+                    .child_ordinal = value.child_ordinal,
+                    .parent_entity_id = simulation::EntityId{value.parent_entity_id.value()},
+                    .child_entity_id = simulation::EntityId{value.child_entity_id.value()},
+                    .parent_mass = value.parent_mass,
+                    .child_mass = value.child_mass,
+                };
+            } else {
+                return simulation::PiecesMerged{
+                    .tick = mycore::time::Tick{value.server_tick},
+                    .owner_id = simulation::PlayerOwnerId{value.owner_id.value()},
+                    .survivor_entity_id = simulation::EntityId{value.survivor_entity_id.value()},
+                    .consumed_entity_id = simulation::EntityId{value.consumed_entity_id.value()},
+                    .combined_mass = value.combined_mass,
+                };
+            }
+        },
+        event);
+}
+
 AuthorityEventBuildResult to_protocol(const simulation::SimulationEvent& event) {
     return std::visit(
         [](const auto& value) -> AuthorityEventBuildResult {

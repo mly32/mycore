@@ -1,7 +1,7 @@
 # Networked Prediction and Time Reference
 
-This reference defines the terms used by Dots networking, presentation, and future rollback
-work. It is the canonical vocabulary for those concepts; feature plans define delivery order and
+This reference defines the terms used by Dots networking, presentation, and rollback work. It is
+the canonical vocabulary for those concepts; feature plans define delivery order and
 the networking and observability guides describe current behavior.
 
 ## State ownership
@@ -13,13 +13,13 @@ authority, speculation, and drawing state.
 |---|---|---|---|
 | Authoritative World | Complete gameplay truth after one server tick. | Server | Current |
 | Latest replicated snapshot | Newest validated authority known by one client. It is historical when received. | `Dots::ClientRuntime` | Current |
-| Owned predicted state | Controlled-player state rebuilt from latest authority plus unacknowledged local inputs. | `Dots::ClientRuntime` | Current |
+| Owned predicted state | Owned projection of the complete Predicted World rebuilt from latest authority plus unacknowledged local inputs. | `Dots::ClientRuntime` | Current |
 | Local presentation state | Owned predicted state plus visual-only correction smoothing. | `Dots::Presentation` | Current |
 | Remote snapshot history | Accepted semantic entity snapshots retained for delayed sampling. | `Dots::RemotePresentation` | Feature 12 |
 | Remote presentation frame | Immutable remote entity states sampled between known historical endpoints. | `Dots::RemotePresentation` | Feature 12 |
 | Composed presentation frame | Local presentation combined with remote presentation, camera, and debug layers. | `Dots::Presentation` | Feature 12 |
-| Predicted World | Complete checkpoint replayed through retained immutable stimuli, including commands and recorded remote assumptions. | `MyCore::Rollback` timeline with `Dots::Prediction` model | Feature 14 |
-| Extrapolated presentation | Bounded visual-only advancement of replicated movement outside the predicted interaction closure. | `Dots::Presentation` | Feature 14 |
+| Predicted World | Complete checkpoint replayed through retained immutable stimuli, including commands and recorded remote assumptions. | `MyCore::Rollback` timeline with `Dots::Prediction` model | Current, Feature 14 step 6 |
+| Extrapolated presentation | Bounded visual-only advancement of replicated movement outside the predicted interaction closure. | `Dots::Presentation` | Planned, Feature 14 step 7 |
 | Confirmed consequence | Durable session or game result exposed only after authority reports it. | Server decision, client display | Feature 13+ |
 
 The server is authoritative even when a client runs matching code speculatively. Presentation
@@ -47,9 +47,11 @@ or grant the client authority.
 
 ### Local input prediction and reconciliation
 
-The controlled player applies its own input immediately, retains that input, then rebuilds from a
-newer authoritative base and replays the unacknowledged suffix. Simulation corrects immediately;
-only the displayed correction is smoothed. Feature 11 currently predicts only owned movement.
+The client applies its own input immediately to a complete interaction-closed Dots World, retains
+that input and its remote movement assumptions, then rebuilds from a newer authoritative
+checkpoint and replays the unacknowledged suffix. Simulation corrects immediately; only the
+displayed primary-position correction is smoothed. Feature 14 step 6 predicts movement and
+structural gameplay inside the closure; confirmed session transitions remain authoritative.
 
 ### Remote interpolation
 
@@ -66,7 +68,8 @@ without the client knowing. A later authoritative sample may therefore require a
 correction. This is not rollback unless the client also retained deterministic assumptions and
 replayed a simulation history.
 
-Feature 14 may advance remote movement/launch vectors outside its prediction closure for at most
+Feature 14 step 7 may advance remote movement/launch vectors outside its prediction closure for
+at most
 six ticks/200 ms and then hold. This is presentation-only: it cannot collide, consume, split,
 merge, seed a checkpoint, or influence closure construction. Feature 12 delayed interpolation
 remains the spectator, fallback, and comparison path. Extrapolation is not a replacement for
@@ -74,7 +77,7 @@ scalable replication.
 
 ### Complete rollback prediction
 
-Feature 14 predicts the fixed-point interaction closure around owned pieces by replaying a
+Feature 14 step 6 predicts the fixed-point interaction closure around owned pieces by replaying a
 complete Dots World from an authoritative checkpoint through the game-neutral rollback timeline.
 Remote held movement is an explicit recorded assumption; unknown edge actions are zero. A
 full-replicated profile remains an oracle/benchmark, and incomplete closure falls back to owned

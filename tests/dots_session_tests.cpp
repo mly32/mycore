@@ -1,4 +1,5 @@
 #include "dots/client_runtime/client_runtime.hpp"
+#include "dots/prediction/model.hpp"
 #include "dots/protocol/codec.hpp"
 #include "dots/server/server_runtime.hpp"
 #include "mycore/net_transport/net_transport.hpp"
@@ -72,7 +73,7 @@ void complete_protocol_fixture(dots::protocol::Message& message) {
         return;
     }
     auto* snapshot = std::get_if<dots::protocol::FullSnapshot>(&message);
-    if (snapshot == nullptr || !snapshot->owners.empty()) {
+    if (snapshot == nullptr) {
         return;
     }
     for (const auto& entity : snapshot->entities) {
@@ -91,6 +92,67 @@ void complete_protocol_fixture(dots::protocol::Message& message) {
               [](const dots::protocol::OwnerState& lhs, const dots::protocol::OwnerState& rhs) {
                   return lhs.owner_id < rhs.owner_id;
               });
+    auto next_entity_id = std::uint32_t{};
+    for (const auto& entity : snapshot->entities) {
+        next_entity_id = std::max(next_entity_id, entity.entity_id.value() + 1U);
+    }
+    snapshot->next_entity_id = dots::protocol::EntityId{next_entity_id};
+    dots::simulation::WorldCheckpoint checkpoint{
+        .rules = dots::simulation::WorldRules{},
+        .tick = mycore::time::Tick{snapshot->server_tick},
+        .next_entity_id = next_entity_id,
+        .owners = {},
+        .players = {},
+        .food = {},
+    };
+    for (const auto& owner : snapshot->owners) {
+        checkpoint.owners.push_back({
+            .owner_id = dots::simulation::PlayerOwnerId{owner.owner_id.value()},
+            .player_ids = {},
+            .movement = {owner.movement_x, owner.movement_y},
+            .last_non_zero_movement = {owner.last_non_zero_movement_x,
+                                       owner.last_non_zero_movement_y},
+            .last_input_id = dots::simulation::InputCommandId{owner.last_input_id.value()},
+            .split_cooldown_end_tick = mycore::time::Tick{owner.split_cooldown_end_tick},
+        });
+    }
+    for (const auto& entity : snapshot->entities) {
+        if (entity.kind == dots::protocol::EntityKind::Food) {
+            checkpoint.food.push_back({
+                .entity_id = dots::simulation::EntityId{entity.entity_id.value()},
+                .position = {entity.position_x, entity.position_y},
+            });
+            continue;
+        }
+        std::optional<dots::simulation::PredictionKey> prediction_key;
+        if (entity.prediction_key) {
+            prediction_key = dots::simulation::PredictionKey{
+                .owner_id =
+                    dots::simulation::PlayerOwnerId{entity.prediction_key->owner_id.value()},
+                .input_id =
+                    dots::simulation::InputCommandId{entity.prediction_key->input_id.value()},
+                .child_ordinal = entity.prediction_key->child_ordinal,
+            };
+        }
+        checkpoint.players.push_back({
+            .entity_id = dots::simulation::EntityId{entity.entity_id.value()},
+            .owner_id = dots::simulation::PlayerOwnerId{entity.owner_id.value()},
+            .position = {entity.position_x, entity.position_y},
+            .mass = entity.mass,
+            .launch_velocity = {entity.launch_velocity_x, entity.launch_velocity_y},
+            .merge_eligible_tick = mycore::time::Tick{entity.merge_eligible_tick},
+            .prediction_key = prediction_key,
+        });
+        const auto owner =
+            std::find_if(checkpoint.owners.begin(),
+                         checkpoint.owners.end(),
+                         [&entity](const dots::simulation::OwnerCheckpoint& candidate) {
+                             return candidate.owner_id.value() == entity.owner_id.value();
+                         });
+        REQUIRE(owner != checkpoint.owners.end());
+        owner->player_ids.push_back(dots::simulation::EntityId{entity.entity_id.value()});
+    }
+    snapshot->checkpoint_digest = dots::prediction::checkpoint_digest(checkpoint).value;
 }
 
 [[nodiscard]] std::vector<std::byte> encode_bytes(dots::protocol::Message message) {
@@ -278,6 +340,43 @@ TEST_CASE("Authoritative input moves only the owning player and is acknowledged"
     CHECK(second_entity->position_x == Catch::Approx(12.0F));
     CHECK(first.world().last_processed_input_id() == dots::protocol::InputSequenceId{0});
     CHECK_FALSE(second.world().last_processed_input_id().is_valid());
+}
+
+TEST_CASE("Network client predicts split topology before authoritative confirmation",
+          "[dots][session][prediction][split]") {
+    mycore::net_transport::InMemoryNetwork network;
+    dots::server::Runtime server{network.server_endpoint()};
+    dots::client_runtime::Runtime client{network.connect_client()};
+    complete_handshake(client, server);
+
+    REQUIRE(client.predicted_world() != nullptr);
+    REQUIRE(client.predicted_world()->player_count() == 1);
+    REQUIRE(client.send_input(0, {1.0F, 0.0F}, dots::protocol::kSplitActionBit) ==
+            dots::client_runtime::InputSendResult::Sent);
+
+    REQUIRE(client.predicted_world()->player_count() == 2);
+    REQUIRE(client.predicted_owned_entity_ids().size() == 2);
+    CHECK(client.world().recipient().owned_entity_ids.size() == 1);
+    const auto* authoritative_parent = client.world().find(client.primary_entity_id());
+    REQUIRE(authoritative_parent != nullptr);
+    const auto predicted_child =
+        dots::simulation::EntityId{client.predicted_owned_entity_ids()[1].value()};
+    CHECK(client.predicted_world()->prediction_key(predicted_child) ==
+          dots::simulation::PredictionKey{
+              .owner_id = dots::simulation::PlayerOwnerId{authoritative_parent->owner_id.value()},
+              .input_id = dots::simulation::InputCommandId{0},
+              .child_ordinal = 0,
+          });
+
+    REQUIRE_FALSE(server.process_events().has_value());
+    REQUIRE_FALSE(server.step().has_value());
+    REQUIRE_FALSE(server.step().has_value());
+    REQUIRE_FALSE(client.process_events().has_value());
+
+    REQUIRE(client.world().recipient().owned_entity_ids.size() == 2);
+    REQUIRE(client.predicted_world() != nullptr);
+    CHECK(client.predicted_world()->player_count() == 2);
+    CHECK(client.predicted_owned_entity_ids().size() == 2);
 }
 
 TEST_CASE("Protocol version 4 split receipts repeat until the client acknowledges them",

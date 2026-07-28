@@ -125,6 +125,7 @@ target_link_libraries(
     dots_session_tests
     PRIVATE
         Dots::ClientRuntime
+        Dots::Prediction
         Dots::Server
         Catch2::Catch2WithMain
 )

@@ -16,12 +16,13 @@ but this guide must clearly distinguish implemented behavior from planned behavi
 
 This document uses three status labels:
 
-- **Current:** Feature 11 owned prediction/reconciliation, Feature 12 remote
-  interpolation-and-hold, and Feature 13's authoritative absorption/session lifecycle are
-  implemented. Feature 13's follow/free spectator presentation and authoritative Gameplay output
-  are also implemented.
-- **Feature 14 planned:** game-neutral rollback timeline, interaction-closed Dots prediction, and
-  Rollback output specified in
+- **Current:** Feature 14 step 6 complete-World prediction/reconciliation, Feature 12 remote
+  interpolation-and-hold outside the prediction closure, and Feature 13's authoritative
+  absorption/session lifecycle are implemented. Feature 13's follow/free spectator presentation
+  and authoritative Gameplay output are also implemented.
+- **Feature 14 remaining:** persistent consequences, bounded outside-closure extrapolation,
+  structural transition presentation, adaptive command cadence, and complete Rollback output
+  specified in
   [`plans/14-selectable-world-rollback.md`](plans/14-selectable-world-rollback.md) and
   [`rollback_prediction_design.md`](rollback_prediction_design.md).
 
@@ -37,8 +38,8 @@ Networking debug output is useful only when the state being measured is named pr
 | Authoritative world | The complete gameplay `simulation::World` stepped by the server. | Server only |
 | Authoritative sample | State copied from the server into a snapshot. It is historical when the client receives it. | Protocol/replication |
 | Latest replicated snapshot | The newest validated authoritative sample installed by a client. | Client runtime |
-| Predicted state | Feature 11 controlled-player state advanced locally from owned input. | Client runtime |
-| Predicted World | Feature 14 complete gameplay state restored from a checkpoint and replayed through an interaction closure and recorded assumptions. | Planned `MyCore::Rollback` timeline with Dots model |
+| Predicted state | Owned projection of the complete predicted World advanced locally from owned input. | Client runtime |
+| Predicted World | Complete gameplay state restored from a verified checkpoint and replayed through an interaction closure and recorded assumptions. | Current `MyCore::Rollback` timeline with Dots model |
 | Pre-correction state | Prediction immediately before a nonzero reconciliation correction. | Client runtime debug history |
 | Presentation state | The transient positions and geometry submitted for drawing. | Dots presentation/client app |
 | Interpolated remote state | Presentation sampled between two known remote snapshot states. | Feature 12 presentation |
@@ -70,8 +71,9 @@ server “now,” or `remote presentation time` when describing the delayed scen
 aligned with the scene should use remote presentation time. A match timer may display an estimated
 server deadline locally, but only the server decides whether the deadline has passed.
 
-Reconciliation never rewinds client session time or the server timeline. It rebuilds only owned
-predicted state from a newer authoritative base and then smooths the visible correction. Feature
+Reconciliation never rewinds client session time or the server timeline. It rebuilds only the
+scoped predicted World from a newer authoritative base and then smooths the visible
+primary-position correction. Feature
 12 presentation-cursor recovery is likewise not authoritative gameplay rollback.
 
 ### Compensation clock status
@@ -82,10 +84,10 @@ presentation countdown and does not add a general live-server clock. It never dr
 eligibility, prediction, reconciliation, or simulation; the server's current tick remains the
 only eligibility decision.
 
-Feature 11 does not estimate live server time. Owned prediction uses local input steps and server
-ACKs; reconciliation replays the retained input suffix; correction smoothing decays a spatial
-offset over a fixed 100 ms of local steady time. Network conditions can change correction
-frequency and magnitude, but not that duration.
+Feature 14 prediction does not estimate live server time. The timeline uses local input steps,
+recorded remote movement assumptions, and server ACKs; reconciliation replays the retained input
+suffix; correction smoothing decays a spatial offset over a fixed 100 ms of local steady time.
+Network conditions can change correction frequency and magnitude, but not that duration.
 
 Feature 12 also does not estimate or render server “now.” Its remote presentation cursor
 uses server ticks and targets `newest received tick - 6`. It advances at 100% speed within a
@@ -249,19 +251,27 @@ mean the zones were removed.
 
 ## Prediction and Reconciliation Output — Current
 
-`Dots::ClientRuntime` currently predicts controlled-player movement immediately after each
-successful input send. Every newer snapshot is validated in scratch state, the acknowledged
-history prefix is discarded, and at most 256 remaining inputs are replayed in the same client
-frame before replicated and predicted state commit together. The graphical client draws the
-controlled player and follows it with the camera from one presentation position: corrected
-prediction plus the current visual-only smoothing offset. Remote entities still draw from the
-delayed Feature 12 remote presentation frame.
+`Dots::ClientRuntime` currently predicts a complete interaction-closed World immediately after
+each successful input send. Every newer snapshot is validated and digest-checked, the
+acknowledged history prefix is discarded, and at most 256 remaining inputs are replayed with
+their recorded remote assumptions in the same client frame before replicated and predicted state
+commit together. A scope-membership change rebuilds from newest authority under a new epoch
+because old stimuli contain no assumptions for newly admitted entities.
 
-The runtime exposes `predicted_position()`, `pre_correction_position()`,
-`latest_replay_path()`, `latest_correction_replay_path()`, and `prediction_statistics()`.
+The graphical client draws all predicted food and player topology inside that interaction island;
+duplicates are removed from the delayed Feature 12 frame. The controlled primary and camera use
+corrected prediction plus the current visual-only smoothing offset. Remote entities outside the
+island remain interpolated and hold on underrun.
+
+The runtime exposes `predicted_world()`, `predicted_primary_entity_id()`,
+`predicted_owned_entity_ids()`, `predicted_scope_entity_ids()`,
+`latest_prediction_identity_remaps()`,
+`predicted_position()`, `pre_correction_position()`, `latest_replay_path()`,
+`latest_correction_replay_path()`, and `prediction_statistics()`.
 `pre_correction_position()` and the correction-specific replay path update only after a nonzero
 correction. Presentation copies them for two seconds of visual retention. A history-capacity hard
-resync clears prediction history, smoothing, and retained correction visuals.
+resync clears prediction history and rebuilds the timeline from the newest verified checkpoint;
+presentation smoothing and retained correction visuals reset.
 
 The **Network** tab's Session section shows:
 
@@ -286,12 +296,12 @@ The **Prediction** tab rows are:
 | Rollback base | Snapshot ID, server tick, and ACK used for the latest successful reconciliation. |
 | Replay count | Latest, lifetime-total, and runtime-maximum numbers of inputs replayed after installing an authoritative base. |
 | Replay duration | Latest, last-120-reconciliation average, and runtime maximum scratch-replay/commit CPU duration in milliseconds. |
-| Reconciliation count | Newer accepted snapshots processed after prediction became ready. |
+| Reconciliation count | Newer accepted checkpoints reconciled after the complete timeline became ready. |
 | Correction count | Reconciliations whose final prediction moved by more than `0.0001` world units. |
 | Correction distance | Latest and runtime-maximum distance between prediction before reconciliation and the fully replayed result. |
 | Corrections/min | Count of nonzero corrections in the trailing 60 seconds of the client steady clock. |
 | Replay over budget | Lifetime count of reconciliations exceeding 2 ms; warnings are rate-limited to once per five seconds. |
-| Hard resync | Lifetime count of full-ring recoveries that snap prediction to the newest replicated controlled-player sample and clear history/debug replay state. |
+| Hard resync | Lifetime count of full-ring recoveries that rebuild prediction from the newest verified authoritative checkpoint and clear retained input/debug replay state. |
 | Smoothing offset | Current presentation-only displacement vector and magnitude. It decays linearly to zero over 100 ms without modifying predicted state. |
 | Injected faults | Pending/total client-only packet drops and the number of explicit prediction-error injections. These do not alter transport loss metrics. |
 
@@ -304,7 +314,7 @@ history utilization green below 50%, yellow at 50%, orange at 75%, and red at 90
 
 | Visual | Meaning |
 |---|---|
-| Filled player | Actual presented position and camera target. |
+| Filled player/food | Predicted interaction-island topology combined with interpolated outside-closure entities; the primary uses its smoothed presentation position. |
 | White outline | Corrected predicted simulation position. |
 | Orange outline | Latest received authoritative sample. It is historical, not the server's live position. |
 | Magenta outline | Prediction immediately before the most recent nonzero correction. |
@@ -403,10 +413,11 @@ until both a deadline and snapshot-age anchor exist. The tab labels the estimate
 presentation-only because a local `eligible` display can precede the server receiving or accepting
 a request.
 
-## Complete Rollback Output — Feature 14 Planned
+## Complete Rollback Output — Remaining Feature 14 Work
 
-Feature 14 adds a separate **Rollback** tab while retaining Feature 11 Prediction and Feature 12
-interpolation diagnostics for comparison.
+Feature 14 step 6 runs the complete rollback path while retaining the existing **Prediction** and
+Feature 12 interpolation diagnostics. A separate **Rollback** tab and the complete fields below
+remain planned for step 8.
 
 | Field | Meaning |
 |---|---|
@@ -448,9 +459,9 @@ implementation exists; the decision thresholds and atomic-commit invariants live
 
 ### High RTT but fresh snapshots
 
-The connection has network travel time, but snapshot delivery remains regular. Feature 11 local
-prediction should hide input response latency; Feature 12 intentionally keeps remotes behind the
-newest snapshot.
+The connection has network travel time, but snapshot delivery remains regular. Complete local
+prediction should hide input response latency; Feature 12 intentionally keeps outside-closure
+remotes behind the newest snapshot.
 
 ### Snapshot age rises while transport remains connected
 
@@ -460,14 +471,14 @@ decode/rejection logs, and server health. Transport state alone does not prove r
 ### Command lead and server input queue grow together
 
 The client is producing input faster than the server consumes it, the server is overloaded, or
-clock drift is accumulating. Feature 11 observes this trend but does not speed or slow local
-simulation.
+clock drift is accumulating. The current fixed command cadence observes this trend but does not
+speed or slow local simulation; adaptive cadence remains Feature 14 step 8 work.
 
 ### Frequent corrections with low loss
 
-Check shared movement operations, tick application order, ACK semantics, collision/mass events
-that are intentionally not predicted, and floating-point divergence. Use the orange, magenta,
-white, and replay markers to identify where states first disagree.
+Check shared tick order, ACK semantics, prediction-scope membership, recorded remote movement
+assumptions, and floating-point divergence. Use the orange, magenta, white, and replay markers to
+identify where states first disagree.
 
 ### Smoothing offset never settles
 
@@ -540,13 +551,13 @@ Use impairment to answer a specific question:
 
 - Prediction responsiveness: add RTT, move the local player, and compare prediction with the
   latest authoritative sample.
-- Reconciliation: use Feature 11 injected error or packet drops and inspect replay/correction
-  output.
+- Reconciliation: use the injected error or packet drops and inspect replay/correction output.
 - Redundancy: compare the same drop schedule with redundancy enabled and disabled.
 - Remote interpolation: vary loss/jitter schedules and inspect known endpoints, buffer coverage,
   cursor rate, and holds.
-- Complete rollback: after Feature 14 lands, compare prediction profiles and inspect replay,
-  structural divergence, command-buffer, and state-layer output under identical impairment.
+- Complete rollback: exercise split and contested interactions and inspect replay/correction
+  output under identical impairment. Profile comparison, structural metrics, and command-buffer
+  output arrive with the remaining Rollback diagnostics.
 
 Random transport loss is useful for play testing. Deterministic tests should use controlled
 arrival schedules so correction and buffer metrics have exact expected values.

@@ -296,6 +296,7 @@ void validate_binding_conflicts(const ClientConfig& config, const std::filesyste
         BindingView{"down", &config.controls.bindings.down},
         BindingView{"left", &config.controls.bindings.left},
         BindingView{"right", &config.controls.bindings.right},
+        BindingView{"split", &config.controls.bindings.split},
         BindingView{"follow", &config.controls.bindings.follow},
         BindingView{"respawn", &config.controls.bindings.respawn},
         BindingView{"zoom_in", &config.controls.bindings.zoom_in},
@@ -404,11 +405,19 @@ void parse_input(const toml::table& table,
 void parse_bindings(const toml::table& table,
                     ClientConfig& config,
                     const std::filesystem::path& source) {
-    validate_keys(
-        table,
-        {"up", "down", "left", "right", "follow", "respawn", "zoom_in", "zoom_out", "quit"},
-        source,
-        "bindings");
+    validate_keys(table,
+                  {"up",
+                   "down",
+                   "left",
+                   "right",
+                   "split",
+                   "follow",
+                   "respawn",
+                   "zoom_in",
+                   "zoom_out",
+                   "quit"},
+                  source,
+                  "bindings");
     if (table.contains("up")) {
         config.controls.bindings.up = read_binding(table, "up", source, "bindings.up");
     }
@@ -420,6 +429,9 @@ void parse_bindings(const toml::table& table,
     }
     if (table.contains("right")) {
         config.controls.bindings.right = read_binding(table, "right", source, "bindings.right");
+    }
+    if (table.contains("split")) {
+        config.controls.bindings.split = read_binding(table, "split", source, "bindings.split");
     }
     if (table.contains("follow")) {
         config.controls.bindings.follow = read_binding(table, "follow", source, "bindings.follow");
@@ -594,6 +606,7 @@ ClientConfig default_client_config() {
         .down = {Key::S, Key::Down},
         .left = {Key::A, Key::Left},
         .right = {Key::D, Key::Right},
+        .split = {Key::Space},
         .follow = {Key::F},
         .respawn = {Key::R, Key::Enter},
         .zoom_in = {Key::PageUp},

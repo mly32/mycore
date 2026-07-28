@@ -169,6 +169,17 @@
             "$ref": "#/definitions/physicalKey"
           }
         },
+        "split": {
+          "description": "Keys that request one predicted and authoritative split edge while playing.",
+          "type": "array",
+          "minItems": 1,
+          "default": [
+            "Space"
+          ],
+          "items": {
+            "$ref": "#/definitions/physicalKey"
+          }
+        },
         "follow": {
           "description": "Keys that toggle between the confirmed killer and the free camera while spectating.",
           "type": "array",
