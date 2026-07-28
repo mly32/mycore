@@ -343,6 +343,23 @@
               "pattern": "^(?:[iI][nN][tT][eE][rR][pP][oO][lL][aA][tT][eE][dD]|[fF][iI][xX][eE][dD]|[cC][oO][mM][pP][aA][rR][iI][sS][oO][nN])$"
             }
           ]
+        },
+        "prediction_log_level": {
+          "description": "Prediction-category log detail. Off suppresses scope/reconciliation details, info logs scope changes, and debug also logs comparable remote corrections. Names are case-insensitive.",
+          "type": "string",
+          "default": "off",
+          "anyOf": [
+            {
+              "enum": [
+                "off",
+                "info",
+                "debug"
+              ]
+            },
+            {
+              "pattern": "^(?:[oO][fF][fF]|[iI][nN][fF][oO]|[dD][eE][bB][uU][gG])$"
+            }
+          ]
         }
       }
     },

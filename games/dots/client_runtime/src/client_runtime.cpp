@@ -32,10 +32,11 @@ constexpr auto kReplayBudget = std::chrono::milliseconds{2};
 constexpr auto kWarningInterval = std::chrono::seconds{5};
 constexpr std::size_t kReplayDurationSampleCapacity = 120;
 constexpr auto kInitialScopeEpoch = mycore::rollback::ScopeEpoch{0};
+constexpr auto kPredictionScopeHorizonFloor = mycore::time::TickDelta{5};
 
 [[nodiscard]] mycore::time::TickDelta replay_horizon(std::size_t input_count) noexcept {
     return mycore::time::TickDelta{
-        std::max(std::uint64_t{1}, static_cast<std::uint64_t>(input_count))};
+        std::max(kPredictionScopeHorizonFloor.value(), static_cast<std::uint64_t>(input_count))};
 }
 
 [[nodiscard]] constexpr std::string_view
@@ -145,6 +146,48 @@ struct PredictedProjection {
     std::optional<mycore::math::Vector2> position;
 };
 
+struct RemotePlayerDisplacement {
+    simulation::EntityId entity_id;
+    mycore::math::Vector2 previous;
+    mycore::math::Vector2 current;
+    float distance{};
+};
+
+[[nodiscard]] std::optional<RemotePlayerDisplacement>
+maximum_remote_player_displacement(const simulation::WorldCheckpoint& previous,
+                                   const simulation::WorldCheckpoint& current,
+                                   simulation::PlayerOwnerId owned_owner_id) {
+    std::optional<RemotePlayerDisplacement> result;
+    auto previous_index = std::size_t{};
+    auto current_index = std::size_t{};
+    while (previous_index < previous.players.size() && current_index < current.players.size()) {
+        const auto& old_player = previous.players[previous_index];
+        const auto& new_player = current.players[current_index];
+        if (old_player.entity_id < new_player.entity_id) {
+            ++previous_index;
+            continue;
+        }
+        if (new_player.entity_id < old_player.entity_id) {
+            ++current_index;
+            continue;
+        }
+        if (new_player.owner_id != owned_owner_id) {
+            const auto distance = mycore::math::length(old_player.position - new_player.position);
+            if (!result || distance > result->distance) {
+                result = RemotePlayerDisplacement{
+                    .entity_id = new_player.entity_id,
+                    .previous = old_player.position,
+                    .current = new_player.position,
+                    .distance = distance,
+                };
+            }
+        }
+        ++previous_index;
+        ++current_index;
+    }
+    return result;
+}
+
 [[nodiscard]] std::optional<mycore::rollback::CommandSequence>
 command_sequence(protocol::InputSequenceId input_id) noexcept {
     if (!input_id.is_valid()) {
@@ -180,9 +223,10 @@ command_sequence(protocol::InputSequenceId input_id) noexcept {
            current.requested_mechanics == required.requested_mechanics &&
            current.mechanics == required.mechanics &&
            current.required_domains == required.required_domains &&
-           current.required_causal_channels == required.required_causal_channels &&
+           (current.required_causal_channels & required.required_causal_channels) ==
+               required.required_causal_channels &&
            current.owned_owner_ids == required.owned_owner_ids &&
-           current.owner_ids == required.owner_ids && current.rules == required.rules &&
+           contains_all(current.owner_ids, required.owner_ids) && current.rules == required.rules &&
            contains_all(current.player_ids, required.player_ids) &&
            contains_all(current.food_ids, required.food_ids);
 }
@@ -603,6 +647,12 @@ public:
             .history_count = input_history_.size(),
             .history_capacity = kPredictionHistoryCapacity,
             .history_high_water_mark = history_high_water_mark_,
+            .scope_epoch = 0,
+            .scope_replay_horizon_ticks = 0,
+            .scope_owner_count = 0,
+            .scope_player_count = 0,
+            .scope_food_count = 0,
+            .scope_rebase_count = scope_rebase_count_,
             .latest_server_pending_input_count = world_.pending_input_count(),
             .server_pending_input_high_water_mark = server_pending_input_high_water_mark_,
             .rollback_snapshot_id = rollback_snapshot_id_,
@@ -627,6 +677,14 @@ public:
             .injected_input_drop_count = injected_input_drop_count_,
             .injected_prediction_error_count = injected_prediction_error_count_,
         };
+        if (timeline_ && timeline_->scope()) {
+            const auto& scope = *timeline_->scope();
+            result.scope_epoch = scope.scope_epoch.value();
+            result.scope_replay_horizon_ticks = scope.replay_horizon.value();
+            result.scope_owner_count = scope.owner_ids.size();
+            result.scope_player_count = scope.player_ids.size();
+            result.scope_food_count = scope.food_ids.size();
+        }
         if (next_input_id_ > 0) {
             result.last_input_sent = protocol::InputSequenceId{next_input_id_ - 1U};
             const auto acknowledgement = result.last_input_acknowledged;
@@ -825,9 +883,41 @@ private:
         return simulation::PlayerOwnerId{controlled->owner_id.value()};
     }
 
-    [[nodiscard]] prediction::TickStimulus make_stimulus(const prediction::Timeline& timeline,
-                                                         const protocol::InputSample& sample,
-                                                         simulation::PlayerOwnerId owner_id) const {
+    [[nodiscard]] static std::optional<std::vector<prediction::HeldMovementAssumption>>
+    remote_movement_assumptions(const simulation::WorldCheckpoint& checkpoint,
+                                std::span<const simulation::PlayerOwnerId> owned_owner_ids,
+                                const simulation::WorldCheckpoint& movement_authority) {
+        std::vector<prediction::HeldMovementAssumption> result;
+        result.reserve(checkpoint.owners.size());
+        for (const auto& owner : checkpoint.owners) {
+            if (contains(owned_owner_ids, owner.owner_id)) {
+                continue;
+            }
+            const auto authoritative_owner = std::lower_bound(
+                movement_authority.owners.begin(),
+                movement_authority.owners.end(),
+                owner.owner_id,
+                [](const simulation::OwnerCheckpoint& candidate, simulation::PlayerOwnerId id) {
+                    return candidate.owner_id < id;
+                });
+            if (authoritative_owner == movement_authority.owners.end() ||
+                authoritative_owner->owner_id != owner.owner_id) {
+                return std::nullopt;
+            }
+            result.push_back({
+                .owner_id = owner.owner_id,
+                .source_tick = movement_authority.tick,
+                .movement = authoritative_owner->movement,
+            });
+        }
+        return result;
+    }
+
+    [[nodiscard]] std::optional<prediction::TickStimulus>
+    make_stimulus(const prediction::Timeline& timeline,
+                  const protocol::InputSample& sample,
+                  simulation::PlayerOwnerId owner_id,
+                  const simulation::WorldCheckpoint& movement_authority) const {
         prediction::TickStimulus result;
         result.commands.push_back({
             .type = simulation::TickCommandType::ApplyInput,
@@ -836,23 +926,39 @@ private:
             .movement = {sample.movement_x, sample.movement_y},
             .split_requested = (sample.action_bits & protocol::kSplitActionBit) != 0U,
         });
-        const auto checkpoint = timeline.state()->checkpoint();
-        for (const auto& owner : checkpoint.owners) {
-            if (contains(timeline.scope()->owned_owner_ids, owner.owner_id)) {
-                continue;
-            }
-            result.remote_movement_assumptions.push_back({
-                .owner_id = owner.owner_id,
-                .source_tick = timeline.authoritative_tick(),
-                .movement = owner.movement,
-            });
+        auto assumptions = remote_movement_assumptions(
+            timeline.state()->checkpoint(), timeline.scope()->owned_owner_ids, movement_authority);
+        if (!assumptions) {
+            return std::nullopt;
         }
+        result.remote_movement_assumptions = std::move(*assumptions);
         return result;
     }
 
-    [[nodiscard]] TimelineAdvanceResult advance_timeline(prediction::Timeline& timeline,
-                                                         const protocol::InputSample& sample,
-                                                         simulation::PlayerOwnerId owner_id) const {
+    [[nodiscard]] static std::variant<prediction::TickStimulus, prediction::PredictionError>
+    refresh_remote_assumptions(const prediction::TickStimulus& previous,
+                               const simulation::World& replay_state,
+                               const prediction::PredictionScope& scope,
+                               const simulation::WorldCheckpoint& movement_authority) {
+        auto refreshed = previous;
+        auto assumptions = remote_movement_assumptions(
+            replay_state.checkpoint(), scope.owned_owner_ids, movement_authority);
+        if (!assumptions) {
+            return prediction::PredictionError{
+                .code = prediction::PredictionErrorCode::InvalidStimulus,
+                .checkpoint_error = std::nullopt,
+                .tick_error = std::nullopt,
+            };
+        }
+        refreshed.remote_movement_assumptions = std::move(*assumptions);
+        return refreshed;
+    }
+
+    [[nodiscard]] TimelineAdvanceResult
+    advance_timeline(prediction::Timeline& timeline,
+                     const protocol::InputSample& sample,
+                     simulation::PlayerOwnerId owner_id,
+                     const simulation::WorldCheckpoint& movement_authority) const {
         const auto checkpoint = timeline.state()->checkpoint();
         const auto live_owner = std::lower_bound(
             checkpoint.owners.begin(),
@@ -864,9 +970,12 @@ private:
         if (live_owner == checkpoint.owners.end() || live_owner->owner_id != owner_id) {
             return TimelineAdvanceResult::Deferred;
         }
-        const auto advanced =
-            timeline.advance(mycore::rollback::CommandSequence{sample.sequence_id.value()},
-                             make_stimulus(timeline, sample, owner_id));
+        const auto stimulus = make_stimulus(timeline, sample, owner_id, movement_authority);
+        if (!stimulus) {
+            return TimelineAdvanceResult::Failed;
+        }
+        const auto advanced = timeline.advance(
+            mycore::rollback::CommandSequence{sample.sequence_id.value()}, *stimulus);
         return std::holds_alternative<prediction::Commit>(advanced)
                    ? TimelineAdvanceResult::Advanced
                    : TimelineAdvanceResult::Failed;
@@ -979,6 +1088,10 @@ private:
             timeline_ && timeline_->state()
                 ? std::optional<simulation::WorldCheckpoint>{timeline_->state()->checkpoint()}
                 : std::nullopt;
+        const auto previous_scope =
+            timeline_ && timeline_->scope()
+                ? std::optional<prediction::PredictionScope>{*timeline_->scope()}
+                : std::nullopt;
         const auto previous_prediction = predicted_position_;
         auto authority_events = new_authority_events(candidate_world);
         const prediction::AuthorityFrame frame{
@@ -995,7 +1108,14 @@ private:
         };
         if (!rebuild && timeline_->authoritative_tick() < frame.tick) {
             scratch_timeline = *timeline_;
-            const auto reconciled = scratch_timeline.reconcile(frame);
+            const auto reconciled = scratch_timeline.reconcile_with_stimulus_refresh(
+                frame,
+                [authority](mycore::rollback::CommandSequence,
+                            const prediction::TickStimulus& previous,
+                            const simulation::World& replay_state,
+                            const prediction::PredictionScope& scope) {
+                    return refresh_remote_assumptions(previous, replay_state, scope, *authority);
+                });
             if (!std::holds_alternative<prediction::Commit>(reconciled)) {
                 return RuntimeError::PredictionTimelineFailed;
             }
@@ -1022,7 +1142,8 @@ private:
             if (last_timeline_sequence.is_valid() && sample.sequence_id <= last_timeline_sequence) {
                 continue;
             }
-            const auto advance_result = advance_timeline(scratch_timeline, sample, *owner);
+            const auto advance_result =
+                advance_timeline(scratch_timeline, sample, *owner, *authority);
             if (advance_result == TimelineAdvanceResult::Failed) {
                 return RuntimeError::PredictionTimelineFailed;
             }
@@ -1053,6 +1174,7 @@ private:
         const auto nonzero_correction = correction_distance > kCorrectionTolerance;
 
         timeline_ = std::move(scratch_timeline);
+        latest_authority_checkpoint_ = *authority;
         input_history_ = scratch_history;
         confirmed_owner_id_ = *owner;
         predicted_owned_entity_ids_ = projection.owned_entity_ids;
@@ -1062,6 +1184,53 @@ private:
         prediction_debug_offset_ = {};
         latest_prediction_identity_remaps_ = std::move(*remaps);
         latest_replay_path_ = std::move(scratch_replay_path);
+        if (previous_scope && previous_scope->scope_epoch != selected_scope.scope_epoch) {
+            ++scope_rebase_count_;
+            if (settings_.log_prediction_scope_changes) {
+                mycore::debug::log_info(
+                    "dots.client.prediction.scope",
+                    "Scope rebase {} -> {} at snapshot {} tick {} for {} retained inputs: "
+                    "horizon {} -> {}, owners {} -> {}, players {} -> {}, food {} -> {}",
+                    previous_scope->scope_epoch.value(),
+                    selected_scope.scope_epoch.value(),
+                    candidate_world.snapshot_id().value(),
+                    candidate_world.server_tick(),
+                    input_history_.size(),
+                    previous_scope->replay_horizon.value(),
+                    selected_scope.replay_horizon.value(),
+                    previous_scope->owner_ids.size(),
+                    selected_scope.owner_ids.size(),
+                    previous_scope->player_ids.size(),
+                    selected_scope.player_ids.size(),
+                    previous_scope->food_ids.size(),
+                    selected_scope.food_ids.size());
+            }
+        }
+        if (settings_.log_prediction_reconciliation_details && previous_checkpoint) {
+            if (const auto displacement = maximum_remote_player_displacement(
+                    *previous_checkpoint, current_checkpoint, *owner);
+                displacement && displacement->distance > kCorrectionTolerance) {
+                mycore::debug::log_info(
+                    "dots.client.prediction.reconciliation",
+                    "{} at snapshot {} authority tick {} moved predicted head {} -> {}; remote "
+                    "entity {} ({:.3f}, {:.3f}) -> ({:.3f}, {:.3f}), delta {:.3f}, "
+                    "same-head-tick {}, retained inputs {}",
+                    reason == AuthorityInstallReason::ScopeRebase ? "Scope rebase"
+                                                                  : "Authority reconciliation",
+                    candidate_world.snapshot_id().value(),
+                    candidate_world.server_tick(),
+                    previous_checkpoint->tick.value(),
+                    current_checkpoint.tick.value(),
+                    displacement->entity_id.value(),
+                    displacement->previous.x,
+                    displacement->previous.y,
+                    displacement->current.x,
+                    displacement->current.y,
+                    displacement->distance,
+                    previous_checkpoint->tick == current_checkpoint.tick ? "YES" : "NO",
+                    input_history_.size());
+            }
+        }
         if (nonzero_correction) {
             pre_correction_position_ = previous_prediction;
             latest_correction_replay_path_ = latest_replay_path_;
@@ -1114,10 +1283,11 @@ private:
 
     [[nodiscard]] std::optional<RuntimeError>
     advance_prediction(const protocol::InputSample& sample) {
-        if (!timeline_ || !confirmed_owner_id_.is_valid()) {
+        if (!timeline_ || !latest_authority_checkpoint_ || !confirmed_owner_id_.is_valid()) {
             return RuntimeError::PredictionTimelineFailed;
         }
-        const auto result = advance_timeline(*timeline_, sample, confirmed_owner_id_);
+        const auto result = advance_timeline(
+            *timeline_, sample, confirmed_owner_id_, *latest_authority_checkpoint_);
         if (result == TimelineAdvanceResult::Failed) {
             return RuntimeError::PredictionTimelineFailed;
         }
@@ -1251,6 +1421,7 @@ private:
     void clear_prediction_state() noexcept {
         input_history_.clear();
         timeline_.reset();
+        latest_authority_checkpoint_.reset();
         confirmed_owner_id_ = {};
         predicted_primary_entity_id_ = {};
         predicted_owned_entity_ids_.clear();
@@ -1332,6 +1503,7 @@ private:
     std::optional<std::uint32_t> last_sent_client_tick_;
     PredictionHistory input_history_;
     std::optional<prediction::Timeline> timeline_;
+    std::optional<simulation::WorldCheckpoint> latest_authority_checkpoint_;
     simulation::PlayerOwnerId confirmed_owner_id_;
     protocol::EntityId predicted_primary_entity_id_;
     std::vector<protocol::EntityId> predicted_owned_entity_ids_;
@@ -1356,6 +1528,7 @@ private:
     std::size_t replay_duration_next_index_{};
     std::size_t replay_duration_sample_count_{};
     std::uint64_t reconciliation_count_{};
+    std::uint64_t scope_rebase_count_{};
     std::uint64_t nonzero_correction_count_{};
     float latest_correction_distance_{};
     float maximum_correction_distance_{};

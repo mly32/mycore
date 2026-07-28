@@ -61,6 +61,7 @@ struct ToyCheckpoint {
 
 struct ToyStimulus {
     int delta{};
+    int derived_delta{};
     std::optional<ToyEventKey> pulse_key;
     std::optional<ToyEventKey> notice_key;
     int fail_at_or_above{std::numeric_limits<int>::max()};
@@ -105,7 +106,7 @@ struct ToyModel {
             return Error::StepRejected;
         }
 
-        state.value += stimulus.delta * scope.multiplier;
+        state.value += (stimulus.delta + stimulus.derived_delta) * scope.multiplier;
         state.tick += mycore::time::TickDelta{1};
 
         std::vector<Event> events;
@@ -374,6 +375,36 @@ TEST_CASE("Rollback reconciliation restores authority and replays the unacknowle
     REQUIRE(timeline.statistics().replayed_frame_count == 2);
 }
 
+TEST_CASE("Rollback reconciliation can atomically refresh derived replay stimuli",
+          "[rollback][timeline][stimulus]") {
+    Timeline timeline{ToyModel{}};
+    REQUIRE(std::holds_alternative<Commit>(timeline.initialize(authority(0, 0), ToyScope{})));
+    REQUIRE(std::holds_alternative<Commit>(timeline.advance(sequence(1), ToyStimulus{.delta = 1})));
+    REQUIRE(std::holds_alternative<Commit>(timeline.advance(sequence(2), ToyStimulus{.delta = 2})));
+
+    const auto reconciled = timeline.reconcile_with_stimulus_refresh(
+        authority(1, 10, sequence(1)),
+        [](mycore::rollback::CommandSequence command,
+           const ToyStimulus& previous,
+           const ToyState& state,
+           const ToyScope&) -> std::variant<ToyStimulus, ToyError> {
+            REQUIRE(command == sequence(2));
+            REQUIRE(previous.delta == 2);
+            REQUIRE(state.value == 10);
+            auto refreshed = previous;
+            refreshed.derived_delta = 20;
+            return refreshed;
+        });
+    const auto& commit = require_commit(reconciled);
+
+    REQUIRE(commit.kind == mycore::rollback::CommitKind::Reconcile);
+    REQUIRE(commit.replayed_frame_count == 1);
+    REQUIRE(timeline.state()->value == 32);
+    REQUIRE(timeline.history().size() == 1);
+    REQUIRE(timeline.history().front().stimulus.delta == 2);
+    REQUIRE(timeline.history().front().stimulus.derived_delta == 20);
+}
+
 TEST_CASE("Failed scratch replay does not mutate committed rollback state",
           "[rollback][timeline]") {
     Timeline timeline{ToyModel{}};
@@ -396,6 +427,26 @@ TEST_CASE("Failed scratch replay does not mutate committed rollback state",
     REQUIRE(timeline.authoritative_tick() == mycore::time::Tick{0});
     REQUIRE(timeline.predicted_tick() == mycore::time::Tick{1});
     REQUIRE(timeline.history().size() == 1);
+
+    Timeline refresh_timeline{ToyModel{}};
+    REQUIRE(
+        std::holds_alternative<Commit>(refresh_timeline.initialize(authority(0, 0), ToyScope{})));
+    REQUIRE(std::holds_alternative<Commit>(
+        refresh_timeline.advance(sequence(1), ToyStimulus{.delta = 1})));
+    const auto refresh_failure = refresh_timeline.reconcile_with_stimulus_refresh(
+        authority(1, 10),
+        [](mycore::rollback::CommandSequence, const ToyStimulus&, const ToyState&, const ToyScope&)
+            -> std::variant<ToyStimulus, ToyError> {
+            return ToyError::StepRejected;
+        });
+    REQUIRE(require_failure(refresh_failure).code ==
+            mycore::rollback::TimelineErrorCode::StimulusRefreshFailed);
+    REQUIRE(mycore::rollback::timeline_error_name(
+                mycore::rollback::TimelineErrorCode::StimulusRefreshFailed) ==
+            "stimulus_refresh_failed");
+    REQUIRE(refresh_timeline.state()->value == 1);
+    REQUIRE(refresh_timeline.authoritative_tick() == mycore::time::Tick{0});
+    REQUIRE(refresh_timeline.history().front().stimulus.delta == 1);
 }
 
 TEST_CASE("Rollback scope rebasing replays retained stimuli with the new scope",
@@ -414,6 +465,35 @@ TEST_CASE("Rollback scope rebasing replays retained stimuli with the new scope",
     REQUIRE(timeline.state()->value == 20);
     REQUIRE(timeline.scope_epoch() == epoch(2));
     REQUIRE(timeline.history().front().scope_epoch == epoch(2));
+}
+
+TEST_CASE("Rollback scope rebasing can refresh stimuli for the new scope",
+          "[rollback][scope][stimulus]") {
+    Timeline timeline{ToyModel{}};
+    REQUIRE(std::holds_alternative<Commit>(
+        timeline.initialize(authority(0, 0), ToyScope{.multiplier = 1})));
+    REQUIRE(std::holds_alternative<Commit>(timeline.advance(sequence(1), ToyStimulus{.delta = 2})));
+
+    const auto rebased = timeline.rebase_scope_with_stimulus_refresh(
+        authority(0, 0, std::nullopt, epoch(2)),
+        ToyScope{.multiplier = 10},
+        [](mycore::rollback::CommandSequence,
+           const ToyStimulus& previous,
+           const ToyState& state,
+           const ToyScope& scope) -> std::variant<ToyStimulus, ToyError> {
+            REQUIRE(state.value == 0);
+            REQUIRE(scope.multiplier == 10);
+            auto refreshed = previous;
+            refreshed.derived_delta = 1;
+            return refreshed;
+        });
+    const auto& commit = require_commit(rebased);
+
+    REQUIRE(commit.kind == mycore::rollback::CommitKind::ScopeRebase);
+    REQUIRE(commit.replayed_frame_count == 1);
+    REQUIRE(timeline.state()->value == 30);
+    REQUIRE(timeline.history().front().stimulus.delta == 2);
+    REQUIRE(timeline.history().front().stimulus.derived_delta == 1);
 }
 
 TEST_CASE("Rollback reports revised, confirmed, rejected, and authority-only events",

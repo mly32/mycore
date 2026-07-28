@@ -104,6 +104,13 @@ consumption, player absorption, split, launch, cohesion, and merge run through t
 deterministic tick used by authority. Simulation corrects atomically; the primary player's
 position correction alone is visually smoothed.
 
+Each retained tick keeps its sampled local command unchanged. Remote movement inside the
+prediction closure is a last-known-authority assumption: reconciliation refreshes that derived
+field across the retained suffix before replay, and future prediction also uses the newest
+authority. A remote input edge that the client could not know may therefore cause one visible
+correction; it must not make the remote repeatedly jump between an obsolete guess and the newest
+server direction.
+
 Space submits one split request per press; holding it does not split every input tick. A predicted
 child appears immediately and is matched to authority by `PredictionKey`, even if the server
 assigns a different entity ID. A predicted absorption may temporarily remove the final local

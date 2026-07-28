@@ -62,6 +62,18 @@ concept RollbackModel =
         { digest == digest } -> std::convertible_to<bool>;
     };
 
+template <class Refresh, class Model>
+concept ReplayStimulusRefresh =
+    RollbackModel<Model> && requires(Refresh& refresh,
+                                     CommandSequence sequence,
+                                     const typename Model::Stimulus& previous,
+                                     const typename Model::State& state,
+                                     const typename Model::Scope& scope) {
+        {
+            refresh(sequence, previous, state, scope)
+        } -> std::same_as<std::variant<typename Model::Stimulus, typename Model::Error>>;
+    };
+
 template <RollbackModel Model> struct AuthorityEvent {
     AuthorityEventDisposition disposition{AuthorityEventDisposition::Confirmed};
     typename Model::EventKey key;
@@ -277,8 +289,35 @@ public:
         if (authority.scope_epoch != scope_epoch_) {
             return failure(TimelineErrorCode::IncompatibleScope);
         }
-        return reconcile_with_scope(
-            authority, *scope_, CommitKind::Reconcile, AuthorityTickRule::StrictlyNewer);
+        const auto retain_stimulus = [](CommandSequence,
+                                        const typename Model::Stimulus& stimulus,
+                                        const typename Model::State&,
+                                        const typename Model::Scope&)
+            -> std::variant<typename Model::Stimulus, typename Model::Error> {
+            return stimulus;
+        };
+        return reconcile_with_scope(authority,
+                                    *scope_,
+                                    CommitKind::Reconcile,
+                                    AuthorityTickRule::StrictlyNewer,
+                                    retain_stimulus);
+    }
+
+    template <class Refresh>
+        requires ReplayStimulusRefresh<Refresh, Model>
+    [[nodiscard]] CommitResult<Model>
+    reconcile_with_stimulus_refresh(const AuthorityFrame<Model>& authority, Refresh refresh) {
+        if (!state_ || !base_checkpoint_ || !scope_) {
+            return failure(TimelineErrorCode::NotInitialized);
+        }
+        if (authority.scope_epoch != scope_epoch_) {
+            return failure(TimelineErrorCode::IncompatibleScope);
+        }
+        return reconcile_with_scope(authority,
+                                    *scope_,
+                                    CommitKind::Reconcile,
+                                    AuthorityTickRule::StrictlyNewer,
+                                    std::move(refresh));
     }
 
     [[nodiscard]] CommitResult<Model> rebase_scope(const AuthorityFrame<Model>& authority,
@@ -289,8 +328,35 @@ public:
         if (!authority.scope_epoch.is_valid() || authority.scope_epoch <= scope_epoch_) {
             return failure(TimelineErrorCode::IncompatibleScope);
         }
-        return reconcile_with_scope(
-            authority, std::move(scope), CommitKind::ScopeRebase, AuthorityTickRule::SameOrNewer);
+        const auto retain_stimulus = [](CommandSequence,
+                                        const typename Model::Stimulus& stimulus,
+                                        const typename Model::State&,
+                                        const typename Model::Scope&)
+            -> std::variant<typename Model::Stimulus, typename Model::Error> {
+            return stimulus;
+        };
+        return reconcile_with_scope(authority,
+                                    std::move(scope),
+                                    CommitKind::ScopeRebase,
+                                    AuthorityTickRule::SameOrNewer,
+                                    retain_stimulus);
+    }
+
+    template <class Refresh>
+        requires ReplayStimulusRefresh<Refresh, Model>
+    [[nodiscard]] CommitResult<Model> rebase_scope_with_stimulus_refresh(
+        const AuthorityFrame<Model>& authority, typename Model::Scope scope, Refresh refresh) {
+        if (!state_ || !base_checkpoint_ || !scope_) {
+            return failure(TimelineErrorCode::NotInitialized);
+        }
+        if (!authority.scope_epoch.is_valid() || authority.scope_epoch <= scope_epoch_) {
+            return failure(TimelineErrorCode::IncompatibleScope);
+        }
+        return reconcile_with_scope(authority,
+                                    std::move(scope),
+                                    CommitKind::ScopeRebase,
+                                    AuthorityTickRule::SameOrNewer,
+                                    std::move(refresh));
     }
 
     [[nodiscard]] CommitResult<Model> hard_resync(const AuthorityFrame<Model>& authority,
@@ -652,10 +718,13 @@ private:
         return frame->digest;
     }
 
+    template <class Refresh>
+        requires ReplayStimulusRefresh<Refresh, Model>
     [[nodiscard]] CommitResult<Model> reconcile_with_scope(const AuthorityFrame<Model>& authority,
                                                            typename Model::Scope scope,
                                                            CommitKind kind,
-                                                           AuthorityTickRule tick_rule) {
+                                                           AuthorityTickRule tick_rule,
+                                                           Refresh refresh) {
         if (!state_ || !base_checkpoint_) {
             return failure(TimelineErrorCode::NotInitialized);
         }
@@ -683,7 +752,13 @@ private:
                 continue;
             }
 
-            auto stepped = model_.step(scratch, frame.stimulus, scope);
+            auto refreshed =
+                refresh(frame.command_sequence, frame.stimulus, std::as_const(scratch), scope);
+            if (auto* error = std::get_if<typename Model::Error>(&refreshed)) {
+                return failure(TimelineErrorCode::StimulusRefreshFailed, std::move(*error));
+            }
+            auto replay_stimulus = std::move(std::get<typename Model::Stimulus>(refreshed));
+            auto stepped = model_.step(scratch, replay_stimulus, scope);
             if (auto* error = std::get_if<typename Model::Error>(&stepped)) {
                 return failure(TimelineErrorCode::ModelStepFailed, std::move(*error));
             }
@@ -698,7 +773,7 @@ private:
             replayed_history.push_back(FrameRecord<Model>{
                 .tick = replay_tick,
                 .command_sequence = frame.command_sequence,
-                .stimulus = frame.stimulus,
+                .stimulus = std::move(replay_stimulus),
                 .checkpoint = std::move(checkpoint),
                 .digest = digest,
                 .events = std::move(events),

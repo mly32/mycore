@@ -58,6 +58,7 @@ enum class TimelineErrorCode : std::uint8_t {
     DuplicateEventKey,
     ConflictingAuthorityEvent,
     ModelRestoreFailed,
+    StimulusRefreshFailed,
     ModelStepFailed,
 };
 

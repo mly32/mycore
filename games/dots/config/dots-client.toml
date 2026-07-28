@@ -47,6 +47,7 @@ maximum_pixels_per_world_unit = 80.0
 [debug]
 enabled = true
 presentation_mode = "comparison"
+prediction_log_level = "off"
 
 [colors]
 background = "#101820"

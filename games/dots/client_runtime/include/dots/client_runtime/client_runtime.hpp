@@ -58,6 +58,8 @@ struct ReplicationStatistics {
 
 struct Settings {
     bool input_redundancy{true};
+    bool log_prediction_scope_changes{};
+    bool log_prediction_reconciliation_details{};
 };
 
 struct AcceptedSnapshot {
@@ -96,6 +98,12 @@ struct PredictionStatistics {
     std::size_t history_count{};
     std::size_t history_capacity{kPredictionHistoryCapacity};
     std::size_t history_high_water_mark{};
+    std::uint64_t scope_epoch{};
+    std::uint64_t scope_replay_horizon_ticks{};
+    std::size_t scope_owner_count{};
+    std::size_t scope_player_count{};
+    std::size_t scope_food_count{};
+    std::uint64_t scope_rebase_count{};
     std::uint8_t latest_server_pending_input_count{};
     std::uint8_t server_pending_input_high_water_mark{};
     protocol::SnapshotId rollback_snapshot_id;

@@ -14,7 +14,8 @@ The library provides:
 
 - A typed `Timeline<Model>` with initialization, predicted advance, authoritative
   reconciliation, scope rebase, and hard resync.
-- Bounded history of exact immutable stimuli, checkpoints, digests, and event journals.
+- Bounded history of sampled commands, explicit per-frame assumptions, checkpoints, digests,
+  and event journals.
 - Scratch restore/replay followed by one atomic commit.
 - Typed state differences and diagnostic digests supplied by the game model.
 - Stable event transitions: first predicted, revised, retracted, confirmed, and
@@ -36,7 +37,7 @@ The normal data flow is:
 ```text
 validated authority checkpoint ──> Timeline::initialize/reconcile
                                            │
-sampled immutable stimulus ───────> Timeline::advance
+sampled command + assumptions ────> Timeline::advance
                                            │
                                            v
                                    committed game State
@@ -82,7 +83,7 @@ A model is a copyable policy value with the following associated types:
 |---|---|
 | `State` | Mutable deterministic simulation state. Must be movable. |
 | `Checkpoint` | Complete owning replay state with exact equality. Must be copyable. |
-| `Stimulus` | Immutable causes sampled for one predicted tick. Must be copyable. |
+| `Stimulus` | Causes for one predicted tick. Sampled command fields are immutable; explicitly identified authority-derived assumption fields may be transactionally refreshed. Must be copyable. |
 | `Scope` | Game-defined prediction membership/policy for one scope epoch. Must be copyable. |
 | `Event` | Deterministic simulation output. Use a `std::variant` when using the consequence router. |
 | `EventKey` | Stable semantic occurrence identity with equality. Must be copyable. |
@@ -140,8 +141,10 @@ The operations have stronger semantic requirements than the C++ concept can expr
   and immutable rules reachable from them.
 - `step` returns deterministic events but performs no audio, rendering, logging, analytics,
   networking, or other external side effects.
-- `Stimulus` stores causes such as sampled commands and recorded remote assumptions. It never
-  stores callbacks, input-device references, wall-clock queries, or regenerated events.
+- `Stimulus` stores causes such as sampled commands and explicit remote assumptions. Sampled
+  commands never change. An assumption derived from external authority may change only through
+  the timeline's explicit replay-refresh transaction. A stimulus never stores callbacks,
+  input-device references, wall-clock queries, or regenerated events.
 - `Scope` is causally closed for every enabled predicted mechanic. Missing state must disable the
   mechanic, select a safe fallback scope, or reject the frame.
 - If prediction can create entities, the game defines how those entities remain inside the
@@ -189,7 +192,7 @@ if (const auto* failure = std::get_if<Failure>(&result)) {
 observe_commit(std::get<Commit>(result), *timeline.state());
 ```
 
-For each locally predicted tick, sample all mutable inputs first and submit one immutable
+For each locally predicted tick, sample all mutable inputs first and submit one explicit
 stimulus with a strictly increasing command sequence:
 
 ```cpp
@@ -230,6 +233,33 @@ On success, the timeline:
 No scratch state is observable. A failed call leaves the committed state and history unchanged;
 only failure statistics advance.
 
+Normal `reconcile` replays each retained `Stimulus` exactly as stored. Use
+`reconcile_with_stimulus_refresh` when a stimulus combines an immutable local command with a
+derived assumption that newer authority supersedes:
+
+```cpp
+auto result = timeline.reconcile_with_stimulus_refresh(
+    validated_authority_frame,
+    [&latest_authority](mycore::rollback::CommandSequence sequence,
+                        const game::TickStimulus& previous,
+                        const game::World& scratch_before_step,
+                        const game::PredictionScope& scope)
+        -> std::variant<game::TickStimulus, game::PredictionError> {
+        auto refreshed = previous; // preserves sampled local commands and edge actions
+        refreshed.remote_assumptions =
+            derive_remote_assumptions(latest_authority, scratch_before_step, scope);
+        return refreshed;
+    });
+```
+
+The callback runs in sequence order after authority restore and before each retained step. It
+receives read-only scratch state as it existed before that step and returns the complete
+stimulus that should be replayed and retained. It must be deterministic and side-effect free.
+Do not use it to resample input or rewrite player intent. If it returns a model error, the call
+fails with `StimulusRefreshFailed` and publishes none of the scratch state or refreshed history.
+`rebase_scope_with_stimulus_refresh` provides the same contract when installing a higher scope
+epoch.
+
 ## Choose the correct timeline operation
 
 | Operation | Authority requirement | History behavior | Use |
@@ -237,7 +267,9 @@ only failure statistics advance.
 | `initialize(frame, scope)` | First valid frame and valid scope epoch | Starts empty | Begin a timeline. |
 | `advance(sequence, stimulus)` | None | Appends one predicted frame | Predict exactly one tick. |
 | `reconcile(frame)` | Authority tick strictly newer than the last authoritative tick; same scope epoch | Drops acknowledged frames and replays the suffix | Normal server correction. |
+| `reconcile_with_stimulus_refresh(frame, refresh)` | Same as `reconcile` | Drops acknowledged frames, refreshes each retained stimulus in scratch, and replays it | New authority revises derived external assumptions but not sampled player commands. |
 | `rebase_scope(frame, scope)` | Scope epoch strictly increases; authority tick is the same or newer | Replays retained stimuli under the new scope | Membership, horizon, or mechanic-policy change. |
+| `rebase_scope_with_stimulus_refresh(frame, scope, refresh)` | Same as `rebase_scope` | Refreshes and replays retained stimuli under the new scope | A new scope changes derived per-frame assumptions. |
 | `hard_resync(frame, scope)` | Authority tick is the same or newer; scope epoch cannot regress | Clears retained history | Recover when replay cannot safely continue. |
 
 A same-tick `rebase_scope` must use the exact current authoritative base checkpoint.
@@ -352,6 +384,7 @@ Inspect both `TimelineFailure::code` and its optional game-defined `model_error`
 | `DuplicateEventKey` | Game event-identity correctness bug. Do not expose consequences from the failed call. |
 | `ConflictingAuthorityEvent` | Conflicting or malformed authority receipt; reject it as a protocol/identity error. |
 | `ModelRestoreFailed` | Invalid checkpoint or scope according to the game adapter. |
+| `StimulusRefreshFailed` | A derived-assumption refresh could not produce a complete valid retained stimulus. Preserve committed state and use the game-defined rebase or hard-resync fallback. |
 | `ModelStepFailed` | Invalid retained stimulus or deterministic simulation failure. Preserve committed state and apply the game-defined fallback/recovery policy. |
 
 Do not choose recovery based only on replay duration. The initial library completes replay
@@ -364,7 +397,8 @@ Before a new game enables prediction:
 
 1. Checkpoint round-trip is exact and rebuilds all derived indexes.
 2. Replaying the same checkpoint and stimuli produces identical checkpoints and event journals.
-3. Every external cause is checkpoint state or an immutable stimulus.
+3. Every external cause is checkpoint state or a stimulus field; sampled player intent is
+   immutable and every refreshable authority-derived field is explicitly identified and tested.
 4. Every enabled mechanic has a causally closed scope or an explicit safe fallback.
 5. Authority hydration validates schema, tick, rules, IDs, scope, acknowledgement, and receipts
    before calling the timeline.
@@ -383,4 +417,5 @@ adapter is
 [rollback prediction design](rollback_prediction_design.md). Its first network composition is
 [`games/dots/client_runtime`](../games/dots/client_runtime/): it demonstrates verified
 checkpoint hydration, interaction-closure selection, retained input/remote assumptions, atomic
-authority reconciliation, identity remapping, and a separate confirmed session lifecycle.
+authority reconciliation, authority-derived remote-assumption refresh, identity remapping, and
+a separate confirmed session lifecycle.

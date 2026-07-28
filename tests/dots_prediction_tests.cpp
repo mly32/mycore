@@ -516,13 +516,14 @@ TEST_CASE("Client prediction closure follows retained replay depth instead of ri
     complete_handshake(endpoint, client, connection);
 
     auto authority = snapshot(1, 0, dots::protocol::InputSequenceId::invalid(), {});
-    authority.entities.push_back({
+    auto remote_authority = dots::protocol::EntityState{
         .entity_id = dots::protocol::EntityId{9},
         .kind = dots::protocol::EntityKind::Player,
         .owner_id = dots::protocol::PlayerOwnerId{4},
-        .position_x = 15.0F,
+        .position_x = 20.0F,
         .mass = 16.0F,
-    });
+    };
+    authority.entities.push_back(remote_authority);
     push_snapshot(endpoint, connection, authority);
     REQUIRE_FALSE(client.process_events(clock_time(10s)).has_value());
 
@@ -532,7 +533,7 @@ TEST_CASE("Client prediction closure follows retained replay depth instead of ri
     REQUIRE(client.predicted_world() != nullptr);
     CHECK_FALSE(client.predicted_world()->contains(dots::simulation::EntityId{remote.value()}));
 
-    for (std::uint32_t tick = 0; tick < 3; ++tick) {
+    for (std::uint32_t tick = 0; tick < 6; ++tick) {
         REQUIRE(client.send_input(tick, {}) == dots::client_runtime::InputSendResult::Sent);
         CHECK(std::ranges::find(client.predicted_scope_entity_ids(), remote) ==
               client.predicted_scope_entity_ids().end());
@@ -540,13 +541,77 @@ TEST_CASE("Client prediction closure follows retained replay depth instead of ri
 
     const auto reconciliation_count =
         client.prediction_statistics(clock_time(10s)).reconciliation_count;
-    REQUIRE(client.send_input(3, {}) == dots::client_runtime::InputSendResult::Sent);
+    REQUIRE(client.send_input(6, {}) == dots::client_runtime::InputSendResult::Sent);
     CHECK(std::ranges::find(client.predicted_scope_entity_ids(), remote) !=
           client.predicted_scope_entity_ids().end());
     REQUIRE(client.predicted_world() != nullptr);
     CHECK(client.predicted_world()->contains(dots::simulation::EntityId{remote.value()}));
     CHECK(client.prediction_statistics(clock_time(10s)).reconciliation_count ==
           reconciliation_count);
+    const auto expanded_scope = client.prediction_statistics(clock_time(10s));
+    CHECK(expanded_scope.scope_replay_horizon_ticks == 7);
+    CHECK(expanded_scope.scope_owner_count == 2);
+
+    auto acknowledged = snapshot(2, 7, dots::protocol::InputSequenceId{6}, {});
+    remote_authority.position_x = 21.4F;
+    acknowledged.entities.push_back(remote_authority);
+    push_snapshot(endpoint, connection, acknowledged);
+    REQUIRE_FALSE(client.process_events(clock_time(11s)).has_value());
+
+    CHECK(std::ranges::find(client.predicted_scope_entity_ids(), remote) !=
+          client.predicted_scope_entity_ids().end());
+    REQUIRE(client.predicted_world() != nullptr);
+    CHECK(client.predicted_world()->contains(dots::simulation::EntityId{remote.value()}));
+    const auto retained_scope = client.prediction_statistics(clock_time(11s));
+    CHECK(retained_scope.scope_epoch == expanded_scope.scope_epoch);
+    CHECK(retained_scope.scope_replay_horizon_ticks == expanded_scope.scope_replay_horizon_ticks);
+    CHECK(retained_scope.scope_rebase_count == expanded_scope.scope_rebase_count);
+}
+
+TEST_CASE("Future remote assumptions use newest authority after replaying an older guess",
+          "[dots][prediction][remote][reconciliation]") {
+    ManualEndpoint endpoint;
+    dots::client_runtime::Runtime client{endpoint};
+    const mycore::net_transport::ConnectionHandle connection{29};
+    complete_handshake(endpoint, client, connection);
+
+    auto remote = dots::protocol::EntityState{
+        .entity_id = dots::protocol::EntityId{9},
+        .kind = dots::protocol::EntityKind::Player,
+        .owner_id = dots::protocol::PlayerOwnerId{4},
+        .position_x = 10.0F,
+        .mass = 16.0F,
+    };
+    auto authority = snapshot(1, 0, dots::protocol::InputSequenceId::invalid(), {});
+    authority.owners.push_back({
+        .owner_id = remote.owner_id,
+        .movement_x = 1.0F,
+        .last_non_zero_movement_x = 1.0F,
+    });
+    authority.entities.push_back(remote);
+    push_snapshot(endpoint, connection, authority);
+    REQUIRE_FALSE(client.process_events(clock_time(10s)).has_value());
+
+    REQUIRE(client.send_input(0, {}) == dots::client_runtime::InputSendResult::Sent);
+    REQUIRE(client.send_input(1, {}) == dots::client_runtime::InputSendResult::Sent);
+    REQUIRE(client.predicted_world() != nullptr);
+    check_position(client.predicted_world()->position(dots::simulation::EntityId{9}), 10.4F, 0.0F);
+
+    remote.position_x = 10.2F;
+    auto turned = snapshot(2, 1, dots::protocol::InputSequenceId{0}, {});
+    turned.owners.push_back({
+        .owner_id = remote.owner_id,
+        .movement_y = 1.0F,
+        .last_non_zero_movement_y = 1.0F,
+    });
+    turned.entities.push_back(remote);
+    push_snapshot(endpoint, connection, turned);
+    REQUIRE_FALSE(client.process_events(clock_time(11s)).has_value());
+
+    REQUIRE(client.predicted_world() != nullptr);
+    check_position(client.predicted_world()->position(dots::simulation::EntityId{9}), 10.2F, 0.2F);
+    REQUIRE(client.send_input(2, {}) == dots::client_runtime::InputSendResult::Sent);
+    check_position(client.predicted_world()->position(dots::simulation::EntityId{9}), 10.2F, 0.4F);
 }
 
 TEST_CASE("Misprediction corrects simulation immediately and records its replay path",

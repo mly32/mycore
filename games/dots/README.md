@@ -116,6 +116,10 @@ confirmed-killer follow, and `R` or Enter requests an authoritative respawn. Spl
 are edge-triggered: holding a key sends one request, not one request per input tick. Press Escape
 to quit. Mouse steering and spectator wheel zoom pause while the debug panel owns the mouse.
 
+For deterministic prediction investigation, set `[input].mode = "keyboard"` and
+`[debug].prediction_log_level = "debug"` in a client config. The `info` level logs only prediction
+scope changes; `debug` also reports nonzero remote-player displacement across reconciliation.
+
 Split, launch, cohesion, and merge are implemented in the shared deterministic simulation and
 rollback adapter. Protocol v4 carries the split edge, complete checkpoints, immutable rules,
 prediction identities, digests, and authority receipts, and the server executes a submitted

@@ -85,9 +85,11 @@ eligibility, prediction, reconciliation, or simulation; the server's current tic
 only eligibility decision.
 
 Feature 14 prediction does not estimate live server time. The timeline uses local input steps,
-recorded remote movement assumptions, and server ACKs; reconciliation replays the retained input
-suffix; correction smoothing decays a spatial offset over a fixed 100 ms of local steady time.
-Network conditions can change correction frequency and magnitude, but not that duration.
+explicit remote movement assumptions, and server ACKs. Reconciliation refreshes those derived
+remote assumptions from newest authority and replays the retained input suffix; sampled local
+commands remain unchanged. Correction smoothing decays a spatial offset over a fixed 100 ms of
+local steady time. Network conditions can change correction frequency and magnitude, but not
+that duration.
 
 Feature 12 also does not estimate or render server “now.” Its remote presentation cursor
 uses server ticks and targets `newest received tick - 6`. It advances at 100% speed within a
@@ -241,6 +243,8 @@ Important log categories include:
 | `dots.client.session` | Client transport, handshake, assigned identity, disconnect lifecycle, and newly confirmed absorption, session-mode, follow-target-loss, and respawn-result transitions. |
 | `dots.client.simulation` | Client fixed-step overload warnings, escalation, and recovery. |
 | `dots.client.prediction` | Prediction history pressure/recovery, hard resyncs, replay-budget warnings, and explicit debug fault injection. |
+| `dots.client.prediction.scope` | Successful scope-epoch changes with replay depth, horizon, and before/after owner, player, and food membership counts when `debug.prediction_log_level` is `info` or `debug`. |
+| `dots.client.prediction.reconciliation` | At `debug.prediction_log_level = "debug"`, each nonzero largest common remote-player displacement across an installed predicted head, including whether the before/after heads represent the same tick. Zero-displacement installs are omitted. |
 | `dots.server` | Headless server startup, listen address, tick lifetime, and shutdown. |
 | `dots.server.session` | Connection acceptance, assigned players, authoritative defeat/respawn decisions, follow-target loss, rejected packets, liveness timeouts, and cleanup. |
 
@@ -254,12 +258,14 @@ mean the zones were removed.
 `Dots::ClientRuntime` currently predicts a complete interaction-closed World immediately after
 each successful input send. Every newer snapshot is validated and digest-checked, the
 acknowledged history prefix is discarded, and at most 256 remaining inputs are replayed with
-their recorded remote assumptions in the same client frame before replicated and predicted state
-commit together. The interaction closure uses the actual retained suffix length as its horizon;
-the 256-entry ring capacity is only a storage and hard-resync bound. The client verifies the
-closure before each predicted step and rebuilds from newest authority under a new epoch only when
-causal membership changes, because old stimuli contain no assumptions for newly admitted
-entities.
+remote assumptions refreshed from newest authority in the same client frame before replicated
+and predicted state commit together. Their sampled local commands remain unchanged. The
+interaction closure uses the greater of the actual retained suffix length and a five-tick
+operating floor as its horizon; the 256-entry ring capacity is only a storage and hard-resync
+bound. The client verifies the closure before each predicted step, retains a safe existing
+superset when ACKs make the new requirement smaller, and rebuilds from newest authority under a
+new epoch only when new causal membership is required, because old stimuli contain no
+assumptions for newly admitted entities.
 
 The graphical client draws all predicted food and player topology inside that interaction island;
 duplicates are removed from the delayed Feature 12 frame. The controlled primary and camera use
@@ -295,6 +301,7 @@ The **Prediction** tab rows are:
 | Last acknowledged input | Newest sequence the latest accepted snapshot says the server processed, or invalid before the first ACK. |
 | Command lead | Count of successfully sent inputs newer than the latest ACK. It can exceed retained history after a deliberate hard resync. |
 | History use/high-water | Current and runtime-maximum occupancy of the fixed 256-entry replay ring. Capacity is a correctness bound, not an adaptive target. |
+| Scope | Current epoch, certified replay horizon, owner/player/food counts, and lifetime rebase count. A smaller newly required closure may retain a safe existing superset to prevent presentation ownership from oscillating as ACK depth changes. |
 | Server pending input | Current and runtime-high-water depth of this client's authoritative 64-entry server input queue, as reported by snapshots. |
 | Rollback base | Snapshot ID, server tick, and ACK used for the latest successful reconciliation. |
 | Replay count | Latest, lifetime-total, and runtime-maximum numbers of inputs replayed after installing an authoritative base. |
@@ -312,6 +319,10 @@ History-pressure warnings begin above 75% occupancy and are rate-limited to once
 seconds while pressure persists. Recovery is logged once occupancy returns to 75% or below. All
 counts and high-water values reset with a new `Dots::ClientRuntime` instance. The overlay colors
 history utilization green below 50%, yellow at 50%, orange at 75%, and red at 90%.
+
+`debug.prediction_log_level` defaults to `off`. Set it to `info` for scope-change summaries or
+`debug` to add nonzero remote reconciliation detail. The latter is meant for short reproduction
+sessions and does not change prediction or presentation state.
 
 ### Current prediction world-space legend
 

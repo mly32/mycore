@@ -24,6 +24,12 @@ enum class NetworkMode : std::uint8_t {
     Native,
 };
 
+enum class PredictionLogLevel : std::uint8_t {
+    Off,
+    Info,
+    Debug,
+};
+
 [[nodiscard]] constexpr std::string_view network_mode_name(NetworkMode mode) noexcept {
     switch (mode) {
     case NetworkMode::Offline:
@@ -95,6 +101,7 @@ struct SpectatorSettings {
 struct DebugSettings {
     bool enabled{true};
     PresentationMode presentation_mode{PresentationMode::Interpolated};
+    PredictionLogLevel prediction_log_level{PredictionLogLevel::Off};
 };
 
 struct RgbColor {

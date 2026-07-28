@@ -270,6 +270,22 @@ InputMode parse_input_mode(std::string_view value,
     fail(source, field, "expected mouse, keyboard, or hybrid");
 }
 
+PredictionLogLevel parse_prediction_log_level(std::string_view value,
+                                              const std::filesystem::path& source,
+                                              std::string_view field) {
+    const auto normalized = uppercase(value);
+    if (normalized == "OFF") {
+        return PredictionLogLevel::Off;
+    }
+    if (normalized == "INFO") {
+        return PredictionLogLevel::Info;
+    }
+    if (normalized == "DEBUG") {
+        return PredictionLogLevel::Debug;
+    }
+    fail(source, field, "expected off, info, or debug");
+}
+
 PresentationMode parse_presentation_mode(std::string_view value,
                                          const std::filesystem::path& source,
                                          std::string_view field) {
@@ -546,7 +562,7 @@ void parse_spectator(const toml::table& table,
 void parse_debug(const toml::table& table,
                  ClientConfig& config,
                  const std::filesystem::path& source) {
-    validate_keys(table, {"enabled", "presentation_mode"}, source, "debug");
+    validate_keys(table, {"enabled", "presentation_mode", "prediction_log_level"}, source, "debug");
     if (table.contains("enabled")) {
         config.debug.enabled = read_bool(table, "enabled", source, "debug.enabled");
     }
@@ -555,6 +571,12 @@ void parse_debug(const toml::table& table,
             read_string(table, "presentation_mode", source, "debug.presentation_mode"),
             source,
             "debug.presentation_mode");
+    }
+    if (table.contains("prediction_log_level")) {
+        config.debug.prediction_log_level = parse_prediction_log_level(
+            read_string(table, "prediction_log_level", source, "debug.prediction_log_level"),
+            source,
+            "debug.prediction_log_level");
     }
 }
 

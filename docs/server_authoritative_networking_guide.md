@@ -466,11 +466,16 @@ schedules at most one queued sample per client per tick, snapshots acknowledge
 `last_processed_input`, and inputs report the latest received snapshot and highest contiguous
 authority receipt. The client runtime retains a fixed 256-entry input history and engine
 timeline. That capacity is a recovery bound, not the interaction-closure horizon: the horizon is
-the actual retained unacknowledged suffix and is checked before each predicted advance. Each
-accepted snapshot is exactly hydrated into a checkpoint, projected to the current interaction
-scope, and used as the base for atomic replay of the suffix. Every replay stimulus records the
-local command and held remote movement assumptions used for that tick. The server does not yet
-use snapshot acknowledgements for delta baselines.
+the greater of a five-tick operating floor and the actual retained unacknowledged suffix, checked
+before each predicted advance. A safe existing causal superset remains selected when ACKs shrink
+the immediate requirement. Each accepted snapshot is exactly hydrated into a checkpoint,
+projected to the current interaction scope, and used as the base for atomic replay of the suffix.
+Every replay stimulus records its immutable local command and explicit held remote-movement
+assumptions. When newer authority changes a remote owner's held movement, reconciliation
+transactionally refreshes those derived assumptions across the retained suffix before stepping
+it; subsequent future inputs also sample that newest authority. This produces one correction for
+an unknowable remote direction edge instead of propagating the stale guess through later
+snapshots. The server does not yet use snapshot acknowledgements for delta baselines.
 
 ## There is no single “game frame”
 
@@ -525,11 +530,11 @@ hidden input-prediction or smoothing clock, and it never decides respawn eligibi
 
 | Mechanism | Status | Timeline/input it actually uses | Uses estimated live server time? |
 |---|---|---|---|
-| Interaction-closed World prediction | Current, Feature 14 step 6 | Local 30 Hz commands plus recorded remote assumptions applied to a complete scoped Dots World. | No. |
+| Interaction-closed World prediction | Current, Feature 14 step 6 | Local 30 Hz commands plus latest-authority remote assumptions applied to a complete scoped Dots World. | No. |
 | Reconciliation | Current, Feature 14 step 6 | Verified authoritative checkpoint plus replay of the unacknowledged input suffix. Server tick labels the rollback base but does not choose how far to replay. | No. |
 | Local correction smoothing | Current, Feature 11 | Local steady-clock age of a fixed 100 ms visual offset. | No. |
 | Remote presentation | Current, Feature 12 | Fractional cursor in historical server-tick coordinates, targeting six ticks behind the newest known snapshot; holds on underrun. | No. |
-| Interaction-closed World rollback | Current, Feature 14 step 6 | Authoritative checkpoint plus retained immutable stimuli and recorded remote assumptions, replayed through the previous prediction head. | No. |
+| Interaction-closed World rollback | Current, Feature 14 step 6 | Authoritative checkpoint plus retained immutable local commands and transactionally refreshed remote assumptions, replayed through the previous prediction head. | No. |
 | Adaptive command buffer | Planned, Feature 14 | Reported server input-queue depth controls a bounded client command cadence. | No. |
 | Feature 13 respawn countdown | Current | Latest replicated server tick plus local steady time since snapshot receipt; unfiltered and presentation-only. | It is a limited estimate, never authority. |
 | Filtered smooth world-time UI | Deferred | A filtered mapping from local steady time to estimated server tick. | Potentially. |
@@ -928,11 +933,13 @@ recipient-specific results; its deadline countdown is presentation-only and does
 in simulation or eligibility.
 
 Feature 14 now uses a game-neutral typed rollback timeline and restores a complete Dots World
-from an authoritative checkpoint before atomically replaying retained stimuli. The Dots default
-is an owned-and-interacting fixed-point closure; full-replicated mode is an oracle/benchmark and
-owned movement is the incomplete-state fallback. Closure includes non-spatial owner state,
-required global rule/timer domains, mechanic dependencies, and explicit causal authority facts;
-it is not only a radius query.
+from an authoritative checkpoint before atomically replaying retained stimuli. Sampled local
+commands remain immutable; a typed, transactional refresh hook lets the game revise only
+authority-derived assumptions before each retained step. The Dots default is an
+owned-and-interacting fixed-point closure; full-replicated mode is an oracle/benchmark and owned
+movement is the incomplete-state fallback. Closure includes non-spatial owner state, required
+global rule/timer domains, mechanic dependencies, and explicit causal authority facts; it is not
+only a radius query.
 
 Reversible World state may be predicted. Deterministic simulation events are regenerated during
 replay, while external presentation consequences run only after an atomic commit through

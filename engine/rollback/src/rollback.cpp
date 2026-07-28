@@ -32,6 +32,8 @@ std::string_view timeline_error_name(TimelineErrorCode error) noexcept {
         return "conflicting_authority_event";
     case TimelineErrorCode::ModelRestoreFailed:
         return "model_restore_failed";
+    case TimelineErrorCode::StimulusRefreshFailed:
+        return "stimulus_refresh_failed";
     case TimelineErrorCode::ModelStepFailed:
         return "model_step_failed";
     }

@@ -18,7 +18,7 @@ authority, speculation, and drawing state.
 | Remote snapshot history | Accepted semantic entity snapshots retained for delayed sampling. | `Dots::RemotePresentation` | Feature 12 |
 | Remote presentation frame | Immutable remote entity states sampled between known historical endpoints. | `Dots::RemotePresentation` | Feature 12 |
 | Composed presentation frame | Local presentation combined with remote presentation, camera, and debug layers. | `Dots::Presentation` | Feature 12 |
-| Predicted World | Complete checkpoint replayed through retained immutable stimuli, including commands and recorded remote assumptions. | `MyCore::Rollback` timeline with `Dots::Prediction` model | Current, Feature 14 step 6 |
+| Predicted World | Complete checkpoint replayed through retained stimuli: immutable sampled commands plus explicit authority-derived assumptions that reconciliation may refresh transactionally. | `MyCore::Rollback` timeline with `Dots::Prediction` model | Current, Feature 14 step 6 |
 | Extrapolated presentation | Bounded visual-only advancement of replicated movement outside the predicted interaction closure. | `Dots::Presentation` | Planned, Feature 14 step 7 |
 | Confirmed consequence | Durable session or game result exposed only after authority reports it. | Server decision, client display | Feature 13+ |
 

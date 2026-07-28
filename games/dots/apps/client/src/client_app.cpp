@@ -509,6 +509,15 @@ void draw_prediction_debug_tab(const DebugWorldStats& world) {
                        prediction.history_capacity,
                        history_percent,
                        prediction.history_high_water_mark);
+    ImGui::Text("Scope epoch / horizon: %llu / %llu ticks",
+                static_cast<unsigned long long>(prediction.scope_epoch),
+                static_cast<unsigned long long>(prediction.scope_replay_horizon_ticks));
+    ImGui::Text("Scope owners / players / food: %zu / %zu / %zu",
+                prediction.scope_owner_count,
+                prediction.scope_player_count,
+                prediction.scope_food_count);
+    ImGui::Text("Scope rebases: %llu",
+                static_cast<unsigned long long>(prediction.scope_rebase_count));
     ImGui::Text("Server pending: %u, high %u",
                 static_cast<unsigned int>(prediction.latest_server_pending_input_count),
                 static_cast<unsigned int>(prediction.server_pending_input_high_water_mark));
@@ -883,7 +892,13 @@ int run_networked_game(
     using namespace std::chrono_literals;
     dots::client_runtime::Runtime client{
         endpoint,
-        {.input_redundancy = config.network.input_redundancy},
+        {
+            .input_redundancy = config.network.input_redundancy,
+            .log_prediction_scope_changes =
+                config.debug.prediction_log_level != PredictionLogLevel::Off,
+            .log_prediction_reconciliation_details =
+                config.debug.prediction_log_level == PredictionLogLevel::Debug,
+        },
     };
     dots::presentation::RemoteSnapshotBuffer remote_snapshot_buffer;
     const auto process_client_events = [&](std::chrono::steady_clock::time_point now) {

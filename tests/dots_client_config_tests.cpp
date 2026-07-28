@@ -83,6 +83,7 @@ TEST_CASE("Client configuration defaults match the playable client", "[dots][cli
     REQUIRE(config.spectator.maximum_pixels_per_world_unit == 80.0F);
     REQUIRE(config.debug.enabled);
     REQUIRE(config.debug.presentation_mode == dots::client::PresentationMode::Interpolated);
+    REQUIRE(config.debug.prediction_log_level == dots::client::PredictionLogLevel::Off);
     REQUIRE(config.colors.player == dots::client::RgbColor{0x4C, 0xC9, 0xF0});
     REQUIRE(config.colors.player_growth == dots::client::RgbColor{0xFF, 0xD1, 0x66});
     REQUIRE(config.colors.food == dots::client::RgbColor{0xF7, 0x25, 0x85});
@@ -153,6 +154,7 @@ maximum_pixels_per_world_unit = 70.0
 [debug]
 enabled = false
 presentation_mode = "comparison"
+prediction_log_level = "debug"
 
 [colors]
 background = "#010203"
@@ -187,6 +189,7 @@ food = "#FEDCBA"
     REQUIRE(config.spectator.maximum_pixels_per_world_unit == 70.0F);
     REQUIRE_FALSE(config.debug.enabled);
     REQUIRE(config.debug.presentation_mode == dots::client::PresentationMode::Comparison);
+    REQUIRE(config.debug.prediction_log_level == dots::client::PredictionLogLevel::Debug);
     REQUIRE(config.colors.background == dots::client::RgbColor{0x01, 0x02, 0x03});
     REQUIRE(config.colors.grid == dots::client::RgbColor{0xA0, 0xB1, 0xC2});
     REQUIRE(config.colors.player == dots::client::RgbColor{0x11, 0x22, 0x33});
@@ -206,6 +209,7 @@ mode = "HyBrId"
 [debug]
 enabled = false
 presentation_mode = "FiXeD"
+prediction_log_level = "InFo"
 
 [bindings]
 up = ["w"]
@@ -222,6 +226,7 @@ quit = ["eScApE"]
     REQUIRE(config.controls.mode == dots::client::InputMode::Hybrid);
     REQUIRE_FALSE(config.debug.enabled);
     REQUIRE(config.debug.presentation_mode == dots::client::PresentationMode::Fixed);
+    REQUIRE(config.debug.prediction_log_level == dots::client::PredictionLogLevel::Info);
     REQUIRE(config.controls.bindings.up == std::vector{mycore::platform_sdl::Key::W});
     REQUIRE(config.controls.bindings.quit == std::vector{mycore::platform_sdl::Key::Escape});
     REQUIRE(config.colors.background == dots::client::RgbColor{0x10, 0x18, 0x20});
@@ -320,6 +325,8 @@ TEST_CASE("Invalid client TOML reports the source and field", "[dots][client][co
                         "spectator.minimum_pixels_per_world_unit"},
         InvalidDocument{"[debug]\nenabled = 1", "debug.enabled"},
         InvalidDocument{"[debug]\npresentation_mode = \"predicted\"", "debug.presentation_mode"},
+        InvalidDocument{"[debug]\nprediction_log_level = \"verbose\"",
+                        "debug.prediction_log_level"},
         InvalidDocument{"[debug]\nghost = true", "debug.ghost"},
         InvalidDocument{"[colors]\nplayer = \"#12345Z\"", "colors.player"},
         InvalidDocument{"[colors]\nplayer_growth = \"gold\"", "colors.player_growth"},

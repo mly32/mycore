@@ -11,7 +11,7 @@ cases.
 Feature 14 must establish a reusable programming model for:
 
 - Capturing and restoring complete game-defined checkpoints.
-- Retaining immutable per-tick causes such as sampled input and remote assumptions.
+- Retaining immutable sampled input plus explicit per-tick authority-derived assumptions.
 - Comparing authority with the corresponding predicted history.
 - Replaying to the current prediction head and committing atomically.
 - Distinguishing authoritative, predicted, interpolated/extrapolated, and presentation state.
@@ -27,6 +27,8 @@ must stay aligned with that document.
   engine API.
 - Run shared Dots movement, food, absorption, split, and merge logic in a closed predicted island.
 - Roll forward retained local commands and recorded assumptions after authoritative correction.
+- Refresh superseded authority-derived assumptions without resampling or rewriting local
+  commands.
 - Demonstrate `PredictOnce`, `PredictCancelable`, and `ConfirmOnce` consequence delivery.
 - Retain same-frame atomic replay while leaving a clean seam for separately justified
   multi-frame resimulation.
@@ -209,9 +211,11 @@ The fixed-point builder expands through:
 - Mechanic dependencies and every state domain they read.
 - Non-spatial causal/global dependencies that can change a predicted result.
 
-Before advancing, the client recomputes the closure using the next retained unacknowledged-input
-depth, not the 256-entry history capacity. The current scope can continue while its selected
-causal membership contains that fresh result; newly required membership or a changed causal
+Before advancing, the client recomputes the closure using the greater of a five-tick operating
+floor and the next retained unacknowledged-input depth, not the 256-entry history capacity. The
+current scope can continue while its selected causal membership and subscriptions contain that
+fresh result; a smaller result retains the safe existing superset instead of oscillating
+presentation ownership as ACK depth changes. Newly required membership or a changed causal
 subscription forces an atomic scope rebase from latest authority and replay. Excluded entities
 cannot interact with the predicted island. Missing required entity, owner, global, or causal
 state falls back to `OwnedMovement` and reports `IncompleteClosure`.
@@ -429,12 +433,17 @@ ACK retirement, split identity, and overflow.
 
 The production network client now hydrates each validated protocol checkpoint into a complete
 Dots World, selects `InteractionClosure`, and advances that scope through the engine timeline
-with retained local commands and exact held remote-movement assumptions. Authority is installed
+with retained local commands and explicit held remote-movement assumptions. Authority is installed
 and the unacknowledged suffix replayed in scratch state before the replicated view, timeline, and
-presentation projection commit together. The closure horizon follows the actual retained suffix;
-the fixed 256-entry ring is only a recovery bound. Before each input, a fresh closure check
-rebases only when causal membership changes. A changed closure rebuilds from the newest authority
-under a new scope epoch because older frames did not record causes for newly admitted entities.
+presentation projection commit together. Retained local commands remain immutable, while the
+engine's transactional stimulus-refresh hook replaces held remote-movement assumptions with the
+newest authoritative values before replay; refreshed history commits only if the entire replay
+succeeds. The closure horizon follows the actual retained suffix with a five-tick operating
+floor; the fixed 256-entry ring is only a recovery bound. Before each input, a fresh closure check
+rebases only when the existing causal membership/subscriptions do not cover the new requirement.
+Safe supersets are retained across smaller ACK-driven horizons. A changed closure rebuilds from
+the newest authority under a new scope epoch because older frames did not record causes for newly
+admitted entities.
 
 Graphical input now submits an edge-triggered split on Space. Predicted topology, mass, launch,
 food, absorption, merge, and owner state are rendered from the predicted interaction island;
@@ -453,7 +462,8 @@ be compared.
 Engine tests with a small deterministic model cover:
 
 - Matching/mismatching authority, long replay suffixes, ACK trimming, stale authority, scope
-  rebase, history exhaustion, hard resync, and no partial commit.
+  rebase, history exhaustion, hard resync, refreshed derived stimuli, refresh failure, and no
+  partial commit.
 - Repeated replay of one key invokes `PredictOnce` once.
 - Retraction cancels `PredictCancelable` once; revision updates its existing token; confirmation
   does not duplicate it.
