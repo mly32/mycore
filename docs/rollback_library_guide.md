@@ -260,6 +260,10 @@ fails with `StimulusRefreshFailed` and publishes none of the scratch state or re
 `rebase_scope_with_stimulus_refresh` provides the same contract when installing a higher scope
 epoch.
 
+The [Feature 14 prediction-stutter postmortem](feature14_prediction_stutter_postmortem.md)
+documents the production failure that motivated this API, including why exact replay remains
+correct for sampled local commands but not for a superseded authority-derived assumption.
+
 ## Choose the correct timeline operation
 
 | Operation | Authority requirement | History behavior | Use |

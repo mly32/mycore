@@ -491,9 +491,11 @@ speed or slow local simulation; adaptive cadence remains Feature 14 step 8 work.
 
 ### Frequent corrections with low loss
 
-Check shared tick order, ACK semantics, prediction-scope membership, recorded remote movement
-assumptions, and floating-point divergence. Use the orange, magenta, white, and replay markers to
-identify where states first disagree.
+Check shared tick order, ACK semantics, prediction-scope membership, remote-assumption authority
+provenance, and floating-point divergence. Use same-head reconciliation logs plus the orange,
+magenta, white, and replay markers to identify where states first disagree. Repeated same-head
+remote corrections after one direction change match the failure pattern in the
+[Feature 14 prediction-stutter postmortem](feature14_prediction_stutter_postmortem.md).
 
 ### Smoothing offset never settles
 

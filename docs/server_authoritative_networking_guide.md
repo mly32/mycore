@@ -1025,6 +1025,10 @@ because clocks and routes can differ.
 - Feature 12 remotes are interpolated from known samples. Feature 14 predicts recorded held
   movement only inside a closed gameplay island, never guesses remote edge actions, and keeps
   outside-closure extrapolation presentation-only and bounded.
+- Storage capacity, retained replay depth, causal scope horizon, authority input hold, and remote
+  presentation delay are different bounds. Predicted or presentation state never certifies the
+  authority provenance of a future stimulus. See the
+  [Feature 14 prediction-stutter postmortem](feature14_prediction_stutter_postmortem.md).
 - Presentation and replicated state are client views and never become server authority.
 
 ## Where to read the implementation

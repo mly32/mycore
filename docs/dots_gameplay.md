@@ -111,6 +111,9 @@ authority. A remote input edge that the client could not know may therefore caus
 correction; it must not make the remote repeatedly jump between an obsolete guess and the newest
 server direction.
 
+The root cause and cross-mechanic prevention rules are documented in the
+[Feature 14 prediction-stutter postmortem](feature14_prediction_stutter_postmortem.md).
+
 Space submits one split request per press; holding it does not split every input tick. A predicted
 child appears immediately and is matched to authority by `PredictionKey`, even if the server
 assigns a different entity ID. A predicted absorption may temporarily remove the final local

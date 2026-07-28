@@ -22,6 +22,9 @@
   debug visuals, fault controls, and troubleshooting.
 - [Rollback prediction design](rollback_prediction_design.md): game-neutral rollback timeline,
   Dots checkpoint/closure integration, consequence delivery, timing, and recovery contracts.
+- [Feature 14 prediction-stutter postmortem](feature14_prediction_stutter_postmortem.md): how
+  causal-horizon and replay-provenance mistakes caused remote oscillation, the correction, and
+  the cross-mechanic prevention checklist.
 - [SDL_GPU rendering](sdl_gpu_rendering_guide.md): shaders, resources, draw flow, and platform
   backends.
 

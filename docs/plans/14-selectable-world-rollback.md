@@ -239,7 +239,9 @@ Feature 15 must provide a conservative AOI margin sufficient to build the same c
 ## Replay, Rollforward, and Recovery
 
 Each retained frame records the exact Dots `TickStimulus`, checkpoint, scope epoch, diagnostic
-digest, and generated event journal. It does not retain device callbacks.
+digest, and generated event journal. It does not retain device callbacks. Sampled local fields
+remain exact; the explicit engine refresh transaction may replace authority-derived assumption
+fields before retained replay.
 
 For authority at tick `T`:
 
@@ -247,13 +249,18 @@ For authority at tick `T`:
 2. Compare with the predicted record at `T` for diagnostics.
 3. Restore authority to scratch.
 4. Drop acknowledged commands.
-5. Replay the retained suffix through the previous prediction head.
+5. Refresh superseded authority-derived assumptions and replay the retained suffix through the
+   previous prediction head.
 6. Regenerate events, calculate typed differences, and resolve predicted identities.
 7. Atomically publish World/history/event transitions/metrics/presentation correction data.
 
 Stale or invalid authority does not mutate committed state. Missing history, capacity exhaustion,
 incompatible checkpoint/scope, or ambiguous identity hard-resyncs to newest validated authority.
 Duration alone never chooses an incorrect partial state.
+
+The [Feature 14 prediction-stutter postmortem](../feature14_prediction_stutter_postmortem.md)
+records why the storage bound, causal horizon, immutable input, and refreshable assumption must
+remain separate concepts.
 
 ## Consequence Demonstration Matrix
 

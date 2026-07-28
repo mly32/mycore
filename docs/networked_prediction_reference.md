@@ -25,6 +25,10 @@ authority, speculation, and drawing state.
 The server is authoritative even when a client runs matching code speculatively. Presentation
 state never feeds simulation, replication, or server authority.
 
+The [Feature 14 prediction-stutter postmortem](feature14_prediction_stutter_postmortem.md)
+demonstrates the related provenance failure that occurs when a Predicted World value is mistaken
+for a newest-authority fact while constructing a future replay stimulus.
+
 ## Time coordinates
 
 | Term | Definition | Do not call it |

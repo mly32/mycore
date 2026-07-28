@@ -119,6 +119,8 @@ to quit. Mouse steering and spectator wheel zoom pause while the debug panel own
 For deterministic prediction investigation, set `[input].mode = "keyboard"` and
 `[debug].prediction_log_level = "debug"` in a client config. The `info` level logs only prediction
 scope changes; `debug` also reports nonzero remote-player displacement across reconciliation.
+The [Feature 14 prediction-stutter postmortem](../../docs/feature14_prediction_stutter_postmortem.md)
+explains the two-bot reproduction and how to interpret same-head corrections.
 
 Split, launch, cohesion, and merge are implemented in the shared deterministic simulation and
 rollback adapter. Protocol v4 carries the split edge, complete checkpoints, immutable rules,
