@@ -464,14 +464,6 @@ FrameData extract_remote_interpolated_predicted_frame_impl(
     for (const auto& endpoints : remote_endpoints) {
         const auto& older_endpoint = endpoints.older;
         const auto& newer_endpoint = endpoints.newer;
-        const auto entity_id = older_endpoint   ? older_endpoint->entity_id
-                               : newer_endpoint ? newer_endpoint->entity_id
-                                                : protocol::EntityId{};
-        if (predicted_world != nullptr && entity_id.is_valid() &&
-            (predicted_world->contains(simulation::EntityId{entity_id.value()}) ||
-             predicted_scope_contains(entity_id))) {
-            continue;
-        }
         if (older_endpoint) {
             append_remote_endpoint(*older_endpoint, CircleKind::RemoteOlderEndpointGhost);
         }

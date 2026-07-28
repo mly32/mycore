@@ -255,8 +255,11 @@ mean the zones were removed.
 each successful input send. Every newer snapshot is validated and digest-checked, the
 acknowledged history prefix is discarded, and at most 256 remaining inputs are replayed with
 their recorded remote assumptions in the same client frame before replicated and predicted state
-commit together. A scope-membership change rebuilds from newest authority under a new epoch
-because old stimuli contain no assumptions for newly admitted entities.
+commit together. The interaction closure uses the actual retained suffix length as its horizon;
+the 256-entry ring capacity is only a storage and hard-resync bound. The client verifies the
+closure before each predicted step and rebuilds from newest authority under a new epoch only when
+causal membership changes, because old stimuli contain no assumptions for newly admitted
+entities.
 
 The graphical client draws all predicted food and player topology inside that interaction island;
 duplicates are removed from the delayed Feature 12 frame. The controlled primary and camera use
@@ -378,11 +381,12 @@ For every remote player:
 - Cyan-to-blue dots: short connector from the older endpoint toward the newer endpoint.
 
 **Show remote endpoint outlines** controls the cyan/blue outlines and their cyan-to-blue
-connectors for every remote player without changing remote interpolation or gameplay. Cyan is the
-older bracket endpoint; blue is the newer endpoint that the delayed cursor is approaching. The
-**Interpolation** tab lists endpoint values for the lowest-ID sampled remote player as a
-representative example. Endpoint circles are debug-only and never feed presentation or gameplay
-state.
+connectors for every remote player without changing remote interpolation or gameplay. They
+remain visible when a remote is inside the predicted interaction scope so that its predicted
+position can be compared with both interpolation endpoints. Cyan is the older bracket endpoint;
+blue is the newer endpoint that the delayed cursor is approaching. The **Interpolation** tab
+lists endpoint values for the lowest-ID sampled remote player as a representative example.
+Endpoint circles are debug-only and never feed presentation or gameplay state.
 
 Feature 12 presentation-clock correction and future local input-clock synchronization solve
 different problems. Feature 12 keeps a delayed remote cursor centered in known snapshots. A

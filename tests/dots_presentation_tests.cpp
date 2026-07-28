@@ -293,7 +293,7 @@ TEST_CASE("Predicted interaction scope replaces duplicate interpolated entities"
             .show_replay_path = false,
         });
 
-    REQUIRE(frame.circles.size() == 4);
+    REQUIRE(frame.circles.size() == 9);
     CHECK(frame.camera == mycore::math::Vector2{10.0F, 0.0F});
     CHECK(frame.circles[0].entity_id == dots::protocol::EntityId{4});
     CHECK(frame.circles[1].entity_id == dots::protocol::EntityId{3});
@@ -302,6 +302,10 @@ TEST_CASE("Predicted interaction scope replaces duplicate interpolated entities"
     CHECK(frame.circles[2].position == mycore::math::Vector2{10.0F, 0.0F});
     CHECK(frame.circles[3].entity_id == dots::protocol::EntityId{2});
     CHECK(frame.circles[3].position == mycore::math::Vector2{2.0F, 0.0F});
+    CHECK(frame.circles[4].kind == dots::presentation::CircleKind::RemoteOlderEndpointGhost);
+    CHECK(frame.circles[5].kind == dots::presentation::CircleKind::RemoteNewerEndpointGhost);
+    CHECK(frame.circles[4].position == mycore::math::Vector2{10.0F, 0.0F});
+    CHECK(frame.circles[5].position == mycore::math::Vector2{20.0F, 0.0F});
 }
 
 TEST_CASE("Spectator camera follows the same interpolated sample used for drawing",

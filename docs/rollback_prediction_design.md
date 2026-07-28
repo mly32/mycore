@@ -276,8 +276,11 @@ Prediction profiles are:
 
 Closure starts from owned pieces and their owner/global dependencies, then expands through
 conservative swept bounds. Growth from food, split launch reach, and recursively reachable player
-interactions enlarge the set. Before each predicted step, an increased replay horizon or causal
-subscription change may require a scope rebase from latest authority.
+interactions enlarge the set. The production client derives the required replay horizon from the
+retained unacknowledged input suffix, never from the replay ring's storage capacity. Before each
+predicted step it recomputes the closure for the next suffix depth. The existing scope remains
+valid while it contains that freshly computed causal membership; newly required membership or a
+causal subscription change forces a scope rebase from latest authority before the step.
 
 Locally predicted split children are admitted by a unique `PredictionKey` belonging to an owned
 owner even though their authoritative entity IDs did not exist when the scope was built.

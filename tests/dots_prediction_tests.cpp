@@ -508,6 +508,47 @@ TEST_CASE("Predicted local elimination preserves confirmed play and buffered inp
     check_position(client.predicted_position(), 0.2F, 0.0F);
 }
 
+TEST_CASE("Client prediction closure follows retained replay depth instead of ring capacity",
+          "[dots][prediction][scope][remote]") {
+    ManualEndpoint endpoint;
+    dots::client_runtime::Runtime client{endpoint};
+    const mycore::net_transport::ConnectionHandle connection{28};
+    complete_handshake(endpoint, client, connection);
+
+    auto authority = snapshot(1, 0, dots::protocol::InputSequenceId::invalid(), {});
+    authority.entities.push_back({
+        .entity_id = dots::protocol::EntityId{9},
+        .kind = dots::protocol::EntityKind::Player,
+        .owner_id = dots::protocol::PlayerOwnerId{4},
+        .position_x = 15.0F,
+        .mass = 16.0F,
+    });
+    push_snapshot(endpoint, connection, authority);
+    REQUIRE_FALSE(client.process_events(clock_time(10s)).has_value());
+
+    const auto remote = dots::protocol::EntityId{9};
+    CHECK(std::ranges::find(client.predicted_scope_entity_ids(), remote) ==
+          client.predicted_scope_entity_ids().end());
+    REQUIRE(client.predicted_world() != nullptr);
+    CHECK_FALSE(client.predicted_world()->contains(dots::simulation::EntityId{remote.value()}));
+
+    for (std::uint32_t tick = 0; tick < 3; ++tick) {
+        REQUIRE(client.send_input(tick, {}) == dots::client_runtime::InputSendResult::Sent);
+        CHECK(std::ranges::find(client.predicted_scope_entity_ids(), remote) ==
+              client.predicted_scope_entity_ids().end());
+    }
+
+    const auto reconciliation_count =
+        client.prediction_statistics(clock_time(10s)).reconciliation_count;
+    REQUIRE(client.send_input(3, {}) == dots::client_runtime::InputSendResult::Sent);
+    CHECK(std::ranges::find(client.predicted_scope_entity_ids(), remote) !=
+          client.predicted_scope_entity_ids().end());
+    REQUIRE(client.predicted_world() != nullptr);
+    CHECK(client.predicted_world()->contains(dots::simulation::EntityId{remote.value()}));
+    CHECK(client.prediction_statistics(clock_time(10s)).reconciliation_count ==
+          reconciliation_count);
+}
+
 TEST_CASE("Misprediction corrects simulation immediately and records its replay path",
           "[dots][prediction][reconciliation]") {
     ManualEndpoint endpoint;

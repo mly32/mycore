@@ -32,8 +32,11 @@ constexpr auto kReplayBudget = std::chrono::milliseconds{2};
 constexpr auto kWarningInterval = std::chrono::seconds{5};
 constexpr std::size_t kReplayDurationSampleCapacity = 120;
 constexpr auto kInitialScopeEpoch = mycore::rollback::ScopeEpoch{0};
-constexpr auto kReplayHorizon =
-    mycore::time::TickDelta{static_cast<std::uint64_t>(kPredictionHistoryCapacity)};
+
+[[nodiscard]] mycore::time::TickDelta replay_horizon(std::size_t input_count) noexcept {
+    return mycore::time::TickDelta{
+        std::max(std::uint64_t{1}, static_cast<std::uint64_t>(input_count))};
+}
 
 [[nodiscard]] constexpr std::string_view
 disconnect_reason_name(mycore::net_transport::DisconnectReason reason) noexcept {
@@ -131,6 +134,11 @@ enum class TimelineAdvanceResult : std::uint8_t {
     Failed,
 };
 
+enum class AuthorityInstallReason : std::uint8_t {
+    NewAuthority,
+    ScopeRebase,
+};
+
 struct PredictedProjection {
     std::vector<protocol::EntityId> owned_entity_ids;
     protocol::EntityId primary_entity_id;
@@ -163,6 +171,9 @@ command_sequence(protocol::InputSequenceId input_id) noexcept {
     const auto contains_all = [](const auto& superset, const auto& subset) {
         return std::ranges::includes(superset, subset);
     };
+    // The required scope is rebuilt for the next retained-input depth before every advance.
+    // An older certified horizon remains safe while its selected causal membership still
+    // contains that freshly computed closure; only a membership or policy change needs a rebase.
     return current.requested_profile == required.requested_profile &&
            current.active_profile == required.active_profile &&
            current.fallback_reason == required.fallback_reason &&
@@ -172,7 +183,6 @@ command_sequence(protocol::InputSequenceId input_id) noexcept {
            current.required_causal_channels == required.required_causal_channels &&
            current.owned_owner_ids == required.owned_owner_ids &&
            current.owner_ids == required.owner_ids && current.rules == required.rules &&
-           current.replay_horizon == required.replay_horizon &&
            contains_all(current.player_ids, required.player_ids) &&
            contains_all(current.food_ids, required.food_ids);
 }
@@ -396,6 +406,14 @@ public:
             bytes = std::get_if<protocol::EncodedMessage>(&encoded);
             if (bytes == nullptr) {
                 return InputSendResult::InvalidMovement;
+            }
+        }
+        if (playing) {
+            const auto scope_error = ensure_prediction_scope(input_history_.size() + 1U,
+                                                             std::chrono::steady_clock::now());
+            if (scope_error) {
+                static_cast<void>(fail(*scope_error));
+                return InputSendResult::NotReady;
             }
         }
 
@@ -874,14 +892,15 @@ private:
     [[nodiscard]] std::variant<prediction::PredictionScope, RuntimeError>
     required_scope(const simulation::WorldCheckpoint& authority,
                    simulation::PlayerOwnerId owner_id,
-                   mycore::rollback::ScopeEpoch scope_epoch) const {
+                   mycore::rollback::ScopeEpoch scope_epoch,
+                   mycore::time::TickDelta required_replay_horizon) const {
         auto result = prediction::build_prediction_scope(
             authority,
             {
                 .profile = prediction::PredictionProfile::InteractionClosure,
                 .mechanics = prediction::kCurrentPredictionMechanics,
                 .owned_owner_ids = {owner_id},
-                .replay_horizon = kReplayHorizon,
+                .replay_horizon = required_replay_horizon,
                 .scope_epoch = scope_epoch,
                 .coverage = {},
             });
@@ -894,7 +913,9 @@ private:
     [[nodiscard]] std::optional<RuntimeError>
     install_authority(const protocol::FullSnapshot& snapshot,
                       const replication::ReplicatedWorld& candidate_world,
-                      std::chrono::steady_clock::time_point now) {
+                      std::chrono::steady_clock::time_point now,
+                      std::size_t minimum_replay_input_count = 0,
+                      AuthorityInstallReason reason = AuthorityInstallReason::NewAuthority) {
         MYCORE_PROFILE_ZONE("Dots prediction reconciliation");
         const auto replay_start = std::chrono::steady_clock::now();
         if (!world_rules_) {
@@ -913,8 +934,13 @@ private:
             return RuntimeError::MissingControlledEntity;
         }
 
+        auto scratch_history = input_history_;
+        scratch_history.discard_through(candidate_world.last_processed_input_id());
+        const auto required_replay_horizon =
+            replay_horizon(std::max(scratch_history.size(), minimum_replay_input_count));
         const auto initial_epoch = timeline_ ? timeline_->scope_epoch() : kInitialScopeEpoch;
-        auto required_result = required_scope(*authority, *owner, initial_epoch);
+        auto required_result =
+            required_scope(*authority, *owner, initial_epoch, required_replay_horizon);
         auto* required = std::get_if<prediction::PredictionScope>(&required_result);
         if (required == nullptr) {
             return std::get<RuntimeError>(required_result);
@@ -933,7 +959,8 @@ private:
             }
             const auto next_epoch =
                 mycore::rollback::ScopeEpoch{timeline_->scope_epoch().value() + 1U};
-            required_result = required_scope(*authority, *owner, next_epoch);
+            required_result =
+                required_scope(*authority, *owner, next_epoch, required_replay_horizon);
             required = std::get_if<prediction::PredictionScope>(&required_result);
             if (required == nullptr) {
                 return std::get<RuntimeError>(required_result);
@@ -948,8 +975,6 @@ private:
             return RuntimeError::PredictionScopeFailed;
         }
 
-        auto scratch_history = input_history_;
-        scratch_history.discard_through(candidate_world.last_processed_input_id());
         const auto previous_checkpoint =
             timeline_ && timeline_->state()
                 ? std::optional<simulation::WorldCheckpoint>{timeline_->state()->checkpoint()}
@@ -1051,7 +1076,7 @@ private:
         latest_replay_count_ = input_history_.size();
         total_replayed_input_count_ += latest_replay_count_;
         maximum_replay_count_ = std::max(maximum_replay_count_, latest_replay_count_);
-        if (previous_checkpoint) {
+        if (previous_checkpoint && reason == AuthorityInstallReason::NewAuthority) {
             ++reconciliation_count_;
         }
         latest_correction_distance_ = correction_distance;
@@ -1110,6 +1135,37 @@ private:
             input_history_.at(input_history_.size() - 1).resulting_position = *predicted_position_;
         }
         return std::nullopt;
+    }
+
+    [[nodiscard]] std::optional<RuntimeError>
+    ensure_prediction_scope(std::size_t replay_input_count,
+                            std::chrono::steady_clock::time_point now) {
+        if (!latest_authority_snapshot_ || !world_rules_ || !timeline_ ||
+            !confirmed_owner_id_.is_valid()) {
+            return RuntimeError::PredictionTimelineFailed;
+        }
+        const auto hydrated =
+            replication::hydrate_checkpoint(*latest_authority_snapshot_, *world_rules_);
+        const auto* authority = std::get_if<simulation::WorldCheckpoint>(&hydrated);
+        if (authority == nullptr) {
+            return RuntimeError::CheckpointHydrationFailed;
+        }
+        auto required_result = required_scope(*authority,
+                                              confirmed_owner_id_,
+                                              timeline_->scope_epoch(),
+                                              replay_horizon(replay_input_count));
+        const auto* required = std::get_if<prediction::PredictionScope>(&required_result);
+        if (required == nullptr) {
+            return std::get<RuntimeError>(required_result);
+        }
+        if (timeline_->scope() && scope_covers(*timeline_->scope(), *required)) {
+            return std::nullopt;
+        }
+        return install_authority(*latest_authority_snapshot_,
+                                 world_,
+                                 now,
+                                 replay_input_count,
+                                 AuthorityInstallReason::ScopeRebase);
     }
 
     [[nodiscard]] bool hard_resync(std::chrono::steady_clock::time_point now) {

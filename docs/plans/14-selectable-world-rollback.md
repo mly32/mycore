@@ -209,10 +209,12 @@ The fixed-point builder expands through:
 - Mechanic dependencies and every state domain they read.
 - Non-spatial causal/global dependencies that can change a predicted result.
 
-Before advancing, an enlarged replay horizon or changed causal subscription can force an atomic
-scope rebase from latest authority and replay. Excluded entities cannot interact with the
-predicted island. Missing required entity, owner, global, or causal state falls back to
-`OwnedMovement` and reports `IncompleteClosure`.
+Before advancing, the client recomputes the closure using the next retained unacknowledged-input
+depth, not the 256-entry history capacity. The current scope can continue while its selected
+causal membership contains that fresh result; newly required membership or a changed causal
+subscription forces an atomic scope rebase from latest authority and replay. Excluded entities
+cannot interact with the predicted island. Missing required entity, owner, global, or causal
+state falls back to `OwnedMovement` and reports `IncompleteClosure`.
 
 State policy is:
 
@@ -429,7 +431,9 @@ The production network client now hydrates each validated protocol checkpoint in
 Dots World, selects `InteractionClosure`, and advances that scope through the engine timeline
 with retained local commands and exact held remote-movement assumptions. Authority is installed
 and the unacknowledged suffix replayed in scratch state before the replicated view, timeline, and
-presentation projection commit together. A changed closure rebuilds from the newest authority
+presentation projection commit together. The closure horizon follows the actual retained suffix;
+the fixed 256-entry ring is only a recovery bound. Before each input, a fresh closure check
+rebases only when causal membership changes. A changed closure rebuilds from the newest authority
 under a new scope epoch because older frames did not record causes for newly admitted entities.
 
 Graphical input now submits an edge-triggered split on Space. Predicted topology, mass, launch,
@@ -440,7 +444,9 @@ ID. Predicted removal of the final local piece does not enter Spectating or stop
 only the confirmed replicated session can do that. The client also converts new authority
 receipts into confirmed timeline events and ACKs their contiguous sequence. Persistent
 consequence handlers, structural presentation transitions, and bounded outside-closure
-extrapolation remain step 7 work.
+extrapolation remain step 7 work. Remote interpolation endpoint ghosts remain visible for
+in-scope players when enabled so the predicted and authoritative presentation layers can still
+be compared.
 
 ## Test Plan
 

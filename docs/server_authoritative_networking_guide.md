@@ -465,10 +465,12 @@ Input samples have sequence IDs, protocol-v4 packets retain bounded redundancy, 
 schedules at most one queued sample per client per tick, snapshots acknowledge
 `last_processed_input`, and inputs report the latest received snapshot and highest contiguous
 authority receipt. The client runtime retains a fixed 256-entry input history and engine
-timeline. Each accepted snapshot is exactly hydrated into a checkpoint, projected to the current
-interaction scope, and used as the base for atomic replay of the unacknowledged suffix. Every
-replay stimulus records the local command and held remote movement assumptions used for that
-tick. The server does not yet use snapshot acknowledgements for delta baselines.
+timeline. That capacity is a recovery bound, not the interaction-closure horizon: the horizon is
+the actual retained unacknowledged suffix and is checked before each predicted advance. Each
+accepted snapshot is exactly hydrated into a checkpoint, projected to the current interaction
+scope, and used as the base for atomic replay of the suffix. Every replay stimulus records the
+local command and held remote movement assumptions used for that tick. The server does not yet
+use snapshot acknowledgements for delta baselines.
 
 ## There is no single “game frame”
 
