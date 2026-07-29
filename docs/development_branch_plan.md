@@ -496,7 +496,7 @@ Changes:
 - Add the statically typed `MyCore::Rollback` mechanism and Dots-owned model defined in
   [`rollback_prediction_design.md`](rollback_prediction_design.md).
 - Restore and resimulate complete gameplay state with an interaction-closure default,
-  full-replicated oracle/benchmark, and owned-movement fallback.
+  full-replicated oracle/benchmark, and owner-local gameplay fallback.
 - Treat closure as causal state membership, including owner-local cooldown/piece-count state and
   required global domains/authority facts rather than only spatial entities.
 - Add predicted split/launch/remerge, cooldowns, and predicted-spawn classification.
@@ -556,6 +556,9 @@ Changes:
 - Add debug visualization for AOI and replicated entity count.
 - Adapt Feature 14 prediction-set membership to AOI entry/exit, collision safety margins, and
   atomic initialization/removal of predicted entities.
+- Add a server-derived, epoch-versioned event-interest subscription covering owned events and
+  selected visible remote event categories. Change AOI membership and event subscription
+  atomically, and retain in-flight receipts across an epoch transition.
 
 Tests:
 
@@ -563,6 +566,8 @@ Tests:
 - AOI excludes distant entities.
 - Owned entity always has highest priority.
 - Snapshot entity counts shrink when entities exist outside view.
+- Event receipts follow the server-derived interest epoch without gaps or delivery outside the
+  subscribed owned/AOI set.
 
 Exit criterion:
 

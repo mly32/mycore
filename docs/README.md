@@ -25,6 +25,9 @@
 - [Feature 14 prediction-stutter postmortem](feature14_prediction_stutter_postmortem.md): how
   causal-horizon and replay-provenance mistakes caused remote oscillation, the correction, and
   the cross-mechanic prevention checklist.
+- [Feature 14 rollback and prediction audit](feature14_rollback_prediction_audit.md): assessment
+  of mechanic closure, event subscriptions, receipt lifecycle, client commit delivery, and the
+  step 6.5 remediation criteria.
 - [SDL_GPU rendering](sdl_gpu_rendering_guide.md): shaders, resources, draw flow, and platform
   backends.
 

@@ -410,13 +410,19 @@ Keep commits focused and reviewable, but do not add approval gates between these
    authority receipts, and hostile validation.
 6. Replace the client position ring with the complete Dots timeline and integrate
    interaction-closed prediction, split input, identity mapping, and confirmed session guarding.
+6.5. Close the audit findings documented in
+   [`../feature14_rollback_prediction_audit.md`](../feature14_rollback_prediction_audit.md):
+   replace the incomplete fallback with owned gameplay, separate event subscriptions from state
+   closure, publish every client timeline commit, use the kernel scope-rebase transaction, and
+   install a bounded accepted/published/retired authority-receipt lifecycle.
 7. Add persistent presentation composition, consequence handlers, correction smoothing, bounded
    extrapolation, interpolation fallback, and every consequence-matrix example.
 8. Add adaptive command timing, complete Rollback diagnostics/faults, impairment scenarios,
    entity-scale workloads, documentation updates, and the measured same-frame/multi-frame
    decision.
 
-Steps 1 through 6 are implemented on `feature/14`. `MyCore::Rollback` now provides the generic
+Steps 1 through 6 are implemented on `feature/14`; step 6.5 must complete before step 7.
+`MyCore::Rollback` now provides the generic
 timeline and consequence machinery. Dots Simulation now provides immutable `WorldRules`, sorted
 complete checkpoints, atomic restore, one owner-scoped command batch per tick, typed food and
 absorption, split, and merge journals, stable keys, and predicted identity storage. Its scratch
