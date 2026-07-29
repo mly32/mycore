@@ -14,6 +14,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <vector>
 
 namespace dots::client_runtime {
@@ -41,6 +42,8 @@ enum class RuntimeError : std::uint8_t {
     AmbiguousPredictionIdentity,
     TransportSendFailed,
 };
+
+[[nodiscard]] std::string_view runtime_error_name(RuntimeError error) noexcept;
 
 enum class InputSendResult : std::uint8_t {
     Sent,

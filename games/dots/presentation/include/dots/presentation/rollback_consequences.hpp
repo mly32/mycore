@@ -61,16 +61,13 @@ public:
     ~RollbackConsequencePresentation();
 
     RollbackConsequencePresentation(const RollbackConsequencePresentation&) = delete;
-    RollbackConsequencePresentation&
-    operator=(const RollbackConsequencePresentation&) = delete;
+    RollbackConsequencePresentation& operator=(const RollbackConsequencePresentation&) = delete;
     RollbackConsequencePresentation(RollbackConsequencePresentation&&) noexcept;
-    RollbackConsequencePresentation&
-    operator=(RollbackConsequencePresentation&&) noexcept;
+    RollbackConsequencePresentation& operator=(RollbackConsequencePresentation&&) noexcept;
 
     void set_local_owner(simulation::PlayerOwnerId owner_id) noexcept;
     [[nodiscard]] mycore::rollback::ConsequenceDispatchReport
-    consume(const PredictionEventBatch& batch,
-            std::chrono::steady_clock::time_point observed_at);
+    consume(const PredictionEventBatch& batch, std::chrono::steady_clock::time_point observed_at);
     void append_cues(FrameData& frame, std::chrono::steady_clock::time_point now);
 
     [[nodiscard]] std::optional<ConfirmedNotice>

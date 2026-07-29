@@ -163,6 +163,7 @@ RemoteExtrapolationBuffer::sample(std::chrono::steady_clock::time_point now,
         frame.entities.push_back({
             .entity_id = entity.entity_id,
             .kind = entity.kind,
+            .owner_id = entity.owner_id,
             .prediction_key = entity.prediction_key,
             .position = entity_position,
             .mass = entity.mass,
@@ -365,6 +366,7 @@ RemotePresentationFrame RemoteSnapshotBuffer::sample(protocol::EntityId controll
             frame.entities.push_back({
                 .entity_id = entity.entity_id,
                 .kind = entity.kind,
+                .owner_id = entity.owner_id,
                 .prediction_key = entity.prediction_key,
                 .position = entity_position,
                 .mass = mass,
@@ -431,6 +433,7 @@ RemoteEntityEndpoints RemoteSnapshotBuffer::endpoints(protocol::EntityId entity_
         return RemoteEntitySample{
             .entity_id = entity.entity_id,
             .kind = entity.kind,
+            .owner_id = entity.owner_id,
             .prediction_key = entity.prediction_key,
             .position = position(entity),
             .mass = entity.mass,

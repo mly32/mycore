@@ -26,12 +26,12 @@ lerp(mycore::render::Color from, mycore::render::Color to, float amount) noexcep
     };
 }
 
-[[nodiscard]] mycore::render::Color player_color(protocol::EntityId entity_id,
+[[nodiscard]] mycore::render::Color player_color(protocol::PlayerOwnerId owner_id,
                                                  const Settings& settings) noexcept {
-    if (!entity_id.is_valid()) {
+    if (!owner_id.is_valid()) {
         return settings.player;
     }
-    auto hash = entity_id.value();
+    auto hash = owner_id.value();
     hash ^= hash >> 16U;
     hash *= 0x7FEB352DU;
     hash ^= hash >> 15U;
@@ -59,6 +59,32 @@ void append_outline(mycore::render_2d::DrawList& draw_list,
         .outline_color = color,
         .outline_width_pixels = settings.comparison_ghost_outline_pixels,
     });
+}
+
+void append_authoritative_owned_ghosts(FrameData& frame,
+                                       const replication::ReplicatedWorld& world) {
+    for (const auto entity_id : world.recipient().owned_entity_ids) {
+        const auto* entity = world.find(entity_id);
+        if (entity == nullptr || entity->kind != protocol::EntityKind::Player ||
+            !entity->owner_id.is_valid() || !std::isfinite(entity->position_x) ||
+            !std::isfinite(entity->position_y) || !std::isfinite(entity->mass) ||
+            entity->mass <= 0.0F) {
+            throw std::runtime_error{
+                "Dots prediction presentation encountered invalid authoritative owned geometry"};
+        }
+        frame.circles.push_back({
+            .position = {entity->position_x, entity->position_y},
+            .mass = entity->mass,
+            .radius = simulation::radius_for_mass(entity->mass),
+            .kind = CircleKind::AuthoritativeSampleGhost,
+            .entity_id = entity_id,
+            .owner_id = entity->owner_id,
+            .opacity = 1.0F,
+            .prediction_key = entity->prediction_key,
+            .source = PresentationSource::State,
+            .source_revision = world.snapshot_id().value(),
+        });
+    }
 }
 
 } // namespace
@@ -483,6 +509,7 @@ FrameData PersistentWorldPresentation::compose(const FrameData& desired,
             motion_trail_.push_back({
                 .position = trail_entity->position,
                 .radius = trail_entity->radius,
+                .owner_id = trail_entity->owner_id,
                 .observed_at = now,
             });
         }
@@ -505,6 +532,7 @@ FrameData PersistentWorldPresentation::compose(const FrameData& desired,
             .radius = std::max(sample.radius * 0.18F, 0.05F),
             .kind = CircleKind::MotionTrail,
             .entity_id = motion_trail_entity_id,
+            .owner_id = sample.owner_id,
             .opacity = (1.0F - progress) * 0.55F,
             .prediction_key = std::nullopt,
             .source = PresentationSource::State,
@@ -545,6 +573,7 @@ FrameData extract_frame(const simulation::World& world,
             auto position = world.position(entity_id);
             const auto mass = world.mass(entity_id);
             const auto radius = world.radius(entity_id);
+            const auto owner_id = world.player_owner(entity_id);
             const auto override = std::find_if(position_overrides.begin(),
                                                position_overrides.end(),
                                                [entity_id](const EntityPositionOverride& value) {
@@ -555,7 +584,8 @@ FrameData extract_frame(const simulation::World& world,
             }
             if (!position || !mass || !radius || !std::isfinite(position->x) ||
                 !std::isfinite(position->y) || !std::isfinite(*mass) || *mass <= 0.0F ||
-                !std::isfinite(*radius) || *radius <= 0.0F) {
+                !std::isfinite(*radius) || *radius <= 0.0F ||
+                (kind == CircleKind::Player && !owner_id)) {
                 throw std::runtime_error{"Dots presentation encountered invalid entity geometry"};
             }
             frame.circles.push_back({
@@ -564,6 +594,8 @@ FrameData extract_frame(const simulation::World& world,
                 .radius = *radius,
                 .kind = kind,
                 .entity_id = protocol::EntityId{entity_id.value()},
+                .owner_id = owner_id ? protocol::PlayerOwnerId{owner_id->value()}
+                                     : protocol::PlayerOwnerId{},
                 .opacity = 1.0F,
                 .prediction_key = std::nullopt,
                 .source = PresentationSource::State,
@@ -601,7 +633,8 @@ FrameData extract_interpolated_follow_frame(const simulation::World& world,
     if (follow_target.show_current_position_ghost) {
         const auto mass = world.mass(follow_target.entity_id);
         const auto radius = world.radius(follow_target.entity_id);
-        if (!mass || !radius) {
+        const auto owner_id = world.player_owner(follow_target.entity_id);
+        if (!mass || !radius || !owner_id) {
             throw std::runtime_error{"Dots presentation could not find its follow target"};
         }
         frame.circles.push_back({
@@ -610,6 +643,7 @@ FrameData extract_interpolated_follow_frame(const simulation::World& world,
             .radius = *radius,
             .kind = CircleKind::PositionGhost,
             .entity_id = protocol::EntityId{follow_target.entity_id.value()},
+            .owner_id = protocol::PlayerOwnerId{owner_id->value()},
             .opacity = 1.0F,
             .prediction_key = std::nullopt,
             .source = PresentationSource::State,
@@ -640,6 +674,7 @@ FrameData extract_replicated_frame(const replication::ReplicatedWorld& world,
             .kind =
                 entity.kind == protocol::EntityKind::Food ? CircleKind::Food : CircleKind::Player,
             .entity_id = entity.entity_id,
+            .owner_id = entity.owner_id,
             .opacity = 1.0F,
             .prediction_key = entity.prediction_key,
             .source = PresentationSource::State,
@@ -686,6 +721,7 @@ FrameData extract_predicted_replicated_frame(const replication::ReplicatedWorld&
             .radius = radius,
             .kind = kind,
             .entity_id = controlled_player.entity_id,
+            .owner_id = controlled->owner_id,
             .opacity = 1.0F,
             .prediction_key = std::nullopt,
             .source = PresentationSource::State,
@@ -694,8 +730,7 @@ FrameData extract_predicted_replicated_frame(const replication::ReplicatedWorld&
     };
     if (controlled_player.show_prediction_layers) {
         append_ghost(controlled_player.predicted_position, CircleKind::PredictedPositionGhost);
-        append_ghost({controlled->position_x, controlled->position_y},
-                     CircleKind::AuthoritativeSampleGhost);
+        append_authoritative_owned_ghosts(frame, world);
         if (controlled_player.pre_correction_position) {
             append_ghost(*controlled_player.pre_correction_position,
                          CircleKind::PreCorrectionGhost);
@@ -714,6 +749,7 @@ FrameData extract_predicted_replicated_frame(const replication::ReplicatedWorld&
                 .radius = simulation::radius_for_mass(correction.mass),
                 .kind = CircleKind::PreCorrectionGhost,
                 .entity_id = correction.entity_id,
+                .owner_id = controlled->owner_id,
                 .opacity = correction.opacity,
                 .prediction_key = std::nullopt,
                 .source = PresentationSource::State,
@@ -792,6 +828,7 @@ FrameData extract_remote_interpolated_predicted_frame_impl(
             .kind =
                 entity.kind == protocol::EntityKind::Food ? CircleKind::Food : CircleKind::Player,
             .entity_id = entity.entity_id,
+            .owner_id = entity.owner_id,
             .opacity = 1.0F,
             .prediction_key = entity.prediction_key,
             .source = remote_source,
@@ -808,6 +845,7 @@ FrameData extract_remote_interpolated_predicted_frame_impl(
                 .radius = simulation::radius_for_mass(checkpoint.rules.food_mass),
                 .kind = CircleKind::Food,
                 .entity_id = protocol::EntityId{food.entity_id.value()},
+                .owner_id = {},
                 .opacity = 1.0F,
                 .prediction_key = std::nullopt,
                 .source = PresentationSource::Predicted,
@@ -824,6 +862,7 @@ FrameData extract_remote_interpolated_predicted_frame_impl(
                 .radius = simulation::radius_for_mass(player.mass),
                 .kind = CircleKind::Player,
                 .entity_id = entity_id,
+                .owner_id = protocol::PlayerOwnerId{player.owner_id.value()},
                 .opacity = 1.0F,
                 .prediction_key =
                     player.prediction_key
@@ -848,6 +887,7 @@ FrameData extract_remote_interpolated_predicted_frame_impl(
             .radius = simulation::radius_for_mass(controlled_mass),
             .kind = CircleKind::Player,
             .entity_id = controlled_player.entity_id,
+            .owner_id = authoritative_controlled->owner_id,
             .opacity = 1.0F,
             .prediction_key = std::nullopt,
             .source = PresentationSource::State,
@@ -862,6 +902,7 @@ FrameData extract_remote_interpolated_predicted_frame_impl(
             .radius = simulation::radius_for_mass(entity.mass),
             .kind = kind,
             .entity_id = entity.entity_id,
+            .owner_id = entity.owner_id,
             .opacity = 1.0F,
             .prediction_key = std::nullopt,
             .source = PresentationSource::State,
@@ -894,6 +935,7 @@ FrameData extract_remote_interpolated_predicted_frame_impl(
                     .radius = 0.0F,
                     .kind = kConnectorKinds[index],
                     .entity_id = older.entity_id,
+                    .owner_id = older.owner_id,
                     .opacity = 1.0F,
                     .prediction_key = std::nullopt,
                     .source = PresentationSource::State,
@@ -904,24 +946,25 @@ FrameData extract_remote_interpolated_predicted_frame_impl(
     }
 
     const auto radius = simulation::radius_for_mass(controlled_mass);
-    const auto append_ghost = [&frame, controlled_mass, radius, &controlled_player](
-                                  mycore::math::Vector2 position, CircleKind kind) {
-        frame.circles.push_back({
-            .position = position,
-            .mass = controlled_mass,
-            .radius = radius,
-            .kind = kind,
-            .entity_id = controlled_player.entity_id,
-            .opacity = 1.0F,
-            .prediction_key = std::nullopt,
-            .source = PresentationSource::State,
-            .source_revision = 0,
-        });
-    };
+    const auto append_ghost =
+        [&frame, controlled_mass, radius, &controlled_player, authoritative_controlled](
+            mycore::math::Vector2 position, CircleKind kind) {
+            frame.circles.push_back({
+                .position = position,
+                .mass = controlled_mass,
+                .radius = radius,
+                .kind = kind,
+                .entity_id = controlled_player.entity_id,
+                .owner_id = authoritative_controlled->owner_id,
+                .opacity = 1.0F,
+                .prediction_key = std::nullopt,
+                .source = PresentationSource::State,
+                .source_revision = 0,
+            });
+        };
     if (controlled_player.show_prediction_layers) {
         append_ghost(controlled_player.predicted_position, CircleKind::PredictedPositionGhost);
-        append_ghost({authoritative_controlled->position_x, authoritative_controlled->position_y},
-                     CircleKind::AuthoritativeSampleGhost);
+        append_authoritative_owned_ghosts(frame, world);
         if (controlled_player.pre_correction_position) {
             append_ghost(*controlled_player.pre_correction_position,
                          CircleKind::PreCorrectionGhost);
@@ -940,6 +983,7 @@ FrameData extract_remote_interpolated_predicted_frame_impl(
                 .radius = simulation::radius_for_mass(correction.mass),
                 .kind = CircleKind::PreCorrectionGhost,
                 .entity_id = correction.entity_id,
+                .owner_id = authoritative_controlled->owner_id,
                 .opacity = correction.opacity,
                 .prediction_key = std::nullopt,
                 .source = PresentationSource::State,
@@ -1030,6 +1074,7 @@ void append_interpolated_remote_comparison(
             .radius = simulation::radius_for_mass(entity.mass),
             .kind = CircleKind::RemoteInterpolatedComparisonGhost,
             .entity_id = entity.entity_id,
+            .owner_id = entity.owner_id,
             .opacity = 1.0F,
             .prediction_key = entity.prediction_key,
             .source = PresentationSource::Interpolated,
@@ -1061,6 +1106,7 @@ extract_remote_interpolated_spectator_frame(const RemotePresentationFrame& remot
             .kind =
                 entity.kind == protocol::EntityKind::Food ? CircleKind::Food : CircleKind::Player,
             .entity_id = entity.entity_id,
+            .owner_id = entity.owner_id,
             .opacity = 1.0F,
             .prediction_key = entity.prediction_key,
             .source = PresentationSource::Interpolated,
@@ -1080,6 +1126,7 @@ extract_remote_interpolated_spectator_frame(const RemotePresentationFrame& remot
             .radius = simulation::radius_for_mass(entity.mass),
             .kind = kind,
             .entity_id = entity.entity_id,
+            .owner_id = entity.owner_id,
             .opacity = 1.0F,
             .prediction_key = std::nullopt,
             .source = PresentationSource::State,
@@ -1112,6 +1159,7 @@ extract_remote_interpolated_spectator_frame(const RemotePresentationFrame& remot
                     .radius = 0.0F,
                     .kind = kConnectorKinds[index],
                     .entity_id = older.entity_id,
+                    .owner_id = older.owner_id,
                     .opacity = 1.0F,
                     .prediction_key = std::nullopt,
                     .source = PresentationSource::State,
@@ -1225,7 +1273,7 @@ mycore::render_2d::DrawList build_draw_list(const FrameData& frame, const Settin
             circle.kind == CircleKind::FoodStructuralFade) {
             auto color = circle.kind == CircleKind::FoodStructuralFade
                              ? settings.food
-                             : player_color(circle.entity_id, settings);
+                             : player_color(circle.owner_id, settings);
             color.alpha *= circle.opacity;
             draw_list.circles.push_back({
                 .center = circle.position,
@@ -1266,7 +1314,7 @@ mycore::render_2d::DrawList build_draw_list(const FrameData& frame, const Settin
             .center = circle.position,
             .radius = circle.radius,
             .color = circle.kind == CircleKind::Food ? settings.food
-                                                     : player_color(circle.entity_id, settings),
+                                                     : player_color(circle.owner_id, settings),
             .outline_color = {},
             .outline_width_pixels = 0.0F,
         });

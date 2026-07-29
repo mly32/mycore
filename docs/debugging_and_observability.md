@@ -349,7 +349,7 @@ capacity from 1 through 64 and defaults to 8. This changes diagnostics only.
 |---|---|
 | Filled player/food | Predicted interaction-island topology combined with the configured outside-closure source; the primary uses its smoothed presentation position. |
 | White outline | Corrected predicted simulation position. |
-| Orange outline | Latest received authoritative sample. It is historical, not the server's live position. |
+| Orange outline | Latest received authoritative sample for each confirmed owned piece. A newly predicted split child has no orange outline until authority confirms it. These are historical samples, not live server positions. |
 | Magenta outline | An entity position immediately before a recent nonzero correction. This includes the local primary and comparable remote players. New entries are opaque and older entries fade without changing hue. |
 | Purple markers | Results of replayed unacknowledged inputs after the rollback base. |
 

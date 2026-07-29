@@ -27,6 +27,7 @@ struct RemoteSnapshotSample {
 struct RemoteEntitySample {
     protocol::EntityId entity_id;
     protocol::EntityKind kind{protocol::EntityKind::Player};
+    protocol::PlayerOwnerId owner_id;
     std::optional<protocol::PredictionKey> prediction_key;
     mycore::math::Vector2 position;
     float mass{};

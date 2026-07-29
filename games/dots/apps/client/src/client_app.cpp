@@ -222,40 +222,6 @@ runtime_state_name(dots::client_runtime::State state) noexcept {
 }
 
 [[nodiscard]] constexpr std::string_view
-runtime_error_name(dots::client_runtime::RuntimeError error) noexcept {
-    using dots::client_runtime::RuntimeError;
-    switch (error) {
-    case RuntimeError::MultipleConnections:
-        return "MULTIPLE CONNECTIONS";
-    case RuntimeError::ProtocolEncodeFailed:
-        return "PROTOCOL ENCODE FAILED";
-    case RuntimeError::ProtocolDecodeFailed:
-        return "PROTOCOL DECODE FAILED";
-    case RuntimeError::UnexpectedMessage:
-        return "UNEXPECTED MESSAGE";
-    case RuntimeError::InvalidSnapshot:
-        return "INVALID SNAPSHOT";
-    case RuntimeError::InvalidInputAcknowledgement:
-        return "INVALID INPUT ACKNOWLEDGEMENT";
-    case RuntimeError::MissingControlledEntity:
-        return "MISSING CONTROLLED ENTITY";
-    case RuntimeError::CheckpointHydrationFailed:
-        return "CHECKPOINT HYDRATION FAILED";
-    case RuntimeError::PredictionScopeFailed:
-        return "PREDICTION SCOPE FAILED";
-    case RuntimeError::PredictionTimelineFailed:
-        return "PREDICTION TIMELINE FAILED";
-    case RuntimeError::PredictionEventQueueFull:
-        return "PREDICTION EVENT QUEUE FULL";
-    case RuntimeError::AmbiguousPredictionIdentity:
-        return "AMBIGUOUS PREDICTION IDENTITY";
-    case RuntimeError::TransportSendFailed:
-        return "TRANSPORT SEND FAILED";
-    }
-    return "UNKNOWN";
-}
-
-[[nodiscard]] constexpr std::string_view
 session_mode_name(dots::protocol::SessionMode mode) noexcept {
     using dots::protocol::SessionMode;
     switch (mode) {
@@ -1142,7 +1108,7 @@ int run_networked_game(
         }
         drain_consequence_batches(now);
         if (result.error) {
-            const auto name = runtime_error_name(*result.error);
+            const auto name = dots::client_runtime::runtime_error_name(*result.error);
             mycore::debug::log_error(
                 "dots.client.session", "Client runtime processing failed: {}", name);
         }

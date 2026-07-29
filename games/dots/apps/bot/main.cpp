@@ -107,11 +107,20 @@ int main(int argc, char** argv) {
         mycore::net_transport::GameNetworkingSocketsNetwork network{options.impairment};
         auto& endpoint = network.connect(server_address);
         dots::client_runtime::Runtime client{endpoint};
+        const auto process_events = [&client] {
+            const auto result = client.process_events();
+            // Bots have no presentation side effects, but every runtime composition root must
+            // retire the bounded stream of post-commit prediction event batches.
+            static_cast<void>(client.take_prediction_event_batches());
+            return result.error;
+        };
         const auto handshake_deadline = std::chrono::steady_clock::now() + 10s;
         while (client.state() != dots::client_runtime::State::Ready &&
                std::chrono::steady_clock::now() < handshake_deadline) {
-            if (client.process_events().error) {
-                throw std::runtime_error{"The bot handshake failed"};
+            if (const auto error = process_events()) {
+                throw std::runtime_error{
+                    "The bot handshake failed: " +
+                    std::string{dots::client_runtime::runtime_error_name(*error)}};
             }
             std::this_thread::sleep_for(1ms);
         }
@@ -128,8 +137,10 @@ int main(int argc, char** argv) {
                                 client.client_id().value(),
                                 client.controlled_entity_id().value());
         while (stop_requested == 0 && (!options.ticks || sent_ticks < *options.ticks)) {
-            if (client.process_events().error) {
-                throw std::runtime_error{"The bot session failed"};
+            if (const auto error = process_events()) {
+                throw std::runtime_error{
+                    "The bot session failed: " +
+                    std::string{dots::client_runtime::runtime_error_name(*error)}};
             }
             if (sent_ticks > std::numeric_limits<std::uint32_t>::max()) {
                 throw std::runtime_error{"Bot input ticks are exhausted"};

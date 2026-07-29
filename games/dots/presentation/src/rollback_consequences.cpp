@@ -44,8 +44,7 @@ struct CueRecord {
     if (duration <= std::chrono::steady_clock::duration::zero()) {
         return 1.0F;
     }
-    const auto age =
-        std::max(now - started_at, std::chrono::steady_clock::duration::zero());
+    const auto age = std::max(now - started_at, std::chrono::steady_clock::duration::zero());
     return std::clamp(std::chrono::duration<float>{age}.count() /
                           std::chrono::duration<float>{duration}.count(),
                       0.0F,
@@ -86,15 +85,14 @@ public:
         });
     }
 
-    [[nodiscard]] CueToken activate(
-        CueType type,
-        protocol::EntityId attached_entity_id,
-        mycore::math::Vector2 position,
-        mycore::math::Vector2 target,
-        mycore::math::Vector2 velocity,
-        float mass,
-        std::chrono::steady_clock::duration duration,
-        std::chrono::steady_clock::duration cancellation_duration) {
+    [[nodiscard]] CueToken activate(CueType type,
+                                    protocol::EntityId attached_entity_id,
+                                    mycore::math::Vector2 position,
+                                    mycore::math::Vector2 target,
+                                    mycore::math::Vector2 velocity,
+                                    float mass,
+                                    std::chrono::steady_clock::duration duration,
+                                    std::chrono::steady_clock::duration cancellation_duration) {
         const auto token = next_token_++;
         records_.push_back({
             .token = token,
@@ -115,8 +113,7 @@ public:
         return CueToken{.value = token};
     }
 
-    template <class Update>
-    void revise(CueToken token, Update&& update) {
+    template <class Update> void revise(CueToken token, Update&& update) {
         if (auto* record = find(token)) {
             std::forward<Update>(update)(*record);
         }
@@ -166,9 +163,7 @@ public:
             auto cancellation_opacity = 1.0F;
             if (record.canceled) {
                 cancellation_opacity =
-                    1.0F - progress(now,
-                                    record.canceled_at,
-                                    record.cancellation_duration);
+                    1.0F - progress(now, record.canceled_at, record.cancellation_duration);
             }
             if (cue_progress >= 1.0F || cancellation_opacity <= 0.0F) {
                 continue;
@@ -191,8 +186,7 @@ public:
         if (!notice_) {
             return std::nullopt;
         }
-        const auto notice_progress =
-            progress(now, notice_->started_at, kConfirmedNoticeDuration);
+        const auto notice_progress = progress(now, notice_->started_at, kConfirmedNoticeDuration);
         if (notice_progress >= 1.0F) {
             return std::nullopt;
         }
@@ -219,8 +213,7 @@ private:
     };
 
     [[nodiscard]] CueRecord* find(CueToken token) noexcept {
-        const auto found =
-            std::ranges::find(records_, token.value, &CueRecord::token);
+        const auto found = std::ranges::find(records_, token.value, &CueRecord::token);
         return found == records_.end() ? nullptr : &*found;
     }
 
@@ -237,6 +230,7 @@ private:
             .radius = radius,
             .kind = kind,
             .entity_id = entity_id,
+            .owner_id = {},
             .opacity = opacity,
             .prediction_key = std::nullopt,
             .source = PresentationSource::State,
@@ -248,8 +242,7 @@ private:
                               const CueRecord& record,
                               float cue_progress,
                               float cancellation_opacity) {
-        const auto base_radius =
-            simulation::radius_for_mass(std::max(record.mass, 0.01F));
+        const auto base_radius = simulation::radius_for_mass(std::max(record.mass, 0.01F));
         const auto fade = (1.0F - cue_progress) * cancellation_opacity;
         auto attached_position = record.position;
         if (record.attached_entity_id.is_valid()) {
@@ -295,8 +288,7 @@ private:
             };
             for (const auto direction : directions) {
                 append_circle(frame,
-                              record.position +
-                                  (direction * base_radius * (0.25F + cue_progress)),
+                              record.position + (direction * base_radius * (0.25F + cue_progress)),
                               record.mass,
                               std::max(base_radius * 0.16F * (1.0F - cue_progress), 0.03F),
                               CircleKind::FoodPop,
@@ -316,8 +308,7 @@ private:
             return;
         case CueType::ConsumeCollapse:
             append_circle(frame,
-                          record.position +
-                              ((record.target - record.position) * cue_progress),
+                          record.position + ((record.target - record.position) * cue_progress),
                           record.mass,
                           base_radius * (1.0F - cue_progress),
                           CircleKind::ConsumeCollapse,
@@ -367,8 +358,8 @@ struct SplitLaunchHandler {
     using Token = CueToken;
     static constexpr auto policy = mycore::rollback::ConsequencePolicy::PredictCancelable;
 
-    [[nodiscard]] std::optional<Token>
-    on_predict(const simulation::SimulationEventKey&, const Event& event) {
+    [[nodiscard]] std::optional<Token> on_predict(const simulation::SimulationEventKey&,
+                                                  const Event& event) {
         return store->activate(CueType::SplitLaunch,
                                protocol::EntityId{event.child_entity_id.value()},
                                event.origin_position,
@@ -411,8 +402,8 @@ struct FoodPopHandler {
     using Token = CueToken;
     static constexpr auto policy = mycore::rollback::ConsequencePolicy::PredictCancelable;
 
-    [[nodiscard]] std::optional<Token>
-    on_predict(const simulation::SimulationEventKey&, const Event& event) {
+    [[nodiscard]] std::optional<Token> on_predict(const simulation::SimulationEventKey&,
+                                                  const Event& event) {
         return store->activate(CueType::FoodPop,
                                {},
                                event.food_position,
@@ -470,8 +461,8 @@ struct ConsumeCollapseHandler {
     using Token = CueToken;
     static constexpr auto policy = mycore::rollback::ConsequencePolicy::PredictCancelable;
 
-    [[nodiscard]] std::optional<Token>
-    on_predict(const simulation::SimulationEventKey&, const Event& event) {
+    [[nodiscard]] std::optional<Token> on_predict(const simulation::SimulationEventKey&,
+                                                  const Event& event) {
         return store->activate(CueType::ConsumeCollapse,
                                {},
                                event.victim_position,
@@ -512,8 +503,7 @@ struct ConfirmedAbsorptionHandler {
     using Event = simulation::PlayerAbsorbed;
     static constexpr auto policy = mycore::rollback::ConsequencePolicy::ConfirmOnce;
 
-    [[nodiscard]] bool
-    on_confirmed(const simulation::SimulationEventKey&, const Event& event) {
+    [[nodiscard]] bool on_confirmed(const simulation::SimulationEventKey&, const Event& event) {
         store->confirm_absorption(event);
         return true;
     }
@@ -521,14 +511,13 @@ struct ConfirmedAbsorptionHandler {
     CueStore* store{};
 };
 
-using Router =
-    mycore::rollback::StaticConsequenceRouter<prediction::WorldModel,
-                                              SplitFlashHandler,
-                                              SplitLaunchHandler,
-                                              FoodPopHandler,
-                                              ConsumeFlashHandler,
-                                              ConsumeCollapseHandler,
-                                              ConfirmedAbsorptionHandler>;
+using Router = mycore::rollback::StaticConsequenceRouter<prediction::WorldModel,
+                                                         SplitFlashHandler,
+                                                         SplitLaunchHandler,
+                                                         FoodPopHandler,
+                                                         ConsumeFlashHandler,
+                                                         ConsumeCollapseHandler,
+                                                         ConfirmedAbsorptionHandler>;
 
 } // namespace
 
@@ -547,8 +536,7 @@ public:
     }
 
     [[nodiscard]] mycore::rollback::ConsequenceDispatchReport
-    consume(const PredictionEventBatch& batch,
-            std::chrono::steady_clock::time_point observed_at) {
+    consume(const PredictionEventBatch& batch, std::chrono::steady_clock::time_point observed_at) {
         store_.set_observed_at(observed_at);
         for (const auto& change : batch.changes) {
             ++statistics_.transition_counts[static_cast<std::size_t>(change.transition)];
@@ -593,26 +581,22 @@ RollbackConsequencePresentation::RollbackConsequencePresentation(
 RollbackConsequencePresentation&
 RollbackConsequencePresentation::operator=(RollbackConsequencePresentation&&) noexcept = default;
 
-void RollbackConsequencePresentation::set_local_owner(
-    simulation::PlayerOwnerId owner_id) noexcept {
+void RollbackConsequencePresentation::set_local_owner(simulation::PlayerOwnerId owner_id) noexcept {
     impl_->set_local_owner(owner_id);
 }
 
 mycore::rollback::ConsequenceDispatchReport
-RollbackConsequencePresentation::consume(
-    const PredictionEventBatch& batch,
-    std::chrono::steady_clock::time_point observed_at) {
+RollbackConsequencePresentation::consume(const PredictionEventBatch& batch,
+                                         std::chrono::steady_clock::time_point observed_at) {
     return impl_->consume(batch, observed_at);
 }
 
-void RollbackConsequencePresentation::append_cues(
-    FrameData& frame,
-    std::chrono::steady_clock::time_point now) {
+void RollbackConsequencePresentation::append_cues(FrameData& frame,
+                                                  std::chrono::steady_clock::time_point now) {
     impl_->append_cues(frame, now);
 }
 
-std::optional<ConfirmedNotice>
-RollbackConsequencePresentation::confirmed_notice(
+std::optional<ConfirmedNotice> RollbackConsequencePresentation::confirmed_notice(
     std::chrono::steady_clock::time_point now) const noexcept {
     return impl_->confirmed_notice(now);
 }

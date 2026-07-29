@@ -64,6 +64,10 @@ Run an executable with `--help` for its complete CLI.
 | `dots_server` | Headless authoritative 30 Hz native server |
 | `dots_bot` | Headless native client that repeatedly moves in a wide rectangle |
 
+The bot runs the same rollback client runtime as the graphical client. It drains and discards
+post-commit prediction event batches every poll because a headless composition has no
+presentation consequences to play.
+
 Networked clients send protocol-v4 input packets at 30 Hz and receive authoritative snapshots at
 15 Hz. Each input packet can repeat up to two unacknowledged samples by default. The controlled
 player responds from a complete interaction-closed rollback World immediately, reconciles

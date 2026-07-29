@@ -331,6 +331,38 @@ prediction_identity_remaps(const std::optional<simulation::WorldCheckpoint>& pre
 
 } // namespace
 
+std::string_view runtime_error_name(RuntimeError error) noexcept {
+    switch (error) {
+    case RuntimeError::MultipleConnections:
+        return "MULTIPLE CONNECTIONS";
+    case RuntimeError::ProtocolEncodeFailed:
+        return "PROTOCOL ENCODE FAILED";
+    case RuntimeError::ProtocolDecodeFailed:
+        return "PROTOCOL DECODE FAILED";
+    case RuntimeError::UnexpectedMessage:
+        return "UNEXPECTED MESSAGE";
+    case RuntimeError::InvalidSnapshot:
+        return "INVALID SNAPSHOT";
+    case RuntimeError::InvalidInputAcknowledgement:
+        return "INVALID INPUT ACKNOWLEDGEMENT";
+    case RuntimeError::MissingControlledEntity:
+        return "MISSING CONTROLLED ENTITY";
+    case RuntimeError::CheckpointHydrationFailed:
+        return "CHECKPOINT HYDRATION FAILED";
+    case RuntimeError::PredictionScopeFailed:
+        return "PREDICTION SCOPE FAILED";
+    case RuntimeError::PredictionTimelineFailed:
+        return "PREDICTION TIMELINE FAILED";
+    case RuntimeError::PredictionEventQueueFull:
+        return "PREDICTION EVENT QUEUE FULL";
+    case RuntimeError::AmbiguousPredictionIdentity:
+        return "AMBIGUOUS PREDICTION IDENTITY";
+    case RuntimeError::TransportSendFailed:
+        return "TRANSPORT SEND FAILED";
+    }
+    return "UNKNOWN";
+}
+
 class Runtime::Impl {
 public:
     Impl(mycore::net_transport::Endpoint& endpoint, Settings settings)

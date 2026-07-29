@@ -275,6 +275,15 @@ find_snapshot(std::span<const mycore::net_transport::Event> events) {
 
 } // namespace
 
+TEST_CASE("Client runtime exposes actionable error names", "[dots][session]") {
+    CHECK(dots::client_runtime::runtime_error_name(
+              dots::client_runtime::RuntimeError::PredictionEventQueueFull) ==
+          "PREDICTION EVENT QUEUE FULL");
+    CHECK(dots::client_runtime::runtime_error_name(
+              dots::client_runtime::RuntimeError::ProtocolDecodeFailed) ==
+          "PROTOCOL DECODE FAILED");
+}
+
 TEST_CASE("Two in-memory clients receive authoritative identities and snapshots",
           "[dots][session]") {
     mycore::net_transport::InMemoryNetwork network;

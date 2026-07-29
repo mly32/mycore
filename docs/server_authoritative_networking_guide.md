@@ -442,6 +442,12 @@ retirement echo, or retention overflow is an explicit session failure. Repeated
 Playing/Spectating and respawn fields remain ordinary authoritative state rather than
 receipt-driven one-shots.
 
+`client_runtime::Runtime` retains at most 512 post-commit prediction event batches for its
+presentation/consequence consumer. Every composition root must regularly take that stream.
+Headless clients such as `dots_bot` intentionally discard the returned batches because they have
+no side effects to present; failing to drain them is a consumer-liveness error and eventually
+returns `PredictionEventQueueFull`. This bound prevents a missing consumer from leaking memory.
+
 ## The baseline no-compensation mental model
 
 Without prediction, a networked client would render only the last authoritative sample received:

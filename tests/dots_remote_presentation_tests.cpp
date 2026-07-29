@@ -104,6 +104,7 @@ TEST_CASE("Remote extrapolation advances movement and launch but keeps food stat
     REQUIRE(frame.entities.size() == 2);
     CHECK(frame.entities[0].position.x == Catch::Approx(7.0F));
     CHECK(frame.entities[0].position.y == Catch::Approx(3.0F));
+    CHECK(frame.entities[0].owner_id == dots::protocol::PlayerOwnerId{5});
     REQUIRE(frame.entities[0].prediction_key.has_value());
     CHECK(frame.entities[0].prediction_key->input_id == dots::protocol::InputSequenceId{7});
     CHECK(frame.entities[1].position.x == Catch::Approx(9.0F));

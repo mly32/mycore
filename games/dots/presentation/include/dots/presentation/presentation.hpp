@@ -55,6 +55,7 @@ struct CircleInstance {
     float radius{};
     CircleKind kind{};
     protocol::EntityId entity_id;
+    protocol::PlayerOwnerId owner_id;
     float opacity{1.0F};
     std::optional<protocol::PredictionKey> prediction_key;
     PresentationSource source{PresentationSource::State};
@@ -227,6 +228,7 @@ private:
     struct TrailSample {
         mycore::math::Vector2 position;
         float radius{};
+        protocol::PlayerOwnerId owner_id;
         std::chrono::steady_clock::time_point observed_at;
     };
 

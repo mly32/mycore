@@ -173,9 +173,9 @@ timeline commit:
 Dots has no audio backend yet. The confirmed stinger sequence is an explicit future-audio hook;
 it does not play sound today.
 
-Player fill color is a deterministic hash of the authoritative entity ID, so the same player has
-the same color on every client for the life of that server world. Mass changes radius, not fill
-color.
+Player fill color is a deterministic hash of the authoritative owner ID. Every split piece owned
+by one player therefore keeps the same color, including while a predicted child waits for its
+authoritative entity-ID mapping. Mass changes radius, not fill color.
 
 ## Planned gameplay, not current rules
 

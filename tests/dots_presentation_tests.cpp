@@ -174,6 +174,7 @@ TEST_CASE("Dots presentation extracts live food before players", "[dots][present
     REQUIRE(frame.circles[0].radius ==
             dots::simulation::radius_for_mass(dots::simulation::kFoodMass));
     REQUIRE(frame.circles[1].kind == dots::presentation::CircleKind::Player);
+    REQUIRE(frame.circles[1].owner_id == dots::protocol::PlayerOwnerId{0});
     REQUIRE(frame.circles[1].position == mycore::math::Vector2{2.0F, 3.0F});
     REQUIRE(frame.circles[1].mass == dots::simulation::kInitialPlayerMass);
     REQUIRE(frame.circles[1].radius ==
@@ -708,7 +709,8 @@ TEST_CASE("Dots presentation can omit the Render2D grid", "[dots][presentation]"
     REQUIRE_FALSE(draw_list.grid.has_value());
 }
 
-TEST_CASE("Dots presentation assigns stable colors from player IDs", "[dots][presentation]") {
+TEST_CASE("Dots presentation assigns one stable color to every piece of an owner",
+          "[dots][presentation]") {
     const dots::presentation::FrameData frame{
         .circles =
             {
@@ -717,20 +719,23 @@ TEST_CASE("Dots presentation assigns stable colors from player IDs", "[dots][pre
                     .radius = 4.0F,
                     .kind = dots::presentation::CircleKind::Player,
                     .entity_id = dots::protocol::EntityId{1},
+                    .owner_id = dots::protocol::PlayerOwnerId{4},
                 },
                 {
                     .mass =
                         dots::simulation::kInitialPlayerMass + (4.0F * dots::simulation::kFoodMass),
                     .radius = 5.0F,
                     .kind = dots::presentation::CircleKind::Player,
-                    .entity_id = dots::protocol::EntityId{1},
+                    .entity_id = dots::protocol::EntityId{2},
+                    .owner_id = dots::protocol::PlayerOwnerId{4},
                 },
                 {
                     .mass =
                         dots::simulation::kInitialPlayerMass + (8.0F * dots::simulation::kFoodMass),
                     .radius = 6.0F,
                     .kind = dots::presentation::CircleKind::Player,
-                    .entity_id = dots::protocol::EntityId{2},
+                    .entity_id = dots::protocol::EntityId{3},
+                    .owner_id = dots::protocol::PlayerOwnerId{5},
                 },
             },
     };
@@ -743,6 +748,66 @@ TEST_CASE("Dots presentation assigns stable colors from player IDs", "[dots][pre
 
     REQUIRE(draw_list.circles[0].color == draw_list.circles[1].color);
     REQUIRE(draw_list.circles[0].color != draw_list.circles[2].color);
+}
+
+TEST_CASE("Prediction diagnostics outline every confirmed owned split piece",
+          "[dots][presentation][prediction]") {
+    const auto owner_id = dots::protocol::PlayerOwnerId{4};
+    dots::replication::ReplicatedWorld world;
+    REQUIRE(world.apply({
+                .snapshot_id = dots::protocol::SnapshotId{2},
+                .recipient =
+                    {
+                        .mode = dots::protocol::SessionMode::Playing,
+                        .owned_entity_ids =
+                            {
+                                dots::protocol::EntityId{3},
+                                dots::protocol::EntityId{4},
+                            },
+                        .primary_entity_id = dots::protocol::EntityId{3},
+                    },
+                .owners = {{.owner_id = owner_id}},
+                .entities =
+                    {
+                        {
+                            .entity_id = dots::protocol::EntityId{3},
+                            .kind = dots::protocol::EntityKind::Player,
+                            .owner_id = owner_id,
+                            .position_x = 5.0F,
+                            .mass = 8.0F,
+                        },
+                        {
+                            .entity_id = dots::protocol::EntityId{4},
+                            .kind = dots::protocol::EntityKind::Player,
+                            .owner_id = owner_id,
+                            .position_x = 7.0F,
+                            .mass = 8.0F,
+                        },
+                    },
+            }) == dots::replication::SnapshotApplyResult::Applied);
+
+    const auto frame = dots::presentation::extract_predicted_replicated_frame(
+        world,
+        {
+            .entity_id = dots::protocol::EntityId{3},
+            .presentation_position = {5.5F, 0.0F},
+            .predicted_position = {5.25F, 0.0F},
+            .show_replay_path = false,
+        });
+
+    const auto authoritative_count =
+        std::ranges::count(frame.circles,
+                           dots::presentation::CircleKind::AuthoritativeSampleGhost,
+                           &dots::presentation::CircleInstance::kind);
+    CHECK(authoritative_count == 2);
+    CHECK(std::ranges::any_of(frame.circles, [](const auto& circle) {
+        return circle.kind == dots::presentation::CircleKind::AuthoritativeSampleGhost &&
+               circle.entity_id == dots::protocol::EntityId{3};
+    }));
+    CHECK(std::ranges::any_of(frame.circles, [](const auto& circle) {
+        return circle.kind == dots::presentation::CircleKind::AuthoritativeSampleGhost &&
+               circle.entity_id == dots::protocol::EntityId{4};
+    }));
 }
 
 TEST_CASE("Local prediction presentation preserves continuity and decays over 100 ms",
