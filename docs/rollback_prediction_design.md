@@ -141,6 +141,9 @@ transactionally, refreshes a later validated view at the same authority tick, re
 scope, hard-resyncs, and exposes immutable committed and debug views. Initialization is itself
 `CommitKind::Initialize`, so authoritative events in the first accepted frame pass through the
 same observer/router path. Callers cannot access scratch state.
+`acknowledged_through()` and `last_submitted_sequence()` expose distinct debug/integration
+frontiers: the former is authority accepted by the timeline; the latter also includes locally
+submitted predicted commands.
 
 ## Replay Stimuli and Rollforward
 
@@ -531,11 +534,19 @@ time do not. Empty queues hold level movement but never repeat edge actions.
 
 ## Same-Frame Replay and Deferred Multi-Frame Work
 
-History retains 64 ticks, approximately 2.13 seconds at 30 Hz. Missing history, capacity
-exhaustion, incompatible checkpoint/scope, or ambiguous identity causes a hard resync to newest
-validated authority. That explicit recovery may accept a validated ACK beyond timeline history
-because it discards the history; normal reconcile, authority-refresh, and rebase transactions
-may not.
+The engine default is 64 retained ticks; the Dots client configures 256 ticks, approximately
+8.53 seconds at 30 Hz. Missing history, capacity exhaustion, incompatible checkpoint/scope, or
+ambiguous identity causes a hard resync to newest validated authority. That explicit recovery
+may accept a validated ACK beyond timeline history because it discards the history; normal
+reconcile, authority-refresh, and rebase transactions may not.
+
+Dots also uses that exception after speculative local elimination. The confirmed session keeps
+accepting and retaining input while the predicted World has no owned player, so the inner
+timeline deliberately defers those commands. If later session-validated authority acknowledges
+through the deferred range while confirming survival, the client proves that the acknowledged
+command is still in its outer retained ring, hard-resyncs to that authority, and replays every
+newer retained input. It does not relax normal timeline ACK validation or recover an ACK that is
+not covered by either timeline submission or the outer ring.
 
 Replay has a 2 ms warning, not a cutoff. Duration alone never publishes incorrect partial state.
 First evaluate simulation optimization, closure size, and reconciliation frequency.

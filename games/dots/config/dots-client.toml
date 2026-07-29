@@ -50,6 +50,8 @@ presentation_mode = "comparison"
 # Networked playing presentation outside the predicted interaction closure:
 # extrapolated, interpolated, or comparison.
 remote_presentation_mode = "extrapolated"
+# info logs prediction scope and command-frontier transitions; debug also logs
+# comparable remote reconciliation corrections.
 prediction_log_level = "off"
 correction_history_count = 8
 

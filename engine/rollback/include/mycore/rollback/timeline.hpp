@@ -583,6 +583,10 @@ public:
         return acknowledged_through_;
     }
 
+    [[nodiscard]] std::optional<CommandSequence> last_submitted_sequence() const noexcept {
+        return last_submitted_sequence_;
+    }
+
     [[nodiscard]] const TimelineStatistics& statistics() const noexcept {
         return statistics_;
     }

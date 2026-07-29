@@ -505,6 +505,8 @@ Changes:
 - Compose predicted closure state with bounded presentation-only remote extrapolation while
   retaining Feature 12 interpolation as fallback and comparison.
 - Add adaptive command-buffer timing plus Rollback metrics, overlays, and deliberate faults.
+- Keep outer sent/retained command frontiers distinct from timeline submission so speculative
+  local elimination can recover a validated ACK gap and roll the remaining suffix forward.
 
 Tests:
 

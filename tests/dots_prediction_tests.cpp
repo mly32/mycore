@@ -540,6 +540,58 @@ TEST_CASE("Predicted local elimination preserves confirmed play and buffered inp
     check_position(client.predicted_position(), 0.2F, 0.0F);
 }
 
+TEST_CASE("Authority can acknowledge input deferred after predicted local elimination",
+          "[dots][prediction][session][rollback]") {
+    ManualEndpoint endpoint;
+    dots::client_runtime::Runtime client{endpoint};
+    const mycore::net_transport::ConnectionHandle connection{29};
+    complete_handshake(endpoint, client, connection);
+
+    auto dangerous = snapshot(1, 0, dots::protocol::InputSequenceId::invalid(), {});
+    dangerous.entities.push_back({
+        .entity_id = dots::protocol::EntityId{9},
+        .kind = dots::protocol::EntityKind::Player,
+        .owner_id = dots::protocol::PlayerOwnerId{4},
+        .mass = 32.0F,
+    });
+    push_snapshot(endpoint, connection, dangerous);
+    REQUIRE_FALSE(client.process_events(clock_time(10s)).has_value());
+
+    REQUIRE(client.send_input(0, {}) == dots::client_runtime::InputSendResult::Sent);
+    REQUIRE(client.predicted_world() != nullptr);
+    CHECK_FALSE(
+        client.predicted_world()->contains(dots::simulation::EntityId{kControlledEntity.value()}));
+
+    REQUIRE(client.send_input(1, {1.0F, 0.0F}) == dots::client_runtime::InputSendResult::Sent);
+    REQUIRE(client.send_input(2, {1.0F, 0.0F}) == dots::client_runtime::InputSendResult::Sent);
+    const auto deferred = client.prediction_statistics(clock_time(10s));
+    CHECK(deferred.history_count == 3);
+    CHECK(deferred.last_timeline_input_submitted == dots::protocol::InputSequenceId{0});
+    CHECK(deferred.deferred_prediction_input_count == 2);
+
+    auto corrected = snapshot(2, 1, dots::protocol::InputSequenceId{1}, {});
+    corrected.entities.push_back({
+        .entity_id = dots::protocol::EntityId{9},
+        .kind = dots::protocol::EntityKind::Player,
+        .owner_id = dots::protocol::PlayerOwnerId{4},
+        .mass = 16.0F,
+    });
+    push_snapshot(endpoint, connection, corrected);
+    REQUIRE_FALSE(client.process_events(clock_time(11s)).has_value());
+
+    REQUIRE(client.predicted_world() != nullptr);
+    CHECK(
+        client.predicted_world()->contains(dots::simulation::EntityId{kControlledEntity.value()}));
+    CHECK(client.session_mode() == dots::protocol::SessionMode::Playing);
+    const auto recovered = client.prediction_statistics(clock_time(11s));
+    CHECK(recovered.history_count == 1);
+    CHECK(recovered.last_timeline_input_submitted == dots::protocol::InputSequenceId{2});
+    CHECK(recovered.deferred_prediction_input_count == 0);
+    CHECK(recovered.hard_resync_count == 1);
+    CHECK(recovered.acknowledgement_catch_up_count == 1);
+    check_position(client.predicted_position(), 0.2F, 0.0F);
+}
+
 TEST_CASE("Client prediction closure follows retained replay depth instead of ring capacity",
           "[dots][prediction][scope][remote]") {
     ManualEndpoint endpoint;

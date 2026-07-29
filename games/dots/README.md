@@ -122,8 +122,9 @@ are edge-triggered: holding a key sends one request, not one request per input t
 to quit. Mouse steering and spectator wheel zoom pause while the debug panel owns the mouse.
 
 For deterministic prediction investigation, set `[input].mode = "keyboard"` and
-`[debug].prediction_log_level = "debug"` in a client config. The `info` level logs only prediction
-scope changes; `debug` also reports nonzero remote-player displacement across reconciliation.
+`[debug].prediction_log_level = "debug"` in a client config. The `info` level logs prediction
+scope changes and command-frontier defer/recovery transitions; `debug` also reports nonzero
+remote-player displacement across reconciliation.
 `[debug].correction_history_count` controls how many recent local and comparable same-head remote
 corrections are drawn; it defaults to 8 and accepts 1 through 64. Correction circles retain their
 magenta state-layer color and fade with age.

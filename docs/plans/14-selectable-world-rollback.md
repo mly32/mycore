@@ -260,6 +260,11 @@ The explicit hard-resync recovery may accept a validated ACK beyond timeline his
 discards that history; normal replay transactions may not. Duration alone never chooses an
 incorrect partial state.
 
+When speculative local elimination leaves no owner to step, Dots continues retaining and sending
+input outside the temporarily deferred timeline. A session-validated ACK through that retained
+range selects hard resync, then the client replays the remaining unacknowledged suffix. The
+operation is permitted only when the exact ACK is still covered by the outer ring.
+
 The [Feature 14 prediction-stutter postmortem](../feature14_prediction_stutter_postmortem.md)
 records why the storage bound, causal horizon, immutable input, and refreshable assumption must
 remain separate concepts.
@@ -484,6 +489,14 @@ conflicting retransmissions, and live stable-key reuse, and ACKs only after a ba
 Pre-welcome receipts remain pending; terminal Spectating receipts publish before prediction is
 cleared. Same-tick authority refinement and explicit hard resync preserve their distinct history
 semantics.
+
+A follow-up command-frontier audit closed the predicted-elimination ACK gap. Dots now tracks and
+displays sent, authoritative-ACK, timeline-submitted, and deferred-outer-input frontiers
+separately. If coherent authority acknowledges a command that was sent and retained while the
+predicted owner was absent, the client selects the engine's explicit hard-resync exception and
+rolls any newer retained commands forward. Fatal timeline operation failures log all frontiers,
+and the regression test covers authority acknowledging inside a multi-input deferred range with
+an unacknowledged suffix.
 
 ### Step 7 Decision Record
 

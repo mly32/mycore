@@ -64,6 +64,7 @@ struct ReplicationStatistics {
 struct Settings {
     bool input_redundancy{true};
     bool log_prediction_scope_changes{};
+    bool log_prediction_frontier_changes{};
     bool log_prediction_reconciliation_details{};
 };
 
@@ -118,7 +119,9 @@ struct PredictionStatistics {
     bool input_redundancy_enabled{true};
     protocol::InputSequenceId last_input_sent;
     protocol::InputSequenceId last_input_acknowledged;
+    protocol::InputSequenceId last_timeline_input_submitted;
     std::size_t unacknowledged_input_count{};
+    std::size_t deferred_prediction_input_count{};
     std::size_t history_count{};
     std::size_t history_capacity{kPredictionHistoryCapacity};
     std::size_t history_high_water_mark{};
@@ -153,6 +156,7 @@ struct PredictionStatistics {
     std::uint64_t correction_sequence_since_hard_resync{};
     std::uint64_t replay_over_budget_count{};
     std::uint64_t hard_resync_count{};
+    std::uint64_t acknowledgement_catch_up_count{};
     std::size_t pending_injected_input_drop_count{};
     std::uint64_t injected_input_drop_count{};
     std::uint64_t injected_prediction_error_count{};

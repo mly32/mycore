@@ -362,7 +362,7 @@
           ]
         },
         "prediction_log_level": {
-          "description": "Prediction-category log detail. Off suppresses scope/reconciliation details, info logs scope changes, and debug also logs comparable remote corrections. Names are case-insensitive.",
+          "description": "Prediction-category log detail. Off suppresses optional transition details, info logs scope and command-frontier defer/recovery changes, and debug also logs comparable remote corrections. Fatal frontier context is always logged. Names are case-insensitive.",
           "type": "string",
           "default": "off",
           "anyOf": [

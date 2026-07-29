@@ -249,6 +249,7 @@ Important log categories include:
 | `dots.client.presentation` | Rejection of a noncanonical/stale remote extrapolation sample, including candidate and prior snapshot coordinates. Such rejection fails the session rather than drawing unvalidated state. |
 | `dots.client.consequence` | Non-retried Dots consequence-handler failures after an otherwise successful rollback commit. |
 | `dots.client.prediction` | Prediction history pressure/recovery, hard resyncs, replay-budget warnings, explicit debug fault injection, and fatal scope/timeline operation failures. Timeline failures name the operation, engine rollback error, and any nested Dots model/checkpoint/tick error; scope failures name the failed build or projection and scope epoch/counts. |
+| `dots.client.prediction.frontier` | Entry into deliberately deferred prediction, recovery by ordinary replay or validated ACK catch-up, and fatal authority failures with authoritative ACK, timeline ACK/submission, retained input range, deferred count, and last-sent input. Transition logs require `debug.prediction_log_level` `info` or `debug`; failure context is unconditional. |
 | `dots.client.prediction.scope` | Successful scope-epoch changes with replay depth, horizon, and before/after causal-owner, event-owner, player, and food membership counts when `debug.prediction_log_level` is `info` or `debug`. |
 | `dots.client.prediction.reconciliation` | At `debug.prediction_log_level = "debug"`, each nonzero largest common remote-player displacement across an installed predicted head, including whether the before/after heads represent the same tick. Zero-displacement installs are omitted. |
 | `dots.server` | Headless server startup, listen address, tick lifetime, and shutdown. |
@@ -310,7 +311,9 @@ The **Prediction** tab rows are:
 | Redundancy | Whether outgoing packets repeat up to two retained unacknowledged samples. |
 | Last sent input | Newest successfully sent and recorded input sequence, or invalid before the first send. |
 | Last acknowledged input | Newest sequence the latest accepted snapshot says the server processed, or invalid before the first ACK. |
+| Timeline input submitted | Newest command sequence submitted to predicted simulation. This can lag last-sent input while prediction is deliberately deferred after speculative local elimination. |
 | Command lead | Count of successfully sent inputs newer than the latest ACK. It can exceed retained history after a deliberate hard resync. |
+| Deferred outside timeline | Retained outer input count newer than the timeline-submitted frontier. These inputs are still sent and are replayed when an authoritative checkpoint restores a viable predicted owner. |
 | History use/high-water | Current and runtime-maximum occupancy of the fixed 256-entry replay ring. Capacity is a correctness bound, not an adaptive target. |
 | Scope | Current epoch, certified replay horizon, causal owner/player/food counts, separately subscribed event-owner count, and lifetime rebase count. A smaller newly required closure may retain a safe existing superset to prevent presentation ownership from oscillating as ACK depth changes. |
 | Server pending input | Current and runtime-high-water depth of this client's authoritative 64-entry server input queue, as reported by snapshots. |
@@ -325,7 +328,7 @@ The **Prediction** tab rows are:
 | Corrections/min | Count of nonzero corrections in the trailing 60 seconds of the client steady clock. |
 | Correction ghosts | Active bounded history count/capacity, split into local and remote entries. |
 | Replay over budget | Lifetime count of reconciliations exceeding 2 ms; warnings are rate-limited to once per five seconds. |
-| Hard resync | Lifetime count of full-ring recoveries that rebuild prediction from the newest verified authoritative checkpoint and clear retained input/debug replay state. |
+| Hard resync / ACK catch-up | Lifetime total hard-resync count and the subset selected because validated authority acknowledged a command retained outside the temporarily deferred timeline. Full-ring recovery discards retained input; ACK catch-up discards only the acknowledged prefix and rolls the newer suffix forward. |
 | Smoothing offset | Current presentation-only displacement vector and magnitude. It decays linearly to zero over 100 ms without modifying predicted state. |
 | Injected faults | Pending/total client-only packet drops and the number of explicit prediction-error injections. These do not alter transport loss metrics. |
 | Rollback consequences | Consumed batch count, currently visible cue count, monotonic stinger sequence, all five event-transition totals, and per-handler declared policy with delivered/suppressed/revised/canceled/confirmed/failure totals. |
@@ -336,9 +339,9 @@ seconds while pressure persists. Recovery is logged once occupancy returns to 75
 counts and high-water values reset with a new `Dots::ClientRuntime` instance. The overlay colors
 history utilization green below 50%, yellow at 50%, orange at 75%, and red at 90%.
 
-`debug.prediction_log_level` defaults to `off`. Set it to `info` for scope-change summaries or
-`debug` to add nonzero remote reconciliation detail. The latter is meant for short reproduction
-sessions and does not change prediction or presentation state.
+`debug.prediction_log_level` defaults to `off`. Set it to `info` for scope and command-frontier
+transition summaries or `debug` to add nonzero remote reconciliation detail. The latter is meant
+for short reproduction sessions and does not change prediction or presentation state.
 
 `debug.correction_history_count` selects the combined local/remote world-space correction-history
 capacity from 1 through 64 and defaults to 8. This changes diagnostics only.

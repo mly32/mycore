@@ -118,7 +118,10 @@ Space submits one split request per press; holding it does not split every input
 child appears immediately and is matched to authority by `PredictionKey`, even if the server
 assigns a different entity ID. A predicted absorption may temporarily remove the final local
 piece, but it cannot enter spectator mode or disable input. Only confirmed replicated session
-state can do that.
+state can do that. Inputs sampled while the speculative World has no local piece remain in the
+outer client buffer because the prediction timeline cannot step them yet. If validated authority
+confirms survival and acknowledges inside that deferred range, the client hard-resyncs to the
+checkpoint, discards the acknowledged prefix, and rolls every newer retained input forward.
 
 The network client runtime accepts confirmed spectating snapshots without requiring a permanent
 controlled entity and continues sending session input/heartbeats. The graphical client enters

@@ -16,6 +16,7 @@
 #include <map>
 #include <numeric>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <variant>
@@ -264,6 +265,14 @@ void log_timeline_failure(std::string_view operation, const prediction::Timeline
                              prediction_error_name(model_error.code),
                              checkpoint_error,
                              tick_error);
+}
+
+[[nodiscard]] std::string sequence_name(protocol::InputSequenceId sequence) {
+    return sequence.is_valid() ? std::to_string(sequence.value()) : "none";
+}
+
+[[nodiscard]] std::string sequence_name(std::optional<mycore::rollback::CommandSequence> sequence) {
+    return sequence ? std::to_string(sequence->value()) : "none";
 }
 
 [[nodiscard]] std::vector<RemotePlayerDisplacement>
@@ -813,7 +822,9 @@ public:
             .input_redundancy_enabled = settings_.input_redundancy,
             .last_input_sent = {},
             .last_input_acknowledged = world_.last_processed_input_id(),
+            .last_timeline_input_submitted = timeline_submission_frontier(),
             .unacknowledged_input_count = 0,
+            .deferred_prediction_input_count = deferred_prediction_input_count(),
             .history_count = input_history_.size(),
             .history_capacity = kPredictionHistoryCapacity,
             .history_high_water_mark = history_high_water_mark_,
@@ -848,6 +859,7 @@ public:
             .correction_sequence_since_hard_resync = correction_sequence_since_hard_resync_,
             .replay_over_budget_count = replay_over_budget_count_,
             .hard_resync_count = hard_resync_count_,
+            .acknowledgement_catch_up_count = acknowledgement_catch_up_count_,
             .pending_injected_input_drop_count = pending_injected_input_drop_count_,
             .injected_input_drop_count = injected_input_drop_count_,
             .injected_prediction_error_count = injected_prediction_error_count_,
@@ -908,6 +920,61 @@ public:
     }
 
 private:
+    [[nodiscard]] protocol::InputSequenceId timeline_submission_frontier() const noexcept {
+        if (!timeline_) {
+            return {};
+        }
+        const auto submitted = timeline_->last_submitted_sequence();
+        if (!submitted || submitted->value() >= protocol::InputSequenceId::kInvalidValue) {
+            return {};
+        }
+        return protocol::InputSequenceId{static_cast<std::uint32_t>(submitted->value())};
+    }
+
+    [[nodiscard]] std::size_t deferred_prediction_input_count() const noexcept {
+        const auto submitted = timeline_submission_frontier();
+        auto count = std::size_t{};
+        for (auto index = std::size_t{}; index < input_history_.size(); ++index) {
+            if (!submitted.is_valid() || input_history_.at(index).sample.sequence_id > submitted) {
+                ++count;
+            }
+        }
+        return count;
+    }
+
+    [[nodiscard]] bool input_history_contains(protocol::InputSequenceId sequence) const noexcept {
+        for (auto index = std::size_t{}; index < input_history_.size(); ++index) {
+            if (input_history_.at(index).sample.sequence_id == sequence) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void log_authority_frontiers(std::string_view context,
+                                 const replication::ReplicatedWorld& candidate_world) const {
+        const auto first = input_history_.size() > 0 ? input_history_.at(0).sample.sequence_id
+                                                     : protocol::InputSequenceId{};
+        const auto last = input_history_.size() > 0
+                              ? input_history_.at(input_history_.size() - 1).sample.sequence_id
+                              : protocol::InputSequenceId{};
+        const auto last_sent = next_input_id_ > 0 ? protocol::InputSequenceId{next_input_id_ - 1U}
+                                                  : protocol::InputSequenceId{};
+        mycore::debug::log_error(
+            "dots.client.prediction.frontier",
+            "{} frontiers: authority ACK {}, timeline ACK {}, timeline submitted {}, "
+            "retained inputs {} [{}..{}], deferred {}, last sent {}",
+            context,
+            sequence_name(candidate_world.last_processed_input_id()),
+            sequence_name(timeline_ ? timeline_->acknowledged_through() : std::nullopt),
+            sequence_name(timeline_ ? timeline_->last_submitted_sequence() : std::nullopt),
+            input_history_.size(),
+            sequence_name(first),
+            sequence_name(last),
+            deferred_prediction_input_count(),
+            sequence_name(last_sent));
+    }
+
     [[nodiscard]] protocol::InputPacket
     make_input_packet(const protocol::InputSample& current_sample) const {
         protocol::InputPacket packet{
@@ -946,6 +1013,7 @@ private:
             return {.error = RuntimeError::InvalidSnapshot};
         }
         if (!valid_acknowledgement(candidate_world.last_processed_input_id())) {
+            log_authority_frontiers("Rejected session acknowledgement", candidate_world);
             return {.error = RuntimeError::InvalidInputAcknowledgement};
         }
         if (client_id_.is_valid() && !valid_respawn_deadline(candidate_world.recipient())) {
@@ -1310,6 +1378,9 @@ private:
             return RuntimeError::MissingControlledEntity;
         }
 
+        const auto previous_deferred_input_count = deferred_prediction_input_count();
+        const auto previous_timeline_submission =
+            timeline_ ? timeline_->last_submitted_sequence() : std::nullopt;
         auto scratch_history = input_history_;
         scratch_history.discard_through(candidate_world.last_processed_input_id());
         const auto required_replay_horizon =
@@ -1389,20 +1460,38 @@ private:
             .checkpoint = *projected_authority,
             .events = std::move(pending_authority_events),
         };
+        const auto acknowledgement_catch_up =
+            reason != AuthorityInstallReason::HardResync && timeline_ &&
+            confirmed_owner_id_ == *owner && frame.acknowledged_through &&
+            (!previous_timeline_submission ||
+             *frame.acknowledged_through > *previous_timeline_submission);
+        if (acknowledgement_catch_up &&
+            !input_history_contains(candidate_world.last_processed_input_id())) {
+            mycore::debug::log_error(
+                "dots.client.prediction.frontier",
+                "Authority ACK {} is ahead of timeline submission {} but is not retained in the "
+                "outer input history",
+                sequence_name(candidate_world.last_processed_input_id()),
+                sequence_name(previous_timeline_submission));
+            log_authority_frontiers("Unrecoverable authority ACK gap", candidate_world);
+            return RuntimeError::PredictionTimelineFailed;
+        }
 
         prediction::Timeline scratch_timeline{
             prediction::WorldModel{},
             {.capacity = kPredictionHistoryCapacity},
         };
         std::vector<PredictionEventBatch> committed_batches;
-        if (reason == AuthorityInstallReason::HardResync && timeline_ &&
-            confirmed_owner_id_ == *owner) {
+        if ((reason == AuthorityInstallReason::HardResync || acknowledgement_catch_up) &&
+            timeline_ && confirmed_owner_id_ == *owner) {
             scratch_timeline = *timeline_;
             auto resynced = scratch_timeline.hard_resync(frame, selected_scope);
             auto* commit = std::get_if<prediction::Commit>(&resynced);
             if (commit == nullptr) {
-                log_timeline_failure("Authority hard resync",
+                log_timeline_failure(acknowledgement_catch_up ? "Authority ACK catch-up"
+                                                              : "Authority hard resync",
                                      std::get<prediction::TimelineFailure>(resynced));
+                log_authority_frontiers("Failed authority hard resync", candidate_world);
                 return RuntimeError::PredictionTimelineFailed;
             }
             append_observable_event_batch(committed_batches, std::move(*commit));
@@ -1420,6 +1509,7 @@ private:
             if (commit == nullptr) {
                 log_timeline_failure("Authority reconciliation",
                                      std::get<prediction::TimelineFailure>(reconciled));
+                log_authority_frontiers("Failed authority reconciliation", candidate_world);
                 return RuntimeError::PredictionTimelineFailed;
             }
             append_observable_event_batch(committed_batches, std::move(*commit));
@@ -1437,6 +1527,7 @@ private:
             if (commit == nullptr) {
                 log_timeline_failure("Same-tick authority refresh",
                                      std::get<prediction::TimelineFailure>(refreshed));
+                log_authority_frontiers("Failed same-tick authority refresh", candidate_world);
                 return RuntimeError::PredictionTimelineFailed;
             }
             append_observable_event_batch(committed_batches, std::move(*commit));
@@ -1455,6 +1546,7 @@ private:
             if (commit == nullptr) {
                 const auto& failure = std::get<prediction::TimelineFailure>(rebased);
                 log_timeline_failure("Scope rebase", failure);
+                log_authority_frontiers("Failed scope rebase", candidate_world);
                 return RuntimeError::PredictionTimelineFailed;
             }
             append_observable_event_batch(committed_batches, std::move(*commit));
@@ -1561,6 +1653,37 @@ private:
         prediction_debug_offset_ = {};
         latest_prediction_identity_remaps_ = std::move(*remaps);
         latest_replay_path_ = std::move(scratch_replay_path);
+        if (acknowledgement_catch_up) {
+            pre_correction_position_.reset();
+            latest_correction_replay_path_.clear();
+            recent_prediction_corrections_.clear();
+            accumulated_correction_displacement_ = {};
+            correction_sequence_since_hard_resync_ = 0;
+            ++hard_resync_count_;
+            ++acknowledgement_catch_up_count_;
+            if (settings_.log_prediction_frontier_changes) {
+                mycore::debug::log_info(
+                    "dots.client.prediction.frontier",
+                    "Authority ACK catch-up hard-resynced snapshot {} tick {}: ACK {}, prior "
+                    "timeline submission {}, previously deferred {}, replayed unacknowledged {}",
+                    candidate_world.snapshot_id().value(),
+                    candidate_world.server_tick(),
+                    sequence_name(candidate_world.last_processed_input_id()),
+                    sequence_name(previous_timeline_submission),
+                    previous_deferred_input_count,
+                    input_history_.size());
+            }
+        } else if (settings_.log_prediction_frontier_changes && previous_deferred_input_count > 0 &&
+                   deferred_prediction_input_count() == 0) {
+            mycore::debug::log_info(
+                "dots.client.prediction.frontier",
+                "Prediction timeline resumed at snapshot {} tick {} after replaying {} deferred "
+                "inputs; timeline submitted {}",
+                candidate_world.snapshot_id().value(),
+                candidate_world.server_tick(),
+                previous_deferred_input_count,
+                sequence_name(timeline_->last_submitted_sequence()));
+        }
         if (previous_scope && previous_scope->scope_epoch != selected_scope.scope_epoch) {
             ++scope_rebase_count_;
             if (settings_.log_prediction_scope_changes) {
@@ -1716,6 +1839,17 @@ private:
             return RuntimeError::PredictionTimelineFailed;
         }
         if (status != nullptr && *status == TimelineAdvanceStatus::Deferred) {
+            if (settings_.log_prediction_frontier_changes &&
+                deferred_prediction_input_count() == 1) {
+                mycore::debug::log_info(
+                    "dots.client.prediction.frontier",
+                    "Prediction timeline deferred at input {} because predicted owner {} is "
+                    "absent; retained inputs {}, timeline submitted {}",
+                    sample.sequence_id.value(),
+                    confirmed_owner_id_.value(),
+                    input_history_.size(),
+                    sequence_name(timeline_->last_submitted_sequence()));
+            }
             return std::nullopt;
         }
         append_observable_event_batch(prediction_event_batches_,
@@ -1992,6 +2126,7 @@ private:
     std::deque<std::chrono::steady_clock::time_point> correction_times_;
     std::uint64_t replay_over_budget_count_{};
     std::uint64_t hard_resync_count_{};
+    std::uint64_t acknowledgement_catch_up_count_{};
     std::size_t pending_injected_input_drop_count_{};
     std::uint64_t injected_input_drop_count_{};
     std::uint64_t injected_prediction_error_count_{};

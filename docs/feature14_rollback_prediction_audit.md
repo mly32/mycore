@@ -12,6 +12,10 @@ Implemented in Feature 14 step 6.5:
 - Live semantic event keys cannot be reused under another receipt sequence.
 - Client initialization, advance, reconciliation, same-tick authority refresh, scope rebase, and
   hard resync preserve observable event batches instead of bypassing timeline commits.
+- A follow-up command-frontier audit distinguishes successfully sent input, retained outer
+  input, timeline-submitted input, and authoritative ACK. A validated ACK through an input that
+  prediction deliberately deferred now selects hard resync and replays the remaining
+  unacknowledged suffix instead of failing normal reconciliation.
 
 The findings below retain their original present-tense diagnosis so the failure modes and
 prevention guidance remain useful.
@@ -145,6 +149,29 @@ through a bounded pull API for the presentation/consequence layer.
 Prevention: a composition root may move or summarize a successful kernel commit, but it must not
 reimplement a kernel transaction or ignore its durable outputs.
 
+### 8. The session input frontier can advance beyond the prediction timeline
+
+Predicted absorption of the final local piece deliberately leaves the confirmed session in
+`Playing` and continues sampling and sending input. The outer client retains those inputs, but
+the prediction timeline cannot step them while its speculative World has no owned player, so its
+last-submitted frontier stops. A later coherent server snapshot can acknowledge one of those
+deferred inputs while confirming that the player actually survived. Normal reconciliation
+correctly rejects that ACK because it is beyond timeline history; the client previously treated
+the expected rejection as a fatal session error.
+
+The client now compares four explicit frontiers before choosing a timeline operation:
+successfully sent, retained by the outer input ring, submitted to the timeline, and
+authoritatively acknowledged. If the session-level ACK is valid, is ahead of timeline
+submission, and the exact acknowledged command remains in the outer ring, the client uses the
+kernel's documented hard-resync exception. It restores the validated checkpoint, advances the
+timeline frontier through the ACK, discards the acknowledged outer prefix, and replays any newer
+retained inputs. An ACK beyond both the timeline and retained ring remains fatal.
+
+Prevention: any integration that can intentionally defer simulation after accepting external
+commands must test the full transition matrix: authority behind the deferred range, authority
+inside it, authority through all of it, and an unacknowledged suffix that must roll forward.
+Do not use one generic “input history” count to represent all four frontiers.
+
 ## Larger Bug Classes
 
 The findings share four broader failure modes:
@@ -153,6 +180,8 @@ The findings share four broader failure modes:
 2. A single “relevance” set being reused for simulation, networking, presentation, and effects.
 3. Monotonic streams without separate accepted, delivered, and retired frontiers.
 4. Transactional core APIs whose commit records are discarded at an integration boundary.
+5. Outer command acceptance and inner simulation submission being treated as one frontier even
+   when the model can deliberately defer stepping.
 
 Reviews of future predicted mechanics should trace each state field and event from authoritative
 creation through checkpointing, replay, subscription, publication, consequence retirement, and
@@ -166,5 +195,7 @@ debug visibility. State convergence alone is not sufficient acceptance evidence.
 - Defeat, pre-welcome, and authority-only receipts are published exactly once before ACK.
 - Receipt payload and key storage remains bounded by explicit retirement.
 - Scope rebase preserves event lifecycle relative to the previously committed timeline.
+- A validated ACK inside the outer retained/deferred range hard-resyncs atomically and replays
+  the unacknowledged suffix; an uncovered ACK gap still fails with all frontiers logged.
 - Focused hostile tests, the full host test preset, clang-format, clang-tidy, packaging, and the
   two-bot impairment session pass before Feature 14 step 7 begins.

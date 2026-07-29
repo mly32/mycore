@@ -572,7 +572,9 @@ void draw_prediction_debug_tab(const DebugWorldStats& world) {
     ImGui::Text("Redundancy: %s", prediction.input_redundancy_enabled ? "ENABLED" : "DISABLED");
     draw_input_sequence("Last input sent", prediction.last_input_sent);
     draw_input_sequence("Last input acknowledged", prediction.last_input_acknowledged);
+    draw_input_sequence("Timeline input submitted", prediction.last_timeline_input_submitted);
     ImGui::Text("Command lead: %zu", prediction.unacknowledged_input_count);
+    ImGui::Text("Deferred outside timeline: %zu", prediction.deferred_prediction_input_count);
     const auto history_percent = prediction.history_capacity > 0
                                      ? (100.0F * static_cast<float>(prediction.history_count)) /
                                            static_cast<float>(prediction.history_capacity)
@@ -607,9 +609,10 @@ void draw_prediction_debug_tab(const DebugWorldStats& world) {
                 prediction.latest_replay_milliseconds,
                 prediction.average_replay_milliseconds,
                 prediction.maximum_replay_milliseconds);
-    ImGui::Text("Replay over budget / hard resync: %llu / %llu",
+    ImGui::Text("Replay over budget / hard resync / ACK catch-up: %llu / %llu / %llu",
                 static_cast<unsigned long long>(prediction.replay_over_budget_count),
-                static_cast<unsigned long long>(prediction.hard_resync_count));
+                static_cast<unsigned long long>(prediction.hard_resync_count),
+                static_cast<unsigned long long>(prediction.acknowledgement_catch_up_count));
 
     ImGui::Separator();
     ImGui::TextUnformatted("Correction and presentation");
@@ -1047,6 +1050,8 @@ int run_networked_game(
         {
             .input_redundancy = config.network.input_redundancy,
             .log_prediction_scope_changes =
+                config.debug.prediction_log_level != PredictionLogLevel::Off,
+            .log_prediction_frontier_changes =
                 config.debug.prediction_log_level != PredictionLogLevel::Off,
             .log_prediction_reconciliation_details =
                 config.debug.prediction_log_level == PredictionLogLevel::Debug,

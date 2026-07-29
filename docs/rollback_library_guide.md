@@ -293,6 +293,13 @@ because the operation discards that history. This supports commands that an oute
 while its predicted model temporarily could not advance, such as input retained after speculative
 local elimination.
 
+If a game has such an outer buffer, compare `frame.acknowledged_through` with
+`timeline.last_submitted_sequence()` before selecting the operation. Use `hard_resync` only when
+the game's session/protocol validation has already accepted the frame and the acknowledged
+command is provably covered by that outer buffer. Then discard the acknowledged outer prefix and
+submit the newer suffix normally. `timeline.acknowledged_through()` reports the authority already
+installed in the timeline; it is not the same frontier as local submission.
+
 After any successful call, read the immutable committed state through `timeline.state()`.
 Do not cache its pointer across later timeline mutations. `Commit::state_diff` describes the
 change from the previously committed predicted state to the new committed state.

@@ -448,6 +448,7 @@ TEST_CASE("Hard resync may accept externally submitted commands beyond timeline 
     const auto& commit = require_commit(resynced);
     CHECK(commit.kind == mycore::rollback::CommitKind::HardResync);
     CHECK(commit.acknowledged_through == sequence(3));
+    CHECK(timeline.last_submitted_sequence() == sequence(3));
     CHECK(timeline.history().empty());
     CHECK(timeline.state()->value == 9);
 }
