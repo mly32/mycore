@@ -3,6 +3,7 @@
 #include "dots/simulation/movement.hpp"
 #include "mycore/debug/log.hpp"
 #include "mycore/net_transport/net_transport.hpp"
+#include "mycore/time/time.hpp"
 
 #include <array>
 #include <chrono>
@@ -151,7 +152,10 @@ int main(int argc, char** argv) {
                 throw std::runtime_error{"The bot could not send input"};
             }
             ++sent_ticks;
-            next_tick += dots::simulation::kTickDuration;
+            next_tick = mycore::time::advance_periodic_deadline(next_tick,
+                                                                dots::simulation::kTickDuration,
+                                                                std::chrono::steady_clock::now())
+                            .time;
             std::this_thread::sleep_until(next_tick);
         }
         static_cast<void>(client.disconnect());

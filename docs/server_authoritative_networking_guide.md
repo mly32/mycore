@@ -676,6 +676,7 @@ authoritative controlled-player sample and replays the remaining unacknowledged 
 | Client loop/render frame | Variable; commonly limited by vsync | 16.67 ms on a 60 Hz display | Poll input, run zero or more due fixed steps, extract presentation, submit rendering. |
 | Authoritative simulation tick | Fixed 30 Hz | 33.33 ms | Apply current movement, move entities, resolve food collisions, increment server tick. |
 | Client input packet | At each due client fixed step | 33.33 ms | Encode and send the newest sampled movement, plus configured redundancy, with a new sequence ID. |
+| Headless bot input packet | Fixed 30 Hz while work fits its budget | 33.33 ms | Send one current intent. After an overrun, discard missed producer deadlines and resume one period later; never emit a catch-up burst. |
 | Full snapshot | Every two server ticks, fixed 15 Hz | 66.67 ms | Send the latest authoritative entity state and input acknowledgement. |
 | Transport poll | Once or more at explicit loop points | Render-loop or server-tick dependent | Deliver queued connection and payload events to a runtime. |
 | Display refresh | Monitor-dependent | 16.67 ms at 60 Hz | Make a completed GPU image physically visible. |
@@ -683,7 +684,11 @@ authoritative controlled-player sample and replays the remaining unacknowledged 
 The 60 Hz render rate in examples below is illustrative, not guaranteed. The default client uses
 vsync, but the actual display may refresh at 60, 120, or another rate, and a slow frame can take
 longer. The fixed-step accumulator preserves the 30 Hz simulation cadence by running no
-simulation step in some fast render frames or multiple catch-up steps in a slow render frame.
+simulation step in some fast render frames or multiple catch-up steps in a slow render frame,
+up to its configured per-frame bound. It discards excess whole-step backlog. The headless bot
+has no render accumulator; if transport polling or prediction replay overruns its next input
+deadline, it also discards that scheduling debt. Inputs are samples of current intent, not a
+license to fabricate a wall-clock catch-up burst.
 
 Dots does not currently have a separate physics clock. Movement, spatial-grid updates, and food
 collision resolution are all part of `World::step()` on the 30 Hz authoritative simulation tick.

@@ -537,6 +537,10 @@ decode/rejection logs, and server health. Transport state alone does not prove r
 The client is producing input faster than the server consumes it, the server is overloaded, or
 clock drift is accumulating. The current fixed command cadence observes this trend but does not
 speed or slow local simulation; adaptive cadence remains Feature 14 step 8 work.
+Headless bots additionally discard missed producer deadlines after a replay or polling overrun.
+If a bot build predating that guard tries to repay the delay with back-to-back sends, the
+server's bounded input queue can reject it even though packet-loss reconciliation itself is
+healthy.
 
 ### Frequent corrections with low loss
 

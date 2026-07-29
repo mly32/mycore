@@ -432,7 +432,9 @@ Keep commits focused and reviewable, but do not add approval gates between these
    entity-scale workloads, documentation updates, and the measured same-frame/multi-frame
    decision. Measure cross-tick predicted-closure corrections as part of that work; if they need
    a residual beyond fixed-tick interpolation, carry an explicit correction generation rather
-   than inferring one from source revision.
+   than inferring one from source revision. The headless bot now discards periodic-producer
+   backlog after a replay overrun so it cannot turn local scheduling debt into a server input
+   flood; adaptive queue-depth convergence remains part of this step.
 
 Steps 1 through 7 are implemented on `feature/14`; step 8 is next.
 `MyCore::Rollback` now provides the generic

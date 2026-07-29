@@ -8,6 +8,17 @@
 namespace mycore::time {
 
 using Duration = std::chrono::nanoseconds;
+using MonotonicTimePoint = std::chrono::steady_clock::time_point;
+
+struct PeriodicDeadline {
+    MonotonicTimePoint time;
+    bool discarded_backlog{};
+};
+
+// Advances a periodic producer by one deadline. Healthy producers retain their original phase.
+// An overdue producer schedules one complete period from now instead of issuing catch-up work.
+[[nodiscard]] PeriodicDeadline
+advance_periodic_deadline(MonotonicTimePoint previous, Duration period, MonotonicTimePoint now);
 
 // A non-negative distance between two simulation ticks.
 class TickDelta {

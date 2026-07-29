@@ -539,6 +539,14 @@ rate scale = clamp(1 + 0.025 * (2 - smoothed depth), 0.95, 1.05)
 Only client command/prediction cadence changes. Server rate, gameplay deadlines, and session wall
 time do not. Empty queues hold level movement but never repeat edge actions.
 
+This controller is separate from producer-overrun safety. A client that spends longer than one
+period polling or replaying must not repay missed wall-clock deadlines by sending a burst of
+newly sampled inputs: that increases command lead, retained replay work, and server queue depth
+at the same time. The graphical client bounds fixed-step catch-up and discards excess whole-step
+backlog. The headless bot resets an overdue deadline to one period after the current send.
+Neither behavior implements the adaptive depth target; both prevent local scheduling debt from
+being misrepresented as past player intent.
+
 ## Same-Frame Replay and Deferred Multi-Frame Work
 
 The engine default is 64 retained ticks; the Dots client configures 256 ticks, approximately
