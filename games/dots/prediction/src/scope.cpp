@@ -112,9 +112,11 @@ find_player(const simulation::WorldCheckpoint& checkpoint, simulation::EntityId 
 make_owned_scope(const simulation::WorldCheckpoint& authority,
                  const PredictionRequest& request,
                  const std::vector<simulation::PlayerOwnerId>& owned_owner_ids,
+                 const std::vector<simulation::PlayerOwnerId>& subscribed_event_owner_ids,
                  MechanicMask requested_mechanics,
                  PredictionFallbackReason fallback_reason) {
-    const auto mechanics = mechanic_bit(PredictionMechanic::Movement);
+    const auto mechanics =
+        mechanic_bit(PredictionMechanic::Movement) | mechanic_bit(PredictionMechanic::SplitMerge);
     const auto domains = required_domains(mechanics);
     if (!domains_available(domains, request.coverage)) {
         return ScopeBuildError::IncompleteOwnedState;
@@ -122,13 +124,14 @@ make_owned_scope(const simulation::WorldCheckpoint& authority,
 
     PredictionScope scope{
         .requested_profile = request.profile,
-        .active_profile = PredictionProfile::OwnedMovement,
+        .active_profile = PredictionProfile::OwnedGameplay,
         .fallback_reason = fallback_reason,
         .requested_mechanics = requested_mechanics,
         .mechanics = mechanics,
         .required_domains = domains,
         .required_causal_channels = 0,
         .owned_owner_ids = owned_owner_ids,
+        .subscribed_event_owner_ids = subscribed_event_owner_ids,
         .owner_ids = owned_owner_ids,
         .player_ids = {},
         .food_ids = {},
@@ -251,7 +254,7 @@ void expand_interaction_closure(const simulation::WorldCheckpoint& authority,
     switch (profile) {
     case PredictionProfile::InteractionClosure:
     case PredictionProfile::FullReplicated:
-    case PredictionProfile::OwnedMovement:
+    case PredictionProfile::OwnedGameplay:
         return true;
     default:
         return false;
@@ -282,6 +285,15 @@ ScopeBuildResult build_prediction_scope(const simulation::WorldCheckpoint& autho
         })) {
         return ScopeBuildError::InvalidRequest;
     }
+    auto subscribed_event_owner_ids = request.subscribed_event_owner_ids;
+    if (subscribed_event_owner_ids.empty()) {
+        subscribed_event_owner_ids = owned_owner_ids;
+    }
+    std::sort(subscribed_event_owner_ids.begin(), subscribed_event_owner_ids.end());
+    if (!is_strictly_sorted(subscribed_event_owner_ids) ||
+        !std::ranges::includes(owned_owner_ids, subscribed_event_owner_ids)) {
+        return ScopeBuildError::InvalidRequest;
+    }
     for (const auto owner_id : owned_owner_ids) {
         if (find_owner(authority, owner_id) == nullptr) {
             return ScopeBuildError::MissingOwnedOwner;
@@ -295,9 +307,13 @@ ScopeBuildResult build_prediction_scope(const simulation::WorldCheckpoint& autho
         }
     }
 
-    if (request.profile == PredictionProfile::OwnedMovement) {
-        return make_owned_scope(
-            authority, request, owned_owner_ids, request.mechanics, PredictionFallbackReason::None);
+    if (request.profile == PredictionProfile::OwnedGameplay) {
+        return make_owned_scope(authority,
+                                request,
+                                owned_owner_ids,
+                                subscribed_event_owner_ids,
+                                request.mechanics,
+                                PredictionFallbackReason::None);
     }
 
     const auto domains = required_domains(mechanics);
@@ -310,6 +326,7 @@ ScopeBuildResult build_prediction_scope(const simulation::WorldCheckpoint& autho
         return make_owned_scope(authority,
                                 request,
                                 owned_owner_ids,
+                                subscribed_event_owner_ids,
                                 request.mechanics,
                                 PredictionFallbackReason::IncompleteClosure);
     }
@@ -341,6 +358,7 @@ ScopeBuildResult build_prediction_scope(const simulation::WorldCheckpoint& autho
         return make_owned_scope(authority,
                                 request,
                                 owned_owner_ids,
+                                subscribed_event_owner_ids,
                                 request.mechanics,
                                 PredictionFallbackReason::IncompleteClosure);
     }
@@ -356,6 +374,7 @@ ScopeBuildResult build_prediction_scope(const simulation::WorldCheckpoint& autho
         .required_domains = domains,
         .required_causal_channels = required_channels,
         .owned_owner_ids = std::move(owned_owner_ids),
+        .subscribed_event_owner_ids = std::move(subscribed_event_owner_ids),
         .owner_ids = owner_ids,
         .player_ids = std::move(player_ids),
         .food_ids = std::move(food_ids),

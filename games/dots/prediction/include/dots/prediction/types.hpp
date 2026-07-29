@@ -17,7 +17,7 @@ namespace dots::prediction {
 enum class PredictionProfile : std::uint8_t {
     InteractionClosure,
     FullReplicated,
-    OwnedMovement,
+    OwnedGameplay,
 };
 
 enum class PredictionFallbackReason : std::uint8_t {
@@ -112,6 +112,7 @@ struct PredictionRequest {
     PredictionProfile profile{PredictionProfile::InteractionClosure};
     MechanicMask mechanics{kCurrentPredictionMechanics};
     std::vector<simulation::PlayerOwnerId> owned_owner_ids;
+    std::vector<simulation::PlayerOwnerId> subscribed_event_owner_ids;
     mycore::time::TickDelta replay_horizon{64};
     mycore::rollback::ScopeEpoch scope_epoch;
     AuthorityCoverage coverage;
@@ -131,6 +132,7 @@ struct PredictionScope {
     StateDomainMask required_domains{};
     CausalChannelMask required_causal_channels{};
     std::vector<simulation::PlayerOwnerId> owned_owner_ids;
+    std::vector<simulation::PlayerOwnerId> subscribed_event_owner_ids;
     std::vector<simulation::PlayerOwnerId> owner_ids;
     std::vector<simulation::EntityId> player_ids;
     std::vector<simulation::EntityId> food_ids;

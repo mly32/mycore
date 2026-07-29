@@ -47,7 +47,8 @@ inline constexpr std::array kMechanicContracts{
                  state_domain_bit(StateDomain::WorldTick) |
                  state_domain_bit(StateDomain::OwnerCommands) |
                  state_domain_bit(StateDomain::OwnerTopology) |
-                 state_domain_bit(StateDomain::PlayerKinematics),
+                 state_domain_bit(StateDomain::PlayerKinematics) |
+                 state_domain_bit(StateDomain::PlayerMass),
         .writes = state_domain_bit(StateDomain::WorldTick) |
                   state_domain_bit(StateDomain::OwnerCommands) |
                   state_domain_bit(StateDomain::PlayerKinematics),

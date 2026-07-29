@@ -4,8 +4,11 @@
 #include "mycore/math/vector2.hpp"
 #include "mycore/time/time.hpp"
 
+#include <array>
 #include <compare>
+#include <cstddef>
 #include <cstdint>
+#include <span>
 #include <variant>
 #include <vector>
 
@@ -117,6 +120,24 @@ using SimulationEventKey =
     std::variant<FoodConsumedKey, PlayerAbsorbedKey, PlayerSplitKey, PiecesMergedKey>;
 
 [[nodiscard]] SimulationEventKey simulation_event_key(const SimulationEvent& event);
+
+struct SimulationEventParticipants {
+    std::array<PlayerOwnerId, 2> owner_ids;
+    std::size_t count{};
+
+    [[nodiscard]] std::span<const PlayerOwnerId> owners() const noexcept {
+        return std::span{owner_ids}.first(count);
+    }
+
+    bool operator==(const SimulationEventParticipants&) const = default;
+};
+
+// Participant ownership is the canonical event-audience contract used by both authoritative
+// receipt routing and predicted consequence subscriptions.
+[[nodiscard]] SimulationEventParticipants
+simulation_event_participants(const SimulationEvent& event) noexcept;
+[[nodiscard]] bool simulation_event_involves_owner(const SimulationEvent& event,
+                                                   PlayerOwnerId owner_id) noexcept;
 
 // Journals are deterministic simulation output. Replay regenerates them; they are never restored
 // as checkpoint state or allowed to invoke presentation side effects from inside the World.

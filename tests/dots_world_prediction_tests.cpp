@@ -1,5 +1,6 @@
 #include "dots/prediction/prediction.hpp"
 
+#include <algorithm>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <cstdint>
@@ -51,16 +52,18 @@ require_scope(const WorldCheckpoint& checkpoint,
               std::vector<PlayerOwnerId> owned_owner_ids,
               mycore::time::TickDelta horizon = mycore::time::TickDelta{1},
               dots::prediction::AuthorityCoverage coverage = {}) {
-    const auto result =
-        dots::prediction::build_prediction_scope(checkpoint,
-                                                 {
-                                                     .profile = profile,
-                                                     .mechanics = mechanics,
-                                                     .owned_owner_ids = std::move(owned_owner_ids),
-                                                     .replay_horizon = horizon,
-                                                     .scope_epoch = mycore::rollback::ScopeEpoch{1},
-                                                     .coverage = coverage,
-                                                 });
+    const auto subscribed_event_owner_ids = owned_owner_ids;
+    const auto result = dots::prediction::build_prediction_scope(
+        checkpoint,
+        {
+            .profile = profile,
+            .mechanics = mechanics,
+            .owned_owner_ids = std::move(owned_owner_ids),
+            .subscribed_event_owner_ids = subscribed_event_owner_ids,
+            .replay_horizon = horizon,
+            .scope_epoch = mycore::rollback::ScopeEpoch{1},
+            .coverage = coverage,
+        });
     const auto* scope = std::get_if<PredictionScope>(&result);
     REQUIRE(scope != nullptr);
     return *scope;
@@ -216,6 +219,7 @@ TEST_CASE("Dots mechanic contracts declare deterministic prediction dependencies
             .profile = PredictionProfile::InteractionClosure,
             .mechanics = dots::prediction::mechanic_bit(PredictionMechanic::SplitMerge),
             .owned_owner_ids = {PlayerOwnerId{0}},
+            .subscribed_event_owner_ids = {PlayerOwnerId{0}},
             .replay_horizon = mycore::time::TickDelta{1},
             .scope_epoch = mycore::rollback::ScopeEpoch{1},
             .coverage = {},
@@ -261,12 +265,13 @@ TEST_CASE("Dots prediction profiles construct causal islands and safe fallbacks"
     CHECK(full.food_ids.size() == 2);
 
     const auto owned_only = require_scope(checkpoint,
-                                          PredictionProfile::OwnedMovement,
+                                          PredictionProfile::OwnedGameplay,
                                           dots::prediction::kCurrentPredictionMechanics,
                                           {PlayerOwnerId{0}});
-    CHECK(owned_only.active_profile == PredictionProfile::OwnedMovement);
+    CHECK(owned_only.active_profile == PredictionProfile::OwnedGameplay);
     CHECK(owned_only.requested_mechanics == dots::prediction::kCurrentPredictionMechanics);
-    CHECK(owned_only.mechanics == dots::prediction::mechanic_bit(PredictionMechanic::Movement));
+    CHECK(owned_only.mechanics == (dots::prediction::mechanic_bit(PredictionMechanic::Movement) |
+                                   dots::prediction::mechanic_bit(PredictionMechanic::SplitMerge)));
     CHECK(owned_only.owner_ids == std::vector{PlayerOwnerId{0}});
     CHECK(owned_only.player_ids == std::vector{*owned});
     CHECK(owned_only.food_ids.empty());
@@ -280,7 +285,7 @@ TEST_CASE("Dots prediction profiles construct causal islands and safe fallbacks"
                                         {PlayerOwnerId{0}},
                                         mycore::time::TickDelta{1},
                                         incomplete_coverage);
-    CHECK(fallback.active_profile == PredictionProfile::OwnedMovement);
+    CHECK(fallback.active_profile == PredictionProfile::OwnedGameplay);
     CHECK(fallback.fallback_reason ==
           dots::prediction::PredictionFallbackReason::IncompleteClosure);
 
@@ -293,7 +298,7 @@ TEST_CASE("Dots prediction profiles construct causal islands and safe fallbacks"
                                                {PlayerOwnerId{0}},
                                                mycore::time::TickDelta{1},
                                                no_remote_causes);
-    CHECK(causal_fallback.active_profile == PredictionProfile::OwnedMovement);
+    CHECK(causal_fallback.active_profile == PredictionProfile::OwnedGameplay);
 
     auto missing_owned_state = dots::prediction::AuthorityCoverage{};
     missing_owned_state.available_domains &=
@@ -304,12 +309,67 @@ TEST_CASE("Dots prediction profiles construct causal islands and safe fallbacks"
             .profile = PredictionProfile::InteractionClosure,
             .mechanics = dots::prediction::kCurrentPredictionMechanics,
             .owned_owner_ids = {PlayerOwnerId{0}},
+            .subscribed_event_owner_ids = {PlayerOwnerId{0}},
             .replay_horizon = mycore::time::TickDelta{1},
             .scope_epoch = mycore::rollback::ScopeEpoch{1},
             .coverage = missing_owned_state,
         });
     CHECK(std::get<dots::prediction::ScopeBuildError>(unavailable) ==
           dots::prediction::ScopeBuildError::IncompleteOwnedState);
+}
+
+TEST_CASE("Dots prediction applies closure events but publishes only subscribed-owner events",
+          "[dots][prediction][events][subscription]") {
+    const auto run_absorption = [](PlayerOwnerId large_owner) {
+        World world;
+        REQUIRE(world.spawn_player(PlayerOwnerId{0}, {100.0F, 0.0F}).has_value());
+        REQUIRE(world.spawn_player(PlayerOwnerId{1}, {0.0F, 0.0F}).has_value());
+        REQUIRE(world.spawn_player(PlayerOwnerId{2}, {0.0F, 0.0F}).has_value());
+        auto checkpoint = world.checkpoint();
+        for (auto& player : checkpoint.players) {
+            player.mass = player.owner_id == large_owner ? 64.0F : 16.0F;
+        }
+        if (large_owner == PlayerOwnerId{0}) {
+            checkpoint.players[0].position = {};
+            checkpoint.players[2].position = {100.0F, 0.0F};
+        }
+
+        const auto scope = require_scope(checkpoint,
+                                         PredictionProfile::FullReplicated,
+                                         dots::prediction::kCurrentPredictionMechanics,
+                                         {PlayerOwnerId{0}});
+        CHECK(scope.subscribed_event_owner_ids == std::vector{PlayerOwnerId{0}});
+        dots::prediction::WorldModel model;
+        auto restored = model.restore(checkpoint, scope);
+        auto* state = std::get_if<World>(&restored);
+        REQUIRE(state != nullptr);
+        const TickStimulus stimulus{
+            .commands = {input(PlayerOwnerId{0}, 0)},
+            .remote_movement_assumptions =
+                {
+                    remote(PlayerOwnerId{1}, checkpoint.tick),
+                    remote(PlayerOwnerId{2}, checkpoint.tick),
+                },
+        };
+        auto stepped = model.step(*state, stimulus, scope);
+        auto* events = std::get_if<std::vector<dots::simulation::SimulationEvent>>(&stepped);
+        REQUIRE(events != nullptr);
+        return std::pair{*events, state->checkpoint()};
+    };
+
+    const auto [remote_events, remote_state] = run_absorption(PlayerOwnerId{1});
+    CHECK(remote_events.empty());
+    CHECK(remote_state.owners.size() == 2);
+    CHECK(std::ranges::none_of(remote_state.owners, [](const auto& owner) {
+        return owner.owner_id == PlayerOwnerId{2};
+    }));
+
+    const auto [owned_events, owned_state] = run_absorption(PlayerOwnerId{0});
+    REQUIRE(owned_events.size() == 1);
+    const auto* absorption = std::get_if<dots::simulation::PlayerAbsorbed>(&owned_events.front());
+    REQUIRE(absorption != nullptr);
+    CHECK(absorption->absorber_owner_id == PlayerOwnerId{0});
+    CHECK(owned_state.owners.size() == 2);
 }
 
 TEST_CASE("Dots scope projection rejects incompatible or out-of-scope authority",
@@ -320,7 +380,7 @@ TEST_CASE("Dots scope projection rejects incompatible or out-of-scope authority"
     REQUIRE(world.spawn_food({40.0F, 0.0F}).has_value());
     const auto checkpoint = world.checkpoint();
     const auto owned_scope = require_scope(checkpoint,
-                                           PredictionProfile::OwnedMovement,
+                                           PredictionProfile::OwnedGameplay,
                                            dots::prediction::kCurrentPredictionMechanics,
                                            {PlayerOwnerId{0}});
     const auto projected = require_projection(checkpoint, owned_scope);

@@ -229,6 +229,7 @@ command_sequence(protocol::InputSequenceId input_id) noexcept {
            (current.required_causal_channels & required.required_causal_channels) ==
                required.required_causal_channels &&
            current.owned_owner_ids == required.owned_owner_ids &&
+           contains_all(current.subscribed_event_owner_ids, required.subscribed_event_owner_ids) &&
            contains_all(current.owner_ids, required.owner_ids) && current.rules == required.rules &&
            contains_all(current.player_ids, required.player_ids) &&
            contains_all(current.food_ids, required.food_ids);
@@ -1021,6 +1022,7 @@ private:
                 .profile = prediction::PredictionProfile::InteractionClosure,
                 .mechanics = prediction::kCurrentPredictionMechanics,
                 .owned_owner_ids = {owner_id},
+                .subscribed_event_owner_ids = {owner_id},
                 .replay_horizon = required_replay_horizon,
                 .scope_epoch = scope_epoch,
                 .coverage = {},

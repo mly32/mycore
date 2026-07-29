@@ -1553,6 +1553,7 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
             .profile = dots::prediction::PredictionProfile::FullReplicated,
             .mechanics = dots::prediction::kCurrentPredictionMechanics,
             .owned_owner_ids = {dots::simulation::PlayerOwnerId{0}},
+            .subscribed_event_owner_ids = {dots::simulation::PlayerOwnerId{0}},
             .replay_horizon = kOfflineReplayHorizon,
             .scope_epoch = kOfflineScopeEpoch,
             .coverage = {},

@@ -745,16 +745,16 @@ bool World::advance_simulation(std::vector<OwnerCheckpoint> next_owners,
             throw std::logic_error{"Player owner is missing from the Dots tick state"};
         }
         auto velocity = owner->movement * rules_.player_speed_units_per_second;
+        velocity += launch_velocities_[index];
+        next_launch_velocities[index] = decayed_velocity(
+            launch_velocities_[index], rules_.launch_decay_units_per_second_squared);
         if (mechanics.split_merge) {
-            velocity += launch_velocities_[index];
             if (owner->player_ids.size() > 1 && completed_tick >= merge_eligible_ticks_[index]) {
                 const auto owner_index = static_cast<std::size_t>(owner - owners_.begin());
                 const auto cohesion_direction = mycore::math::normalized_or_zero(
                     owner_centroids[owner_index] - positions_[index]);
                 velocity += cohesion_direction * rules_.cohesion_speed_units_per_second;
             }
-            next_launch_velocities[index] = decayed_velocity(
-                launch_velocities_[index], rules_.launch_decay_units_per_second_squared);
         }
         const auto next_position = positions_[index] + (velocity / static_cast<float>(kTickRateHz));
         if (!spatial_grid_.can_index({.center = next_position, .radius = radii_[index]})) {

@@ -34,7 +34,7 @@ template <class Id> [[nodiscard]] bool contains(const std::vector<Id>& values, I
     switch (profile) {
     case PredictionProfile::InteractionClosure:
     case PredictionProfile::FullReplicated:
-    case PredictionProfile::OwnedMovement:
+    case PredictionProfile::OwnedGameplay:
         return true;
     default:
         return false;
@@ -48,8 +48,10 @@ template <class Id> [[nodiscard]] bool contains(const std::vector<Id>& values, I
         (scope.requested_mechanics & ~kSupportedMechanics) != 0U || scope.mechanics == 0 ||
         (scope.mechanics & ~kSupportedMechanics) != 0U ||
         !includes_mechanic(scope.mechanics, PredictionMechanic::Movement) ||
-        !is_strictly_sorted(scope.owned_owner_ids) || !is_strictly_sorted(scope.owner_ids) ||
-        !is_strictly_sorted(scope.player_ids) || !is_strictly_sorted(scope.food_ids)) {
+        !is_strictly_sorted(scope.owned_owner_ids) ||
+        !is_strictly_sorted(scope.subscribed_event_owner_ids) ||
+        !is_strictly_sorted(scope.owner_ids) || !is_strictly_sorted(scope.player_ids) ||
+        !is_strictly_sorted(scope.food_ids)) {
         return false;
     }
     const auto valid_ids = std::all_of(scope.owner_ids.begin(),
@@ -71,21 +73,25 @@ template <class Id> [[nodiscard]] bool contains(const std::vector<Id>& values, I
                     [&scope](simulation::PlayerOwnerId owner_id) {
                         return owner_id.is_valid() && contains(scope.owner_ids, owner_id);
                     });
+    const auto event_subscriptions_are_owned =
+        std::ranges::includes(scope.owned_owner_ids, scope.subscribed_event_owner_ids);
     const auto has_remote_owner =
         std::any_of(scope.owner_ids.begin(), scope.owner_ids.end(), [&scope](auto owner_id) {
             return !contains(scope.owned_owner_ids, owner_id);
         });
     const auto expected_channels =
         has_remote_owner ? causal_channel_bit(CausalChannel::RemoteMovement) : CausalChannelMask{};
-    if (!valid_ids || !owned_are_in_scope || scope.required_causal_channels != expected_channels) {
+    if (!valid_ids || !owned_are_in_scope || !event_subscriptions_are_owned ||
+        scope.required_causal_channels != expected_channels) {
         return false;
     }
-    if (scope.active_profile == PredictionProfile::OwnedMovement) {
-        const auto expected_fallback = scope.requested_profile == PredictionProfile::OwnedMovement
+    if (scope.active_profile == PredictionProfile::OwnedGameplay) {
+        const auto expected_fallback = scope.requested_profile == PredictionProfile::OwnedGameplay
                                            ? PredictionFallbackReason::None
                                            : PredictionFallbackReason::IncompleteClosure;
-        return scope.fallback_reason == expected_fallback &&
-               scope.mechanics == mechanic_bit(PredictionMechanic::Movement) &&
+        const auto owned_mechanics = mechanic_bit(PredictionMechanic::Movement) |
+                                     mechanic_bit(PredictionMechanic::SplitMerge);
+        return scope.fallback_reason == expected_fallback && scope.mechanics == owned_mechanics &&
                scope.owner_ids == scope.owned_owner_ids && scope.food_ids.empty();
     }
     return scope.active_profile == scope.requested_profile &&
@@ -326,7 +332,14 @@ WorldModel::step(State& state, const Stimulus& stimulus, const Scope& scope) con
             .tick_error = *tick_error,
         };
     }
-    return std::get<simulation::TickJournal>(result).events;
+    auto events = std::move(std::get<simulation::TickJournal>(result).events);
+    std::erase_if(events, [&scope](const simulation::SimulationEvent& event) {
+        const auto participants = simulation::simulation_event_participants(event);
+        return std::ranges::none_of(participants.owners(), [&scope](auto owner_id) {
+            return contains(scope.subscribed_event_owner_ids, owner_id);
+        });
+    });
+    return events;
 }
 
 WorldModel::StateDigest WorldModel::digest(const Checkpoint& checkpoint, const Scope& scope) const {

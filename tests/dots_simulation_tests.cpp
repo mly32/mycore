@@ -980,6 +980,51 @@ TEST_CASE("Split creates stable predicted children with launch and owner cooldow
     CHECK(world.player_count() == 4);
 }
 
+TEST_CASE("Existing launch integrates and decays when split topology is disabled",
+          "[dots][simulation][movement][split]") {
+    auto rules = dots::simulation::WorldRules{};
+    rules.launch_decay_units_per_second_squared = 6.0F;
+    dots::simulation::World world{rules};
+    const auto player = world.spawn_player(dots::simulation::PlayerOwnerId{0});
+    REQUIRE(player.has_value());
+
+    auto checkpoint = world.checkpoint();
+    checkpoint.players.front().launch_velocity = {12.0F, 0.0F};
+    REQUIRE_FALSE(world.restore(checkpoint).has_value());
+
+    const auto journal =
+        require_journal(world.advance(std::span<const dots::simulation::TickCommand>{},
+                                      {
+                                          .player_absorption = false,
+                                          .food_consumption = false,
+                                          .split_merge = false,
+                                      }));
+    CHECK(journal.events.empty());
+    const auto advanced = world.checkpoint();
+    CHECK(advanced.players.front().position.x == Catch::Approx(0.4F));
+    CHECK(advanced.players.front().launch_velocity.x == Catch::Approx(11.8F));
+}
+
+TEST_CASE("Simulation events expose canonical unique owner participants",
+          "[dots][simulation][events]") {
+    const dots::simulation::SimulationEvent absorbed = dots::simulation::PlayerAbsorbed{
+        .tick = mycore::time::Tick{2},
+        .absorber_entity_id = dots::simulation::EntityId{10},
+        .victim_entity_id = dots::simulation::EntityId{20},
+        .absorber_owner_id = dots::simulation::PlayerOwnerId{7},
+        .victim_owner_id = dots::simulation::PlayerOwnerId{3},
+        .transferred_mass = 16.0F,
+    };
+    const auto participants = dots::simulation::simulation_event_participants(absorbed);
+    REQUIRE(participants.count == 2);
+    CHECK(participants.owner_ids[0] == dots::simulation::PlayerOwnerId{3});
+    CHECK(participants.owner_ids[1] == dots::simulation::PlayerOwnerId{7});
+    CHECK(dots::simulation::simulation_event_involves_owner(absorbed,
+                                                            dots::simulation::PlayerOwnerId{3}));
+    CHECK_FALSE(dots::simulation::simulation_event_involves_owner(
+        absorbed, dots::simulation::PlayerOwnerId{9}));
+}
+
 TEST_CASE("Split processes stable parent order and respects the owner piece cap",
           "[dots][simulation][split]") {
     auto rules = dots::simulation::WorldRules{};

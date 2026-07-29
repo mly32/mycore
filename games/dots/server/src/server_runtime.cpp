@@ -475,8 +475,8 @@ private:
                     recipients.push_back(session);
                 }
             };
-            if (const auto* food_event = std::get_if<simulation::FoodConsumed>(&simulation_event)) {
-                add_recipient(session_for_owner(food_event->consumer_owner_id));
+            if (std::holds_alternative<simulation::FoodConsumed>(simulation_event)) {
+                // Food has no additional session lifecycle state.
             } else if (const auto* split_event =
                            std::get_if<simulation::PlayerSplit>(&simulation_event)) {
                 auto* owner = session_for_owner(split_event->owner_id);
@@ -484,7 +484,6 @@ private:
                     owner->player_ids.push_back(split_event->child_entity_id);
                     std::sort(owner->player_ids.begin(), owner->player_ids.end());
                 }
-                add_recipient(owner);
             } else if (const auto* merge_event =
                            std::get_if<simulation::PiecesMerged>(&simulation_event)) {
                 auto* owner = session_for_owner(merge_event->owner_id);
@@ -494,7 +493,6 @@ private:
                         owner->primary_player_id = merge_event->survivor_entity_id;
                     }
                 }
-                add_recipient(owner);
             } else {
                 const auto& absorption_event =
                     std::get<simulation::PlayerAbsorbed>(simulation_event);
@@ -511,9 +509,7 @@ private:
                 if (absorber != nullptr) {
                     absorber->latest_absorption = replicated_event;
                 }
-                add_recipient(absorber);
                 auto* victim = session_for_owner(absorption_event.victim_owner_id);
-                add_recipient(victim);
                 if (victim != nullptr) {
                     victim->latest_absorption = replicated_event;
                     std::erase(victim->player_ids, absorption_event.victim_entity_id);
@@ -541,6 +537,10 @@ private:
                 }
             }
 
+            for (const auto owner_id :
+                 simulation::simulation_event_participants(simulation_event).owners()) {
+                add_recipient(session_for_owner(owner_id));
+            }
             for (auto* recipient : recipients) {
                 if (!enqueue_authority_receipt(*recipient, *authority_event)) {
                     receipt_failures.push_back(recipient->connection);
