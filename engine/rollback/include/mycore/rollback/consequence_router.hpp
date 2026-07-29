@@ -89,13 +89,17 @@ public:
         : handlers_(std::move(handlers)...) {}
 
     [[nodiscard]] ConsequenceDispatchReport consume(const Commit<Model>& commit) {
-        ConsequenceDispatchReport report;
-        report.failures.reserve(commit.event_changes.size());
+        return consume(event_batch_from_commit(commit));
+    }
 
-        for (const auto& change : commit.event_changes) {
+    [[nodiscard]] ConsequenceDispatchReport consume(const EventBatch<Model>& batch) {
+        ConsequenceDispatchReport report;
+        report.failures.reserve(batch.changes.size());
+
+        for (const auto& change : batch.changes) {
             process_change(change, report, std::index_sequence_for<Handlers...>{});
         }
-        for (const auto& key : commit.retired_event_keys) {
+        for (const auto& key : batch.retired_keys) {
             retire(key, std::index_sequence_for<Handlers...>{});
         }
 

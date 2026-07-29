@@ -1,5 +1,6 @@
 #pragma once
 
+#include "dots/prediction/model.hpp"
 #include "dots/protocol/ids.hpp"
 #include "dots/protocol/messages.hpp"
 #include "dots/replication/replication.hpp"
@@ -36,6 +37,7 @@ enum class RuntimeError : std::uint8_t {
     CheckpointHydrationFailed,
     PredictionScopeFailed,
     PredictionTimelineFailed,
+    PredictionEventQueueFull,
     AmbiguousPredictionIdentity,
     TransportSendFailed,
 };
@@ -106,6 +108,8 @@ struct ProcessEventsResult {
 };
 
 inline constexpr std::size_t kPredictionHistoryCapacity = 256;
+inline constexpr std::size_t kPredictionEventBatchCapacity = 512;
+using PredictionEventBatch = mycore::rollback::EventBatch<prediction::WorldModel>;
 
 struct PredictionStatistics {
     bool input_redundancy_enabled{true};
@@ -118,6 +122,7 @@ struct PredictionStatistics {
     std::uint64_t scope_epoch{};
     std::uint64_t scope_replay_horizon_ticks{};
     std::size_t scope_owner_count{};
+    std::size_t scope_event_owner_count{};
     std::size_t scope_player_count{};
     std::size_t scope_food_count{};
     std::uint64_t scope_rebase_count{};
@@ -148,6 +153,12 @@ struct PredictionStatistics {
     std::size_t pending_injected_input_drop_count{};
     std::uint64_t injected_input_drop_count{};
     std::uint64_t injected_prediction_error_count{};
+    protocol::AuthorityReceiptSequenceId authority_receipts_accepted_through;
+    protocol::AuthorityReceiptSequenceId authority_receipts_published_through;
+    protocol::AuthorityReceiptSequenceId authority_receipts_server_retired_through;
+    std::size_t authority_receipt_retained_count{};
+    std::size_t authority_receipt_pending_publication_count{};
+    std::size_t pending_prediction_event_batch_count{};
 };
 
 class Runtime {
@@ -166,6 +177,7 @@ public:
                                              mycore::math::Vector2 movement,
                                              std::uint16_t action_bits = 0);
     [[nodiscard]] bool disconnect();
+    [[nodiscard]] std::vector<PredictionEventBatch> take_prediction_event_batches();
 
     [[nodiscard]] State state() const noexcept;
     [[nodiscard]] const replication::ReplicatedWorld& world() const noexcept;

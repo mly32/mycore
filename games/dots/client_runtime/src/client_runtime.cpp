@@ -35,6 +35,21 @@ constexpr std::size_t kRecentPredictionCorrectionCapacity = 256;
 constexpr auto kInitialScopeEpoch = mycore::rollback::ScopeEpoch{0};
 constexpr auto kPredictionScopeHorizonFloor = mycore::time::TickDelta{5};
 
+template <class Container>
+void append_observable_event_batch(Container& destination, prediction::Commit&& commit) {
+    auto batch = mycore::rollback::event_batch_from_commit(std::move(commit));
+    if (!batch.changes.empty() || !batch.retired_keys.empty()) {
+        destination.push_back(std::move(batch));
+    }
+}
+
+template <class Container>
+void append_observable_event_batch(Container& destination, PredictionEventBatch&& batch) {
+    if (!batch.changes.empty() || !batch.retired_keys.empty()) {
+        destination.push_back(std::move(batch));
+    }
+}
+
 [[nodiscard]] mycore::time::TickDelta replay_horizon(std::size_t input_count) noexcept {
     return mycore::time::TickDelta{
         std::max(kPredictionScopeHorizonFloor.value(), static_cast<std::uint64_t>(input_count))};
@@ -130,15 +145,17 @@ struct SnapshotProcessResult {
     bool applied{};
 };
 
-enum class TimelineAdvanceResult : std::uint8_t {
-    Advanced,
+enum class TimelineAdvanceStatus : std::uint8_t {
     Deferred,
     Failed,
 };
 
+using TimelineAdvanceResult = std::variant<prediction::Commit, TimelineAdvanceStatus>;
+
 enum class AuthorityInstallReason : std::uint8_t {
     NewAuthority,
     ScopeRebase,
+    HardResync,
 };
 
 struct PredictedProjection {
@@ -365,8 +382,8 @@ public:
                 respawn_cooldown_ticks_ = welcome->respawn_cooldown_ticks;
                 world_rules_ = welcome->world_rules;
                 if (latest_authority_snapshot_) {
-                    const auto prediction_result =
-                        install_authority(*latest_authority_snapshot_, world_, now);
+                    const auto prediction_result = install_authority(
+                        *latest_authority_snapshot_, world_, authority_receipts_, now);
                     if (prediction_result) {
                         result.error = fail(*prediction_result);
                         return result;
@@ -421,6 +438,10 @@ public:
         if (playing && (!timeline_ || !confirmed_owner_id_.is_valid())) {
             return InputSendResult::NotReady;
         }
+        if (playing && prediction_event_batches_.size() >= kPredictionEventBatchCapacity) {
+            static_cast<void>(fail(RuntimeError::PredictionEventQueueFull));
+            return InputSendResult::NotReady;
+        }
         if (next_input_id_ == protocol::InputSequenceId::kInvalidValue) {
             return InputSendResult::SequenceExhausted;
         }
@@ -461,6 +482,10 @@ public:
                                                              std::chrono::steady_clock::now());
             if (scope_error) {
                 static_cast<void>(fail(*scope_error));
+                return InputSendResult::NotReady;
+            }
+            if (prediction_event_batches_.size() >= kPredictionEventBatchCapacity) {
+                static_cast<void>(fail(RuntimeError::PredictionEventQueueFull));
                 return InputSendResult::NotReady;
             }
         }
@@ -507,6 +532,16 @@ public:
                                 client_id_.value(),
                                 connection_.value());
         return true;
+    }
+
+    [[nodiscard]] std::vector<PredictionEventBatch> take_prediction_event_batches() {
+        std::vector<PredictionEventBatch> result;
+        result.reserve(prediction_event_batches_.size());
+        while (!prediction_event_batches_.empty()) {
+            result.push_back(std::move(prediction_event_batches_.front()));
+            prediction_event_batches_.pop_front();
+        }
+        return result;
     }
 
     [[nodiscard]] State state() const noexcept {
@@ -659,6 +694,7 @@ public:
             .scope_epoch = 0,
             .scope_replay_horizon_ticks = 0,
             .scope_owner_count = 0,
+            .scope_event_owner_count = 0,
             .scope_player_count = 0,
             .scope_food_count = 0,
             .scope_rebase_count = scope_rebase_count_,
@@ -689,12 +725,21 @@ public:
             .pending_injected_input_drop_count = pending_injected_input_drop_count_,
             .injected_input_drop_count = injected_input_drop_count_,
             .injected_prediction_error_count = injected_prediction_error_count_,
+            .authority_receipts_accepted_through = authority_receipts_.accepted_through(),
+            .authority_receipts_published_through = authority_receipts_.published_through(),
+            .authority_receipts_server_retired_through =
+                authority_receipts_.server_retired_through(),
+            .authority_receipt_retained_count = authority_receipts_.retained_count(),
+            .authority_receipt_pending_publication_count =
+                authority_receipts_.pending_publication_count(),
+            .pending_prediction_event_batch_count = prediction_event_batches_.size(),
         };
         if (timeline_ && timeline_->scope()) {
             const auto& scope = *timeline_->scope();
             result.scope_epoch = scope.scope_epoch.value();
             result.scope_replay_horizon_ticks = scope.replay_horizon.value();
             result.scope_owner_count = scope.owner_ids.size();
+            result.scope_event_owner_count = scope.subscribed_event_owner_ids.size();
             result.scope_player_count = scope.player_ids.size();
             result.scope_food_count = scope.food_ids.size();
         }
@@ -741,7 +786,7 @@ private:
     make_input_packet(const protocol::InputSample& current_sample) const {
         protocol::InputPacket packet{
             .last_received_snapshot_id = world_.snapshot_id(),
-            .last_received_authority_receipt_sequence = world_.authority_receipt_acknowledgement(),
+            .last_received_authority_receipt_sequence = authority_receipts_.published_through(),
             .samples = {},
         };
         packet.samples.reserve(protocol::kMaximumInputSamplesPerPacket);
@@ -762,12 +807,17 @@ private:
     process_snapshot(const protocol::FullSnapshot& snapshot,
                      std::chrono::steady_clock::time_point now) {
         auto candidate_world = world_;
+        auto candidate_receipts = authority_receipts_;
         const auto apply_result = candidate_world.apply(snapshot);
         if (apply_result == replication::SnapshotApplyResult::Invalid) {
             return {.error = RuntimeError::InvalidSnapshot};
         }
         if (apply_result == replication::SnapshotApplyResult::Stale) {
             return {};
+        }
+        if (!std::holds_alternative<replication::AuthorityReceiptDelta>(
+                candidate_receipts.apply(snapshot))) {
+            return {.error = RuntimeError::InvalidSnapshot};
         }
         if (!valid_acknowledgement(candidate_world.last_processed_input_id())) {
             return {.error = RuntimeError::InvalidInputAcknowledgement};
@@ -778,11 +828,13 @@ private:
         const auto previous_recipient = world_.recipient();
 
         if (world_rules_) {
-            if (const auto error = install_authority(snapshot, candidate_world, now)) {
+            if (const auto error =
+                    install_authority(snapshot, candidate_world, candidate_receipts, now)) {
                 return {.error = error};
             }
         }
         world_ = std::move(candidate_world);
+        authority_receipts_ = std::move(candidate_receipts);
         latest_authority_snapshot_ = snapshot;
         if (world_.recipient().mode == protocol::SessionMode::Spectating) {
             clear_prediction_state();
@@ -981,27 +1033,26 @@ private:
                 return owner.owner_id < value;
             });
         if (live_owner == checkpoint.owners.end() || live_owner->owner_id != owner_id) {
-            return TimelineAdvanceResult::Deferred;
+            return TimelineAdvanceStatus::Deferred;
         }
         const auto stimulus = make_stimulus(timeline, sample, owner_id, movement_authority);
         if (!stimulus) {
-            return TimelineAdvanceResult::Failed;
+            return TimelineAdvanceStatus::Failed;
         }
-        const auto advanced = timeline.advance(
+        auto advanced = timeline.advance(
             mycore::rollback::CommandSequence{sample.sequence_id.value()}, *stimulus);
-        return std::holds_alternative<prediction::Commit>(advanced)
-                   ? TimelineAdvanceResult::Advanced
-                   : TimelineAdvanceResult::Failed;
+        if (auto* commit = std::get_if<prediction::Commit>(&advanced)) {
+            return std::move(*commit);
+        }
+        return TimelineAdvanceStatus::Failed;
     }
 
     [[nodiscard]] std::vector<prediction::AuthorityEvent>
-    new_authority_events(const replication::ReplicatedWorld& candidate_world) const {
-        const auto receipts = candidate_world.authority_receipts();
-        const auto first_new_receipt = world_.authority_receipts().size();
+    authority_events(std::span<const protocol::AuthorityReceipt> receipts) const {
         std::vector<prediction::AuthorityEvent> result;
-        result.reserve(receipts.size() - first_new_receipt);
-        for (std::size_t index = first_new_receipt; index < receipts.size(); ++index) {
-            auto event = replication::to_simulation(receipts[index].event);
+        result.reserve(receipts.size());
+        for (const auto& receipt : receipts) {
+            auto event = replication::to_simulation(receipt.event);
             result.push_back({
                 .disposition = mycore::rollback::AuthorityEventDisposition::Confirmed,
                 .key = simulation::simulation_event_key(event),
@@ -1036,6 +1087,7 @@ private:
     [[nodiscard]] std::optional<RuntimeError>
     install_authority(const protocol::FullSnapshot& snapshot,
                       const replication::ReplicatedWorld& candidate_world,
+                      replication::AuthorityReceiptInbox& candidate_receipts,
                       std::chrono::steady_clock::time_point now,
                       std::size_t minimum_replay_input_count = 0,
                       AuthorityInstallReason reason = AuthorityInstallReason::NewAuthority) {
@@ -1049,7 +1101,58 @@ private:
         if (authority == nullptr) {
             return RuntimeError::CheckpointHydrationFailed;
         }
+        const auto pending_receipts = candidate_receipts.pending_publication();
+        auto pending_authority_events = authority_events(pending_receipts);
         if (candidate_world.recipient().mode == protocol::SessionMode::Spectating) {
+            std::vector<PredictionEventBatch> committed_batches;
+            if (timeline_ && timeline_->scope()) {
+                const auto projected =
+                    prediction::project_checkpoint(*authority, *timeline_->scope());
+                const auto* projected_authority =
+                    std::get_if<simulation::WorldCheckpoint>(&projected);
+                if (projected_authority == nullptr) {
+                    return RuntimeError::PredictionScopeFailed;
+                }
+                prediction::Timeline scratch_timeline = *timeline_;
+                const prediction::AuthorityFrame frame{
+                    .tick = projected_authority->tick,
+                    .acknowledged_through =
+                        command_sequence(candidate_world.last_processed_input_id()),
+                    .scope_epoch = timeline_->scope_epoch(),
+                    .checkpoint = *projected_authority,
+                    .events = std::move(pending_authority_events),
+                };
+                auto resynced = scratch_timeline.hard_resync(frame, *timeline_->scope());
+                auto* commit = std::get_if<prediction::Commit>(&resynced);
+                if (commit == nullptr) {
+                    const auto& failure = std::get<prediction::TimelineFailure>(resynced);
+                    mycore::debug::log_error("dots.client.prediction",
+                                             "Terminal hard resync failed with rollback error {}",
+                                             mycore::rollback::timeline_error_name(failure.code));
+                    return RuntimeError::PredictionTimelineFailed;
+                }
+                append_observable_event_batch(committed_batches, std::move(*commit));
+            } else {
+                auto resolved =
+                    mycore::rollback::resolve_authority_only_events<prediction::WorldModel>(
+                        prediction::WorldModel{}, pending_authority_events);
+                auto* batch = std::get_if<PredictionEventBatch>(&resolved);
+                if (batch == nullptr) {
+                    return RuntimeError::PredictionTimelineFailed;
+                }
+                append_observable_event_batch(committed_batches, std::move(*batch));
+            }
+            if (prediction_event_batches_.size() + committed_batches.size() >
+                kPredictionEventBatchCapacity) {
+                return RuntimeError::PredictionEventQueueFull;
+            }
+            if (!pending_receipts.empty() &&
+                !candidate_receipts.mark_published_through(pending_receipts.back().sequence_id)) {
+                return RuntimeError::PredictionTimelineFailed;
+            }
+            for (auto& batch : committed_batches) {
+                prediction_event_batches_.push_back(std::move(batch));
+            }
             return std::nullopt;
         }
         const auto owner = confirmed_owner(candidate_world);
@@ -1107,22 +1210,31 @@ private:
                 ? std::optional<prediction::PredictionScope>{*timeline_->scope()}
                 : std::nullopt;
         const auto previous_prediction = predicted_position_;
-        auto authority_events = new_authority_events(candidate_world);
         const prediction::AuthorityFrame frame{
             .tick = projected_authority->tick,
             .acknowledged_through = command_sequence(candidate_world.last_processed_input_id()),
             .scope_epoch = selected_scope.scope_epoch,
             .checkpoint = *projected_authority,
-            .events = std::move(authority_events),
+            .events = std::move(pending_authority_events),
         };
 
         prediction::Timeline scratch_timeline{
             prediction::WorldModel{},
             {.capacity = kPredictionHistoryCapacity},
         };
-        if (!rebuild && timeline_->authoritative_tick() < frame.tick) {
+        std::vector<PredictionEventBatch> committed_batches;
+        if (reason == AuthorityInstallReason::HardResync && timeline_ &&
+            confirmed_owner_id_ == *owner) {
             scratch_timeline = *timeline_;
-            const auto reconciled = scratch_timeline.reconcile_with_stimulus_refresh(
+            auto resynced = scratch_timeline.hard_resync(frame, selected_scope);
+            auto* commit = std::get_if<prediction::Commit>(&resynced);
+            if (commit == nullptr) {
+                return RuntimeError::PredictionTimelineFailed;
+            }
+            append_observable_event_batch(committed_batches, std::move(*commit));
+        } else if (!rebuild && timeline_->authoritative_tick() < frame.tick) {
+            scratch_timeline = *timeline_;
+            auto reconciled = scratch_timeline.reconcile_with_stimulus_refresh(
                 frame,
                 [authority](mycore::rollback::CommandSequence,
                             const prediction::TickStimulus& previous,
@@ -1130,20 +1242,55 @@ private:
                             const prediction::PredictionScope& scope) {
                     return refresh_remote_assumptions(previous, replay_state, scope, *authority);
                 });
-            if (!std::holds_alternative<prediction::Commit>(reconciled)) {
+            auto* commit = std::get_if<prediction::Commit>(&reconciled);
+            if (commit == nullptr) {
                 return RuntimeError::PredictionTimelineFailed;
             }
+            append_observable_event_batch(committed_batches, std::move(*commit));
+        } else if (!rebuild && timeline_->authoritative_tick() == frame.tick) {
+            scratch_timeline = *timeline_;
+            auto refreshed = scratch_timeline.refresh_authority_with_stimulus_refresh(
+                frame,
+                [authority](mycore::rollback::CommandSequence,
+                            const prediction::TickStimulus& previous,
+                            const simulation::World& replay_state,
+                            const prediction::PredictionScope& scope) {
+                    return refresh_remote_assumptions(previous, replay_state, scope, *authority);
+                });
+            auto* commit = std::get_if<prediction::Commit>(&refreshed);
+            if (commit == nullptr) {
+                return RuntimeError::PredictionTimelineFailed;
+            }
+            append_observable_event_batch(committed_batches, std::move(*commit));
+        } else if (rebuild && timeline_ && confirmed_owner_id_ == *owner) {
+            scratch_timeline = *timeline_;
+            auto rebased = scratch_timeline.rebase_scope_with_stimulus_refresh(
+                frame,
+                selected_scope,
+                [authority](mycore::rollback::CommandSequence,
+                            const prediction::TickStimulus& previous,
+                            const simulation::World& replay_state,
+                            const prediction::PredictionScope& scope) {
+                    return refresh_remote_assumptions(previous, replay_state, scope, *authority);
+                });
+            auto* commit = std::get_if<prediction::Commit>(&rebased);
+            if (commit == nullptr) {
+                const auto& failure = std::get<prediction::TimelineFailure>(rebased);
+                mycore::debug::log_error("dots.client.prediction",
+                                         "Scope rebase failed with rollback error {}",
+                                         mycore::rollback::timeline_error_name(failure.code));
+                return RuntimeError::PredictionTimelineFailed;
+            }
+            append_observable_event_batch(committed_batches, std::move(*commit));
         } else {
-            rebuild = true;
-        }
-
-        if (rebuild) {
             scratch_timeline = prediction::Timeline{prediction::WorldModel{},
                                                     {.capacity = kPredictionHistoryCapacity}};
-            const auto initialized = scratch_timeline.initialize(frame, selected_scope);
-            if (!std::holds_alternative<prediction::Commit>(initialized)) {
+            auto initialized = scratch_timeline.initialize(frame, selected_scope);
+            auto* commit = std::get_if<prediction::Commit>(&initialized);
+            if (commit == nullptr) {
                 return RuntimeError::PredictionTimelineFailed;
             }
+            append_observable_event_batch(committed_batches, std::move(*commit));
         }
 
         auto last_timeline_sequence = candidate_world.last_processed_input_id();
@@ -1156,14 +1303,19 @@ private:
             if (last_timeline_sequence.is_valid() && sample.sequence_id <= last_timeline_sequence) {
                 continue;
             }
-            const auto advance_result =
-                advance_timeline(scratch_timeline, sample, *owner, *authority);
-            if (advance_result == TimelineAdvanceResult::Failed) {
+            auto advance_result = advance_timeline(scratch_timeline, sample, *owner, *authority);
+            const auto* status = std::get_if<TimelineAdvanceStatus>(&advance_result);
+            if (status != nullptr && *status == TimelineAdvanceStatus::Failed) {
                 return RuntimeError::PredictionTimelineFailed;
             }
-            if (advance_result == TimelineAdvanceResult::Deferred) {
+            if (status != nullptr && *status == TimelineAdvanceStatus::Deferred) {
                 break;
             }
+            auto* commit = std::get_if<prediction::Commit>(&advance_result);
+            if (commit == nullptr) {
+                return RuntimeError::PredictionTimelineFailed;
+            }
+            append_observable_event_batch(committed_batches, std::move(*commit));
             last_timeline_sequence = sample.sequence_id;
         }
 
@@ -1199,7 +1351,18 @@ private:
                                  return lhs.distance < rhs.distance;
                              });
 
+        if (prediction_event_batches_.size() + committed_batches.size() >
+            kPredictionEventBatchCapacity) {
+            return RuntimeError::PredictionEventQueueFull;
+        }
+        if (!pending_receipts.empty() &&
+            !candidate_receipts.mark_published_through(pending_receipts.back().sequence_id)) {
+            return RuntimeError::PredictionTimelineFailed;
+        }
         timeline_ = std::move(scratch_timeline);
+        for (auto& batch : committed_batches) {
+            prediction_event_batches_.push_back(std::move(batch));
+        }
         latest_authority_checkpoint_ = *authority;
         input_history_ = scratch_history;
         confirmed_owner_id_ = *owner;
@@ -1216,7 +1379,8 @@ private:
                 mycore::debug::log_info(
                     "dots.client.prediction.scope",
                     "Scope rebase {} -> {} at snapshot {} tick {} for {} retained inputs: "
-                    "horizon {} -> {}, owners {} -> {}, players {} -> {}, food {} -> {}",
+                    "horizon {} -> {}, owners {} -> {}, event owners {} -> {}, players {} -> {}, "
+                    "food {} -> {}",
                     previous_scope->scope_epoch.value(),
                     selected_scope.scope_epoch.value(),
                     candidate_world.snapshot_id().value(),
@@ -1226,6 +1390,8 @@ private:
                     selected_scope.replay_horizon.value(),
                     previous_scope->owner_ids.size(),
                     selected_scope.owner_ids.size(),
+                    previous_scope->subscribed_event_owner_ids.size(),
+                    selected_scope.subscribed_event_owner_ids.size(),
                     previous_scope->player_ids.size(),
                     selected_scope.player_ids.size(),
                     previous_scope->food_ids.size(),
@@ -1240,8 +1406,9 @@ private:
                 "{} at snapshot {} authority tick {} moved predicted head {} -> {}; remote "
                 "entity {} ({:.3f}, {:.3f}) -> ({:.3f}, {:.3f}), delta {:.3f}, "
                 "same-head-tick {}, retained inputs {}",
-                reason == AuthorityInstallReason::ScopeRebase ? "Scope rebase"
-                                                              : "Authority reconciliation",
+                reason == AuthorityInstallReason::ScopeRebase  ? "Scope rebase"
+                : reason == AuthorityInstallReason::HardResync ? "Hard resync"
+                                                               : "Authority reconciliation",
                 candidate_world.snapshot_id().value(),
                 candidate_world.server_tick(),
                 previous_checkpoint->tick.value(),
@@ -1344,14 +1511,20 @@ private:
         if (!timeline_ || !latest_authority_checkpoint_ || !confirmed_owner_id_.is_valid()) {
             return RuntimeError::PredictionTimelineFailed;
         }
-        const auto result = advance_timeline(
+        auto result = advance_timeline(
             *timeline_, sample, confirmed_owner_id_, *latest_authority_checkpoint_);
-        if (result == TimelineAdvanceResult::Failed) {
+        const auto* status = std::get_if<TimelineAdvanceStatus>(&result);
+        if (status != nullptr && *status == TimelineAdvanceStatus::Failed) {
             return RuntimeError::PredictionTimelineFailed;
         }
-        if (result == TimelineAdvanceResult::Deferred) {
+        if (status != nullptr && *status == TimelineAdvanceStatus::Deferred) {
             return std::nullopt;
         }
+        auto* commit = std::get_if<prediction::Commit>(&result);
+        if (commit == nullptr) {
+            return RuntimeError::PredictionTimelineFailed;
+        }
+        append_observable_event_batch(prediction_event_batches_, std::move(*commit));
         const auto projection = project_predicted_owner(*timeline_->state(),
                                                         confirmed_owner_id_,
                                                         world_.recipient().primary_entity_id,
@@ -1391,6 +1564,7 @@ private:
         }
         return install_authority(*latest_authority_snapshot_,
                                  world_,
+                                 authority_receipts_,
                                  now,
                                  replay_input_count,
                                  AuthorityInstallReason::ScopeRebase);
@@ -1400,8 +1574,15 @@ private:
         if (!latest_authority_snapshot_ || !world_rules_) {
             return false;
         }
+        auto previous_history = input_history_;
         input_history_.clear();
-        if (const auto error = install_authority(*latest_authority_snapshot_, world_, now)) {
+        if (const auto error = install_authority(*latest_authority_snapshot_,
+                                                 world_,
+                                                 authority_receipts_,
+                                                 now,
+                                                 0,
+                                                 AuthorityInstallReason::HardResync)) {
+            input_history_ = previous_history;
             return false;
         }
         pre_correction_position_.reset();
@@ -1566,11 +1747,13 @@ private:
     std::uint32_t respawn_cooldown_ticks_{};
     std::optional<protocol::WorldRules> world_rules_;
     replication::ReplicatedWorld world_;
+    replication::AuthorityReceiptInbox authority_receipts_;
     std::optional<protocol::FullSnapshot> latest_authority_snapshot_;
     std::uint32_t next_input_id_{};
     std::optional<std::uint32_t> last_sent_client_tick_;
     PredictionHistory input_history_;
     std::optional<prediction::Timeline> timeline_;
+    std::deque<PredictionEventBatch> prediction_event_batches_;
     std::optional<simulation::WorldCheckpoint> latest_authority_checkpoint_;
     simulation::PlayerOwnerId confirmed_owner_id_;
     protocol::EntityId predicted_primary_entity_id_;
@@ -1641,6 +1824,10 @@ InputSendResult Runtime::send_input(std::uint32_t client_tick,
 
 bool Runtime::disconnect() {
     return impl_->disconnect();
+}
+
+std::vector<PredictionEventBatch> Runtime::take_prediction_event_batches() {
+    return impl_->take_prediction_event_batches();
 }
 
 State Runtime::state() const noexcept {

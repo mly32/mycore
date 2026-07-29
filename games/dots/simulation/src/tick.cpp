@@ -33,37 +33,39 @@ SimulationEventKey simulation_event_key(const SimulationEvent& event) {
 }
 
 SimulationEventParticipants simulation_event_participants(const SimulationEvent& event) noexcept {
-    return std::visit(
-        [](const auto& value) {
-            using Event = std::decay_t<decltype(value)>;
-            if constexpr (std::same_as<Event, PlayerAbsorbed>) {
-                if (value.absorber_owner_id == value.victim_owner_id) {
-                    return SimulationEventParticipants{
-                        .owner_ids = {value.absorber_owner_id, {}},
-                        .count = 1,
-                    };
-                }
-                const auto first = std::min(value.absorber_owner_id, value.victim_owner_id);
-                const auto second = std::max(value.absorber_owner_id, value.victim_owner_id);
-                return SimulationEventParticipants{
-                    .owner_ids = {first, second},
-                    .count = 2,
-                };
-            } else if constexpr (std::same_as<Event, FoodConsumed>) {
-                return SimulationEventParticipants{
-                    .owner_ids = {value.consumer_owner_id, {}},
-                    .count = 1,
-                };
-            } else {
-                static_assert(std::same_as<Event, PlayerSplit> ||
-                              std::same_as<Event, PiecesMerged>);
-                return SimulationEventParticipants{
-                    .owner_ids = {value.owner_id, {}},
-                    .count = 1,
-                };
-            }
-        },
-        event);
+    if (const auto* absorbed = std::get_if<PlayerAbsorbed>(&event)) {
+        if (absorbed->absorber_owner_id == absorbed->victim_owner_id) {
+            return {
+                .owner_ids = {absorbed->absorber_owner_id, {}},
+                .count = 1,
+            };
+        }
+        const auto first = std::min(absorbed->absorber_owner_id, absorbed->victim_owner_id);
+        const auto second = std::max(absorbed->absorber_owner_id, absorbed->victim_owner_id);
+        return {
+            .owner_ids = {first, second},
+            .count = 2,
+        };
+    }
+    if (const auto* consumed = std::get_if<FoodConsumed>(&event)) {
+        return {
+            .owner_ids = {consumed->consumer_owner_id, {}},
+            .count = 1,
+        };
+    }
+    if (const auto* split = std::get_if<PlayerSplit>(&event)) {
+        return {
+            .owner_ids = {split->owner_id, {}},
+            .count = 1,
+        };
+    }
+    if (const auto* merged = std::get_if<PiecesMerged>(&event)) {
+        return {
+            .owner_ids = {merged->owner_id, {}},
+            .count = 1,
+        };
+    }
+    return {};
 }
 
 bool simulation_event_involves_owner(const SimulationEvent& event,

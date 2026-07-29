@@ -405,6 +405,53 @@ TEST_CASE("Rollback reconciliation can atomically refresh derived replay stimuli
     REQUIRE(timeline.history().front().stimulus.derived_delta == 20);
 }
 
+TEST_CASE("Same-tick authority refresh publishes events without discarding future history",
+          "[rollback][timeline][events]") {
+    Timeline timeline{ToyModel{}};
+    REQUIRE(std::holds_alternative<Commit>(timeline.initialize(authority(10, 4), ToyScope{})));
+    REQUIRE(std::holds_alternative<Commit>(
+        timeline.advance(sequence(1), ToyStimulus{.delta = 2, .pulse_key = ToyEventKey{1}})));
+
+    const auto refreshed = timeline.refresh_authority(
+        authority(10,
+                  5,
+                  std::nullopt,
+                  epoch(1),
+                  {confirmed(ToyEvent{NoticeEvent{.key = ToyEventKey{2}, .payload = 9}})}));
+    const auto& commit = require_commit(refreshed);
+
+    REQUIRE(commit.kind == mycore::rollback::CommitKind::AuthorityRefresh);
+    REQUIRE(commit.replayed_frame_count == 1);
+    REQUIRE(commit.event_changes.size() == 2);
+    CHECK(commit.event_changes[0].transition == mycore::rollback::EventTransition::Revised);
+    CHECK(commit.event_changes[0].key == ToyEventKey{1});
+    CHECK(commit.event_changes[1].transition == mycore::rollback::EventTransition::AuthorityOnly);
+    CHECK(commit.event_changes[1].key == ToyEventKey{2});
+    CHECK(timeline.state()->value == 7);
+    REQUIRE(timeline.history().size() == 1);
+    CHECK(timeline.history().front().command_sequence == sequence(1));
+    CHECK(timeline.statistics().authority_refresh_count == 1);
+
+    CHECK(require_failure(timeline.refresh_authority(authority(11, 6))).code ==
+          mycore::rollback::TimelineErrorCode::IncompatibleAuthority);
+    CHECK(timeline.authoritative_tick() == mycore::time::Tick{10});
+    CHECK(timeline.history().size() == 1);
+}
+
+TEST_CASE("Hard resync may accept externally submitted commands beyond timeline history",
+          "[rollback][timeline][recovery]") {
+    Timeline timeline{ToyModel{}};
+    REQUIRE(std::holds_alternative<Commit>(timeline.initialize(authority(0, 0), ToyScope{})));
+    REQUIRE(std::holds_alternative<Commit>(timeline.advance(sequence(1), ToyStimulus{.delta = 1})));
+
+    const auto resynced = timeline.hard_resync(authority(2, 9, sequence(3)), ToyScope{});
+    const auto& commit = require_commit(resynced);
+    CHECK(commit.kind == mycore::rollback::CommitKind::HardResync);
+    CHECK(commit.acknowledged_through == sequence(3));
+    CHECK(timeline.history().empty());
+    CHECK(timeline.state()->value == 9);
+}
+
 TEST_CASE("Failed scratch replay does not mutate committed rollback state",
           "[rollback][timeline]") {
     Timeline timeline{ToyModel{}};
@@ -726,4 +773,41 @@ TEST_CASE("Failed consequence delivery is not retried for the same occurrence",
     const auto second_report = router.consume(confirmed_commit);
     REQUIRE(log.first.size() == 1);
     REQUIRE(second_report.statistics.suppressed_count == 1);
+}
+
+TEST_CASE("Authority-only events use the same consequence batch contract",
+          "[rollback][events][consequences]") {
+    const auto event = ToyEvent{PulseEvent{.key = ToyEventKey{12}, .payload = 8}};
+    const std::vector events{confirmed(event)};
+    auto resolved = mycore::rollback::resolve_authority_only_events<ToyModel>(ToyModel{}, events);
+    auto* batch = std::get_if<mycore::rollback::EventBatch<ToyModel>>(&resolved);
+    REQUIRE(batch != nullptr);
+    REQUIRE(batch->kind == mycore::rollback::CommitKind::AuthorityOnly);
+    REQUIRE(batch->changes.size() == 1);
+    CHECK(batch->changes.front().transition == mycore::rollback::EventTransition::AuthorityOnly);
+    CHECK(batch->retired_keys == std::vector{ToyEventKey{12}});
+
+    HandlerLog log;
+    mycore::rollback::StaticConsequenceRouter<ToyModel, ConfirmOncePulseHandler> router{
+        ConfirmOncePulseHandler{.log = &log}};
+    REQUIRE(router.consume(*batch).failures.empty());
+    REQUIRE(log.confirmed.size() == 1);
+    const auto repeated = router.consume(*batch);
+    REQUIRE(repeated.statistics.suppressed_count == 1);
+    REQUIRE(log.confirmed.size() == 1);
+
+    auto conflicting = events;
+    conflicting.front().key = ToyEventKey{99};
+    CHECK(std::get<mycore::rollback::TimelineErrorCode>(
+              mycore::rollback::resolve_authority_only_events<ToyModel>(ToyModel{}, conflicting)) ==
+          mycore::rollback::TimelineErrorCode::ConflictingAuthorityEvent);
+
+    const std::vector rejected_events{rejected(ToyEventKey{13})};
+    auto rejected_result =
+        mycore::rollback::resolve_authority_only_events<ToyModel>(ToyModel{}, rejected_events);
+    const auto* rejected_batch =
+        std::get_if<mycore::rollback::EventBatch<ToyModel>>(&rejected_result);
+    REQUIRE(rejected_batch != nullptr);
+    CHECK(rejected_batch->changes.empty());
+    CHECK(rejected_batch->retired_keys == std::vector{ToyEventKey{13}});
 }

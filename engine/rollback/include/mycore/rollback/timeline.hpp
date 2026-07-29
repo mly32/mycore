@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <deque>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
@@ -119,6 +120,84 @@ template <RollbackModel Model> struct Commit {
     std::vector<EventChange<Model>> event_changes;
     std::vector<typename Model::EventKey> retired_event_keys;
 };
+
+template <RollbackModel Model> struct EventBatch {
+    CommitKind kind{CommitKind::Advance};
+    std::vector<EventChange<Model>> changes;
+    std::vector<typename Model::EventKey> retired_keys;
+};
+
+template <RollbackModel Model>
+[[nodiscard]] EventBatch<Model> event_batch_from_commit(const Commit<Model>& commit) {
+    return {
+        .kind = commit.kind,
+        .changes = commit.event_changes,
+        .retired_keys = commit.retired_event_keys,
+    };
+}
+
+template <RollbackModel Model>
+[[nodiscard]] EventBatch<Model> event_batch_from_commit(Commit<Model>&& commit) {
+    return {
+        .kind = commit.kind,
+        .changes = std::move(commit.event_changes),
+        .retired_keys = std::move(commit.retired_event_keys),
+    };
+}
+
+template <RollbackModel Model>
+using EventBatchResult = std::variant<EventBatch<Model>, TimelineErrorCode>;
+
+// Authority receipts may arrive while no predicted state exists (before initialization or while
+// spectating). This validates their stable identities and converts confirmed occurrences into the
+// same post-commit batch contract used by Timeline.
+template <RollbackModel Model>
+[[nodiscard]] EventBatchResult<Model>
+resolve_authority_only_events(const Model& model,
+                              std::span<const AuthorityEvent<Model>> authority_events) {
+    std::unordered_map<typename Model::EventKey,
+                       const AuthorityEvent<Model>*,
+                       typename Model::EventKeyHash>
+        by_key;
+    EventBatch<Model> result{
+        .kind = CommitKind::AuthorityOnly,
+        .changes = {},
+        .retired_keys = {},
+    };
+    result.changes.reserve(authority_events.size());
+    result.retired_keys.reserve(authority_events.size());
+    for (const auto& authority_event : authority_events) {
+        if (authority_event.disposition == AuthorityEventDisposition::Confirmed) {
+            if (!authority_event.event ||
+                model.event_key(*authority_event.event) != authority_event.key) {
+                return TimelineErrorCode::ConflictingAuthorityEvent;
+            }
+        } else if (authority_event.event) {
+            return TimelineErrorCode::ConflictingAuthorityEvent;
+        }
+
+        const auto [existing, inserted] = by_key.emplace(authority_event.key, &authority_event);
+        if (!inserted) {
+            if (existing->second->disposition != authority_event.disposition ||
+                existing->second->event != authority_event.event) {
+                return TimelineErrorCode::ConflictingAuthorityEvent;
+            }
+            continue;
+        }
+        if (authority_event.disposition == AuthorityEventDisposition::Rejected) {
+            result.retired_keys.push_back(authority_event.key);
+            continue;
+        }
+        result.changes.push_back({
+            .transition = EventTransition::AuthorityOnly,
+            .key = authority_event.key,
+            .previous = std::nullopt,
+            .current = authority_event.event,
+        });
+        result.retired_keys.push_back(authority_event.key);
+    }
+    return result;
+}
 
 template <RollbackModel Model> struct TimelineFailure {
     TimelineErrorCode code{TimelineErrorCode::NotInitialized};
@@ -320,6 +399,51 @@ public:
                                     std::move(refresh));
     }
 
+    [[nodiscard]] CommitResult<Model> refresh_authority(const AuthorityFrame<Model>& authority) {
+        if (!state_ || !base_checkpoint_ || !scope_) {
+            return failure(TimelineErrorCode::NotInitialized);
+        }
+        if (authority.scope_epoch != scope_epoch_) {
+            return failure(TimelineErrorCode::IncompatibleScope);
+        }
+        if (authority.tick != authoritative_tick_) {
+            return failure(TimelineErrorCode::IncompatibleAuthority);
+        }
+        const auto retain_stimulus = [](CommandSequence,
+                                        const typename Model::Stimulus& stimulus,
+                                        const typename Model::State&,
+                                        const typename Model::Scope&)
+            -> std::variant<typename Model::Stimulus, typename Model::Error> {
+            return stimulus;
+        };
+        return reconcile_with_scope(authority,
+                                    *scope_,
+                                    CommitKind::AuthorityRefresh,
+                                    AuthorityTickRule::SameOrNewer,
+                                    retain_stimulus);
+    }
+
+    template <class Refresh>
+        requires ReplayStimulusRefresh<Refresh, Model>
+    [[nodiscard]] CommitResult<Model>
+    refresh_authority_with_stimulus_refresh(const AuthorityFrame<Model>& authority,
+                                            Refresh refresh) {
+        if (!state_ || !base_checkpoint_ || !scope_) {
+            return failure(TimelineErrorCode::NotInitialized);
+        }
+        if (authority.scope_epoch != scope_epoch_) {
+            return failure(TimelineErrorCode::IncompatibleScope);
+        }
+        if (authority.tick != authoritative_tick_) {
+            return failure(TimelineErrorCode::IncompatibleAuthority);
+        }
+        return reconcile_with_scope(authority,
+                                    *scope_,
+                                    CommitKind::AuthorityRefresh,
+                                    AuthorityTickRule::SameOrNewer,
+                                    std::move(refresh));
+    }
+
     [[nodiscard]] CommitResult<Model> rebase_scope(const AuthorityFrame<Model>& authority,
                                                    typename Model::Scope scope) {
         if (!state_ || !base_checkpoint_ || !scope_) {
@@ -367,8 +491,10 @@ public:
         if (authority.scope_epoch < scope_epoch_) {
             return failure(TimelineErrorCode::IncompatibleScope);
         }
-        if (const auto error = validate_authority(
-                authority, AuthorityTickRule::SameOrNewer, SameTickCheckpointRule::MayReplace)) {
+        if (const auto error = validate_authority(authority,
+                                                  AuthorityTickRule::SameOrNewer,
+                                                  SameTickCheckpointRule::MayReplace,
+                                                  true)) {
             return failure(*error);
         }
 
@@ -539,10 +665,11 @@ private:
         return std::nullopt;
     }
 
-    [[nodiscard]] std::optional<TimelineErrorCode> validate_authority(
-        const AuthorityFrame<Model>& authority,
-        AuthorityTickRule tick_rule,
-        SameTickCheckpointRule checkpoint_rule = SameTickCheckpointRule::MustMatch) const {
+    [[nodiscard]] std::optional<TimelineErrorCode>
+    validate_authority(const AuthorityFrame<Model>& authority,
+                       AuthorityTickRule tick_rule,
+                       SameTickCheckpointRule checkpoint_rule = SameTickCheckpointRule::MustMatch,
+                       bool may_advance_submitted_sequence = false) const {
         if (!base_checkpoint_) {
             return TimelineErrorCode::NotInitialized;
         }
@@ -561,7 +688,7 @@ private:
                                       *authority.acknowledged_through < *acknowledged_through_)) {
             return TimelineErrorCode::InvalidAcknowledgement;
         }
-        if (authority.acknowledged_through &&
+        if (!may_advance_submitted_sequence && authority.acknowledged_through &&
             (!last_submitted_sequence_ ||
              *authority.acknowledged_through > *last_submitted_sequence_)) {
             return TimelineErrorCode::InvalidAcknowledgement;
@@ -728,7 +855,12 @@ private:
         if (!state_ || !base_checkpoint_) {
             return failure(TimelineErrorCode::NotInitialized);
         }
-        if (const auto error = validate_authority(authority, tick_rule)) {
+        const auto same_tick_checkpoint_rule =
+            kind == CommitKind::ScopeRebase || kind == CommitKind::AuthorityRefresh
+                ? SameTickCheckpointRule::MayReplace
+                : SameTickCheckpointRule::MustMatch;
+        if (const auto error =
+                validate_authority(authority, tick_rule, same_tick_checkpoint_rule)) {
             return failure(*error);
         }
 
@@ -806,6 +938,8 @@ private:
 
         if (kind == CommitKind::Reconcile) {
             ++statistics_.reconciliation_count;
+        } else if (kind == CommitKind::AuthorityRefresh) {
+            ++statistics_.authority_refresh_count;
         } else {
             ++statistics_.scope_rebase_count;
         }

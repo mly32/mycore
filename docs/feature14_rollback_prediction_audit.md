@@ -1,5 +1,21 @@
 # Feature 14 Rollback and Prediction Audit
 
+## Remediation Status
+
+Implemented in Feature 14 step 6.5:
+
+- `OwnedGameplay` is transition-closed for owner movement and split/merge lifecycle.
+- Prediction state closure and owner-participant event subscriptions are separate scope fields.
+- Receipts use a bounded inbox with accepted, event-batch-published, and server-retired
+  frontiers; only the published frontier is acknowledged.
+- Pre-welcome and Spectating transitions publish pending receipts before prediction is cleared.
+- Live semantic event keys cannot be reused under another receipt sequence.
+- Client initialization, advance, reconciliation, same-tick authority refresh, scope rebase, and
+  hard resync preserve observable event batches instead of bypassing timeline commits.
+
+The findings below retain their original present-tense diagnosis so the failure modes and
+prevention guidance remain useful.
+
 ## Assessment
 
 The Feature 14 rollback kernel has a sound transactional foundation: checkpoints are complete,

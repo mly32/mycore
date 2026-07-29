@@ -316,7 +316,7 @@ WorldModel::step(State& state, const Stimulus& stimulus, const Scope& scope) con
         });
     }
 
-    const auto result = state.advance(
+    auto result = state.advance(
         commands,
         simulation::TickMechanics{
             .player_absorption =

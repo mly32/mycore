@@ -7,6 +7,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
+#include <map>
 #include <span>
 #include <variant>
 #include <vector>
@@ -47,6 +49,20 @@ enum class SnapshotApplyResult : std::uint8_t {
     Invalid,
 };
 
+enum class AuthorityReceiptApplyError : std::uint8_t {
+    InvalidRetirement,
+    SequenceGap,
+    ConflictingReceipt,
+    DuplicateEventKey,
+    CapacityExceeded,
+};
+
+struct AuthorityReceiptDelta {
+    std::vector<protocol::AuthorityReceipt> receipts;
+};
+
+using AuthorityReceiptApplyResult = std::variant<AuthorityReceiptDelta, AuthorityReceiptApplyError>;
+
 [[nodiscard]] protocol::EntityId to_protocol(simulation::EntityId id) noexcept;
 [[nodiscard]] protocol::PlayerOwnerId to_protocol(simulation::PlayerOwnerId id) noexcept;
 [[nodiscard]] protocol::WorldRules to_protocol(const simulation::WorldRules& rules) noexcept;
@@ -61,7 +77,8 @@ build_full_snapshot(const simulation::World& world,
                     protocol::InputSequenceId last_processed,
                     std::uint8_t pending_input_count,
                     protocol::RecipientSessionState recipient,
-                    std::vector<protocol::AuthorityReceipt> authority_receipts = {});
+                    std::vector<protocol::AuthorityReceipt> authority_receipts = {},
+                    protocol::AuthorityReceiptSequenceId authority_receipts_retired_through = {});
 
 [[nodiscard]] CheckpointHydrationResult
 hydrate_checkpoint(const protocol::FullSnapshot& snapshot,
@@ -79,9 +96,6 @@ public:
     [[nodiscard]] protocol::InputSequenceId last_processed_input_id() const noexcept;
     [[nodiscard]] std::uint8_t pending_input_count() const noexcept;
     [[nodiscard]] const protocol::RecipientSessionState& recipient() const noexcept;
-    [[nodiscard]] protocol::AuthorityReceiptSequenceId
-    authority_receipt_acknowledgement() const noexcept;
-    [[nodiscard]] std::span<const protocol::AuthorityReceipt> authority_receipts() const noexcept;
 
 private:
     protocol::SnapshotId snapshot_id_;
@@ -90,8 +104,28 @@ private:
     std::uint8_t pending_input_count_{};
     protocol::RecipientSessionState recipient_;
     std::vector<protocol::EntityState> entities_;
-    protocol::AuthorityReceiptSequenceId authority_receipt_acknowledgement_;
-    std::vector<protocol::AuthorityReceipt> authority_receipts_;
+};
+
+// Authority receipts form a sequenced delivery stream independent of the latest replicated World.
+// Accepted bytes, local publication, and server-confirmed retirement advance separately.
+class AuthorityReceiptInbox {
+public:
+    [[nodiscard]] AuthorityReceiptApplyResult apply(const protocol::FullSnapshot& snapshot);
+    [[nodiscard]] bool
+    mark_published_through(protocol::AuthorityReceiptSequenceId sequence_id) noexcept;
+    [[nodiscard]] std::vector<protocol::AuthorityReceipt> pending_publication() const;
+    [[nodiscard]] protocol::AuthorityReceiptSequenceId accepted_through() const noexcept;
+    [[nodiscard]] protocol::AuthorityReceiptSequenceId published_through() const noexcept;
+    [[nodiscard]] protocol::AuthorityReceiptSequenceId server_retired_through() const noexcept;
+    [[nodiscard]] std::size_t retained_count() const noexcept;
+    [[nodiscard]] std::size_t pending_publication_count() const noexcept;
+
+private:
+    std::deque<protocol::AuthorityReceipt> retained_;
+    std::map<simulation::SimulationEventKey, protocol::AuthorityReceiptSequenceId> event_keys_;
+    protocol::AuthorityReceiptSequenceId accepted_through_;
+    protocol::AuthorityReceiptSequenceId published_through_;
+    protocol::AuthorityReceiptSequenceId server_retired_through_;
 };
 
 } // namespace dots::replication

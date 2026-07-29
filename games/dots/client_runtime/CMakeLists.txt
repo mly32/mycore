@@ -11,12 +11,12 @@ target_link_libraries(
     dots_client_runtime
     PUBLIC
         Dots::Protocol
+        Dots::Prediction
         Dots::Replication
         Dots::Simulation
         MyCore::Math
         MyCore::NetTransport
     PRIVATE
-        Dots::Prediction
         MyCore::Debug
 )
 mycore_configure_target(dots_client_runtime)

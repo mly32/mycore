@@ -65,7 +65,7 @@ The Dots protocol is a game-owned contract. It defines four messages today:
 | `ClientHello` | Client to server | Reliable | Request a session using the supported protocol version. |
 | `ServerWelcome` | Server to client | Reliable | Assign the client ID and immutable match/session rules. |
 | `InputPacket` | Client to server | Unreliable | Submit one to three sequenced movement/action samples and acknowledge the latest snapshot and contiguous authority receipt. |
-| `FullSnapshot` | Server to client | Unreliable | Carry a complete schema-tagged checkpoint, recipient lifecycle state, and repeated authority receipts. |
+| `FullSnapshot` | Server to client | Unreliable | Carry a complete schema-tagged checkpoint, recipient lifecycle state, repeated authority receipts, and the server-retired receipt frontier. |
 
 Every encoded message starts with a 12-byte header containing:
 
@@ -414,21 +414,27 @@ plus:
 - Complete owner movement, last-movement/input, split-cooldown, per-player launch/merge state,
   and optional predicted-child identity.
 - The recipient's repeated lifecycle state.
+- The highest authority-receipt sequence already retired by the server, or `none`.
 - Up to 16 relevant unacknowledged typed authority receipts.
 
 `ReplicatedWorld` rejects invalid snapshots, ignores stale snapshots, and fully replaces its
-entity collection when it accepts a newer one. It accepts only identical receipt duplicates and
-a gap-free extension of its receipt frontier. `Dots::Replication` also exposes exact typed
-checkpoint hydration and digest verification for the complete rollback timeline.
+entity collection when it accepts a newer one. Authority receipts live in a separate bounded
+`AuthorityReceiptInbox`, not in replicated World state. The inbox accepts only identical
+retransmissions and a gap-free extension, rejects reuse of a live stable event key, and tracks
+accepted, event-batch-published, and server-retired frontiers. `Dots::Replication` also exposes
+exact typed checkpoint hydration and digest verification for the complete rollback timeline.
 `ReplicatedWorld` remains a client view, not a second authoritative `simulation::World`.
 
 Authority receipts deliver transient confirmed food, absorption, split, and merge events without
 turning snapshots into reliable transport. Each session has its own monotonic sequence and
 receives events relevant to its owner. The server retains up to 256 unacknowledged receipts and
-repeats the first 16 in each snapshot; input packets retire them through the highest contiguous
-ACK. A gap, conflicting duplicate, ACK beyond the issued frontier, or retention overflow is an
-explicit session failure. Repeated Playing/Spectating and respawn fields remain ordinary
-authoritative state rather than receipt-driven one-shots.
+repeats the first 16 in each snapshot. The client ACKs only the highest contiguous receipt whose
+successful rollback transaction has queued an observable event batch; input packets retire the
+server copy through that published ACK, and later snapshots echo the retirement frontier. A gap,
+conflicting duplicate, live semantic-key reuse, ACK beyond the issued frontier, invalid
+retirement echo, or retention overflow is an explicit session failure. Repeated
+Playing/Spectating and respawn fields remain ordinary authoritative state rather than
+receipt-driven one-shots.
 
 ## The baseline no-compensation mental model
 
@@ -937,7 +943,7 @@ from an authoritative checkpoint before atomically replaying retained stimuli. S
 commands remain immutable; a typed, transactional refresh hook lets the game revise only
 authority-derived assumptions before each retained step. The Dots default is an
 owned-and-interacting fixed-point closure; full-replicated mode is an oracle/benchmark and owned
-movement is the incomplete-state fallback. Closure includes non-spatial owner state, required
+gameplay is the incomplete-state fallback. Closure includes non-spatial owner state, required
 global rule/timer domains, mechanic dependencies, and explicit causal authority facts; it is not
 only a radius query.
 

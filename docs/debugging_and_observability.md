@@ -245,7 +245,7 @@ Important log categories include:
 | `dots.client.session` | Client transport, handshake, assigned identity, disconnect lifecycle, and newly confirmed absorption, session-mode, follow-target-loss, and respawn-result transitions. |
 | `dots.client.simulation` | Client fixed-step overload warnings, escalation, and recovery. |
 | `dots.client.prediction` | Prediction history pressure/recovery, hard resyncs, replay-budget warnings, and explicit debug fault injection. |
-| `dots.client.prediction.scope` | Successful scope-epoch changes with replay depth, horizon, and before/after owner, player, and food membership counts when `debug.prediction_log_level` is `info` or `debug`. |
+| `dots.client.prediction.scope` | Successful scope-epoch changes with replay depth, horizon, and before/after causal-owner, event-owner, player, and food membership counts when `debug.prediction_log_level` is `info` or `debug`. |
 | `dots.client.prediction.reconciliation` | At `debug.prediction_log_level = "debug"`, each nonzero largest common remote-player displacement across an installed predicted head, including whether the before/after heads represent the same tick. Zero-displacement installs are omitted. |
 | `dots.server` | Headless server startup, listen address, tick lifetime, and shutdown. |
 | `dots.server.session` | Connection acceptance, assigned players, authoritative defeat/respawn decisions, follow-target loss, rejected packets, liveness timeouts, and cleanup. |
@@ -258,10 +258,12 @@ mean the zones were removed.
 ## Prediction and Reconciliation Output — Current
 
 `Dots::ClientRuntime` currently predicts a complete interaction-closed World immediately after
-each successful input send. Every newer snapshot is validated and digest-checked, the
+each successful input send. Every newer snapshot ID is validated and digest-checked, the
 acknowledged history prefix is discarded, and at most 256 remaining inputs are replayed with
 remote assumptions refreshed from newest authority in the same client frame before replicated
-and predicted state commit together. Their sampled local commands remain unchanged. The
+and predicted state commit together. A later snapshot at the same server tick uses an explicit
+authority refresh instead of reinitializing or discarding future history. Their sampled local
+commands remain unchanged. The
 interaction closure uses the greater of the actual retained suffix length and a five-tick
 operating floor as its horizon; the 256-entry ring capacity is only a storage and hard-resync
 bound. The client verifies the closure before each predicted step, retains a safe existing
@@ -278,7 +280,8 @@ The runtime exposes `predicted_world()`, `predicted_primary_entity_id()`,
 `predicted_owned_entity_ids()`, `predicted_scope_entity_ids()`,
 `latest_prediction_identity_remaps()`,
 `predicted_position()`, `pre_correction_position()`, `latest_replay_path()`,
-`latest_correction_replay_path()`, and `prediction_statistics()`.
+`latest_correction_replay_path()`, `take_prediction_event_batches()`, and
+`prediction_statistics()`.
 `pre_correction_position()` and the correction-specific replay path update only after a nonzero
 correction. Presentation copies them for two seconds of visual retention. A history-capacity hard
 resync clears prediction history and rebuilds the timeline from the newest verified checkpoint;
@@ -298,12 +301,13 @@ The **Prediction** tab rows are:
 
 | Field | Current meaning and lifetime |
 |---|---|
+| Authority receipts | Highest contiguous sequence semantically accepted, published into a queued post-commit event batch, and echoed as retired by the server; retained/pending-publication payload counts; and queued observable event-batch count. These fields remain available while Spectating. |
 | Redundancy | Whether outgoing packets repeat up to two retained unacknowledged samples. |
 | Last sent input | Newest successfully sent and recorded input sequence, or invalid before the first send. |
 | Last acknowledged input | Newest sequence the latest accepted snapshot says the server processed, or invalid before the first ACK. |
 | Command lead | Count of successfully sent inputs newer than the latest ACK. It can exceed retained history after a deliberate hard resync. |
 | History use/high-water | Current and runtime-maximum occupancy of the fixed 256-entry replay ring. Capacity is a correctness bound, not an adaptive target. |
-| Scope | Current epoch, certified replay horizon, owner/player/food counts, and lifetime rebase count. A smaller newly required closure may retain a safe existing superset to prevent presentation ownership from oscillating as ACK depth changes. |
+| Scope | Current epoch, certified replay horizon, causal owner/player/food counts, separately subscribed event-owner count, and lifetime rebase count. A smaller newly required closure may retain a safe existing superset to prevent presentation ownership from oscillating as ACK depth changes. |
 | Server pending input | Current and runtime-high-water depth of this client's authoritative 64-entry server input queue, as reported by snapshots. |
 | Rollback base | Snapshot ID, server tick, and ACK used for the latest successful reconciliation. |
 | Replay count | Latest, lifetime-total, and runtime-maximum numbers of inputs replayed after installing an authoritative base. |
@@ -449,7 +453,7 @@ remain planned for step 8.
 
 | Field | Meaning |
 |---|---|
-| Prediction profile | `InteractionClosure`, `FullReplicated`, or `OwnedMovement`, plus predicted/interpolated/extrapolated/confirmed entity counts. |
+| Prediction profile | `InteractionClosure`, `FullReplicated`, or `OwnedGameplay`, plus predicted/interpolated/extrapolated/confirmed entity counts. |
 | Prediction scope | Scope epoch, included mechanics, entity/owner/global state domains, causal subscriptions, closure seed/count, replay horizon, and `IncompleteClosure` fallback reason. |
 | Replay coordinates | Authoritative snapshot/tick, predicted tick, input ACK, and exact replay sequence range. |
 | Prediction lead | Predicted tick minus its stated authoritative base tick. This replay extent is not RTT, snapshot age, or estimated live server time. |
@@ -461,7 +465,7 @@ remain planned for step 8.
 | Predicted spawns | Pending, matched, rejected, authority-only, and ambiguous prediction-key counts. Ambiguity causes hard resync. |
 | Event lifecycle | `FirstPredicted`, `Revised`, `Retracted`, `Confirmed`, and `AuthorityOnly` counts, with the selected stable event key. |
 | Consequence delivery | Per-policy delivered, suppressed, revised, canceled, confirmed, and authority-only counts for `PredictOnce`, `PredictCancelable`, and `ConfirmOnce`. |
-| Authority receipts | Latest received/acknowledged sequences, server/client pending depth, duplicate count, and conflict/overflow failures. |
+| Authority receipts | Per-event transition/key detail plus duplicate, conflict, invalid-retirement, queue-overflow, and receipt-capacity failure counts beyond the current accepted/published/server-retired frontiers and depth counters. |
 | Command buffer | Target/latest/EWMA server queue depth, cadence scale, low/high events, and accumulated phase correction. |
 | Remote assumption | Source snapshot and tick range over which last-known remote movement was held; remote edge actions remain zero. |
 | Outside-closure presentation | Latest-authority age, visual extrapolation age/cap, hold count, closure-entry transition, and interpolation fallback. No gameplay is executed for this layer. |

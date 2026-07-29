@@ -254,6 +254,15 @@ void draw_input_sequence(std::string_view label, dots::protocol::InputSequenceId
     }
 }
 
+void draw_authority_receipt_sequence(std::string_view label,
+                                     dots::protocol::AuthorityReceiptSequenceId value) {
+    if (value.is_valid()) {
+        ImGui::Text("%.*s: %u", static_cast<int>(label.size()), label.data(), value.value());
+    } else {
+        ImGui::Text("%.*s: none", static_cast<int>(label.size()), label.data());
+    }
+}
+
 void draw_entity_id(std::string_view label, dots::protocol::EntityId value) {
     if (value.is_valid()) {
         ImGui::Text("%.*s: %u", static_cast<int>(label.size()), label.data(), value.value());
@@ -491,13 +500,27 @@ void draw_prediction_debug_tab(const DebugWorldStats& world) {
     }
 
     const auto& session = *world.network_session;
+    const auto& prediction = session.prediction;
+    ImGui::TextUnformatted("Authority receipt publication");
+    draw_authority_receipt_sequence("Accepted through",
+                                    prediction.authority_receipts_accepted_through);
+    draw_authority_receipt_sequence("Published through",
+                                    prediction.authority_receipts_published_through);
+    draw_authority_receipt_sequence("Server retired through",
+                                    prediction.authority_receipts_server_retired_through);
+    ImGui::Text("Retained / awaiting publication: %zu / %zu",
+                prediction.authority_receipt_retained_count,
+                prediction.authority_receipt_pending_publication_count);
+    ImGui::Text("Queued event batches: %zu", prediction.pending_prediction_event_batch_count);
+
     if (!session.local_prediction_available || !session.latest_authoritative_sample ||
         !session.predicted_position || !session.presentation_position ||
         !session.smoothing_offset) {
-        mycore::debug_ui::description("Prediction diagnostics are unavailable while spectating.");
+        mycore::debug_ui::description(
+            "Local prediction diagnostics are unavailable while spectating.");
         return;
     }
-    const auto& prediction = session.prediction;
+    ImGui::Separator();
     ImGui::TextUnformatted("Input history and rollback");
     ImGui::Text("Redundancy: %s", prediction.input_redundancy_enabled ? "ENABLED" : "DISABLED");
     draw_input_sequence("Last input sent", prediction.last_input_sent);
@@ -516,8 +539,9 @@ void draw_prediction_debug_tab(const DebugWorldStats& world) {
     ImGui::Text("Scope epoch / horizon: %llu / %llu ticks",
                 static_cast<unsigned long long>(prediction.scope_epoch),
                 static_cast<unsigned long long>(prediction.scope_replay_horizon_ticks));
-    ImGui::Text("Scope owners / players / food: %zu / %zu / %zu",
+    ImGui::Text("Scope owners / event owners / players / food: %zu / %zu / %zu / %zu",
                 prediction.scope_owner_count,
+                prediction.scope_event_owner_count,
                 prediction.scope_player_count,
                 prediction.scope_food_count);
     ImGui::Text("Scope rebases: %llu",
@@ -934,6 +958,9 @@ int run_networked_game(
     dots::presentation::RemoteSnapshotBuffer remote_snapshot_buffer;
     const auto process_client_events = [&](std::chrono::steady_clock::time_point now) {
         auto result = client.process_events(now);
+        // Step 7 installs persistent handlers. Until then, draining proves the event hook remains
+        // bounded without invoking presentation side effects.
+        static_cast<void>(client.take_prediction_event_batches());
         for (auto& accepted : result.accepted_snapshots) {
             remote_snapshot_buffer.insert({
                 .snapshot_id = accepted.snapshot.snapshot_id,

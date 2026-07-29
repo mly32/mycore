@@ -22,8 +22,10 @@ enum class CommitKind : std::uint8_t {
     Initialize,
     Advance,
     Reconcile,
+    AuthorityRefresh,
     ScopeRebase,
     HardResync,
+    AuthorityOnly,
 };
 
 enum class EventTransition : std::uint8_t {
@@ -75,6 +77,7 @@ struct TimelineStatistics {
     std::uint64_t initialization_count{};
     std::uint64_t advance_count{};
     std::uint64_t reconciliation_count{};
+    std::uint64_t authority_refresh_count{};
     std::uint64_t scope_rebase_count{};
     std::uint64_t hard_resync_count{};
     std::uint64_t replayed_frame_count{};

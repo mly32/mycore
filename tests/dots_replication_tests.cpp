@@ -122,7 +122,7 @@ TEST_CASE("Version 4 snapshots hydrate exact rollback checkpoints and verify the
           dots::replication::CheckpointHydrationError::DigestMismatch);
 }
 
-TEST_CASE("Replicated worlds accept contiguous receipts and reject gaps or conflicts atomically",
+TEST_CASE("Authority receipt inbox accepts, publishes, and retires a bounded contiguous stream",
           "[dots][replication][receipts]") {
     dots::simulation::World world;
     const auto player = world.spawn_player(dots::simulation::PlayerOwnerId{0});
@@ -148,10 +148,16 @@ TEST_CASE("Replicated worlds accept contiguous receipts and reject gaps or confl
     REQUIRE(first != nullptr);
 
     dots::replication::ReplicatedWorld replicated;
+    dots::replication::AuthorityReceiptInbox receipts;
     REQUIRE(replicated.apply(*first) == dots::replication::SnapshotApplyResult::Applied);
-    CHECK(replicated.authority_receipt_acknowledgement() ==
-          dots::protocol::AuthorityReceiptSequenceId{0});
-    REQUIRE(replicated.authority_receipts().size() == 1);
+    auto first_receipts = receipts.apply(*first);
+    const auto* first_delta =
+        std::get_if<dots::replication::AuthorityReceiptDelta>(&first_receipts);
+    REQUIRE(first_delta != nullptr);
+    REQUIRE(first_delta->receipts.size() == 1);
+    CHECK(receipts.accepted_through() == dots::protocol::AuthorityReceiptSequenceId{0});
+    CHECK_FALSE(receipts.published_through().is_valid());
+    CHECK(receipts.pending_publication_count() == 1);
 
     auto second = *first;
     second.snapshot_id = dots::protocol::SnapshotId{2};
@@ -170,16 +176,21 @@ TEST_CASE("Replicated worlds accept contiguous receipts and reject gaps or confl
             },
     });
     REQUIRE(replicated.apply(second) == dots::replication::SnapshotApplyResult::Applied);
-    CHECK(replicated.authority_receipt_acknowledgement() ==
-          dots::protocol::AuthorityReceiptSequenceId{1});
-    REQUIRE(replicated.authority_receipts().size() == 2);
+    auto second_receipts = receipts.apply(second);
+    const auto* second_delta =
+        std::get_if<dots::replication::AuthorityReceiptDelta>(&second_receipts);
+    REQUIRE(second_delta != nullptr);
+    REQUIRE(second_delta->receipts.size() == 1);
+    CHECK(receipts.accepted_through() == dots::protocol::AuthorityReceiptSequenceId{1});
+    CHECK(receipts.pending_publication_count() == 2);
 
     auto conflict = second;
     conflict.snapshot_id = dots::protocol::SnapshotId{3};
     std::get<dots::protocol::FoodConsumed>(conflict.authority_receipts[0].event).transferred_mass =
         2.0F;
-    CHECK(replicated.apply(conflict) == dots::replication::SnapshotApplyResult::Invalid);
-    CHECK(replicated.snapshot_id() == dots::protocol::SnapshotId{2});
+    CHECK(std::get<dots::replication::AuthorityReceiptApplyError>(receipts.apply(conflict)) ==
+          dots::replication::AuthorityReceiptApplyError::ConflictingReceipt);
+    CHECK(receipts.accepted_through() == dots::protocol::AuthorityReceiptSequenceId{1});
 
     auto gap = second;
     gap.snapshot_id = dots::protocol::SnapshotId{3};
@@ -187,8 +198,28 @@ TEST_CASE("Replicated worlds accept contiguous receipts and reject gaps or confl
         .sequence_id = dots::protocol::AuthorityReceiptSequenceId{3},
         .event = second.authority_receipts[1].event,
     }};
-    CHECK(replicated.apply(gap) == dots::replication::SnapshotApplyResult::Invalid);
-    CHECK(replicated.snapshot_id() == dots::protocol::SnapshotId{2});
+    CHECK(std::get<dots::replication::AuthorityReceiptApplyError>(receipts.apply(gap)) ==
+          dots::replication::AuthorityReceiptApplyError::SequenceGap);
+
+    auto duplicate_key = second;
+    duplicate_key.snapshot_id = dots::protocol::SnapshotId{3};
+    duplicate_key.authority_receipts.push_back({
+        .sequence_id = dots::protocol::AuthorityReceiptSequenceId{2},
+        .event = second.authority_receipts.front().event,
+    });
+    CHECK(std::get<dots::replication::AuthorityReceiptApplyError>(receipts.apply(duplicate_key)) ==
+          dots::replication::AuthorityReceiptApplyError::DuplicateEventKey);
+
+    REQUIRE(receipts.mark_published_through(dots::protocol::AuthorityReceiptSequenceId{1}));
+    auto retired = second;
+    retired.snapshot_id = dots::protocol::SnapshotId{3};
+    retired.authority_receipts_retired_through = dots::protocol::AuthorityReceiptSequenceId{1};
+    retired.authority_receipts.clear();
+    REQUIRE(
+        std::holds_alternative<dots::replication::AuthorityReceiptDelta>(receipts.apply(retired)));
+    CHECK(receipts.server_retired_through() == dots::protocol::AuthorityReceiptSequenceId{1});
+    CHECK(receipts.retained_count() == 0);
+    CHECK(receipts.pending_publication_count() == 0);
 }
 
 TEST_CASE("Authority events round-trip through protocol receipts",

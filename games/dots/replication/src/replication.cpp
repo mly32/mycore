@@ -178,7 +178,8 @@ build_full_snapshot(const simulation::World& world,
                     protocol::InputSequenceId last_processed,
                     std::uint8_t pending_input_count,
                     protocol::RecipientSessionState recipient,
-                    std::vector<protocol::AuthorityReceipt> authority_receipts) {
+                    std::vector<protocol::AuthorityReceipt> authority_receipts,
+                    protocol::AuthorityReceiptSequenceId authority_receipts_retired_through) {
     if (!snapshot_id.is_valid()) {
         return SnapshotBuildError::InvalidSnapshotId;
     }
@@ -202,6 +203,7 @@ build_full_snapshot(const simulation::World& world,
         .recipient = std::move(recipient),
         .owners = {},
         .entities = {},
+        .authority_receipts_retired_through = authority_receipts_retired_through,
         .authority_receipts = std::move(authority_receipts),
     };
     snapshot.owners.reserve(checkpoint.owners.size());
@@ -373,40 +375,12 @@ SnapshotApplyResult ReplicatedWorld::apply(const protocol::FullSnapshot& snapsho
         }
     }
 
-    auto next_receipts = authority_receipts_;
-    auto next_acknowledgement = authority_receipt_acknowledgement_;
-    for (const auto& receipt : snapshot.authority_receipts) {
-        const auto existing =
-            std::lower_bound(next_receipts.begin(),
-                             next_receipts.end(),
-                             receipt.sequence_id,
-                             [](const protocol::AuthorityReceipt& value,
-                                protocol::AuthorityReceiptSequenceId sequence_id) {
-                                 return value.sequence_id < sequence_id;
-                             });
-        if (existing != next_receipts.end() && existing->sequence_id == receipt.sequence_id) {
-            if (*existing != receipt) {
-                return SnapshotApplyResult::Invalid;
-            }
-            continue;
-        }
-        const auto expected =
-            next_acknowledgement.is_valid() ? next_acknowledgement.value() + 1U : std::uint32_t{0};
-        if (receipt.sequence_id.value() != expected) {
-            return SnapshotApplyResult::Invalid;
-        }
-        next_receipts.insert(existing, receipt);
-        next_acknowledgement = receipt.sequence_id;
-    }
-
     snapshot_id_ = snapshot.snapshot_id;
     server_tick_ = snapshot.server_tick;
     last_processed_input_id_ = snapshot.last_processed_input_id;
     pending_input_count_ = snapshot.pending_input_count;
     recipient_ = snapshot.recipient;
     entities_ = snapshot.entities;
-    authority_receipts_ = std::move(next_receipts);
-    authority_receipt_acknowledgement_ = next_acknowledgement;
     return SnapshotApplyResult::Applied;
 }
 
@@ -459,13 +433,106 @@ const protocol::RecipientSessionState& ReplicatedWorld::recipient() const noexce
     return recipient_;
 }
 
-protocol::AuthorityReceiptSequenceId
-ReplicatedWorld::authority_receipt_acknowledgement() const noexcept {
-    return authority_receipt_acknowledgement_;
+AuthorityReceiptApplyResult AuthorityReceiptInbox::apply(const protocol::FullSnapshot& snapshot) {
+    auto next_retained = retained_;
+    auto next_event_keys = event_keys_;
+    auto next_accepted = accepted_through_;
+    auto next_retired = server_retired_through_;
+    const auto retired = snapshot.authority_receipts_retired_through;
+    if ((next_retired.is_valid() && (!retired.is_valid() || retired < next_retired)) ||
+        (retired.is_valid() && (!published_through_.is_valid() || retired > published_through_))) {
+        return AuthorityReceiptApplyError::InvalidRetirement;
+    }
+    if (retired.is_valid()) {
+        while (!next_retained.empty() && next_retained.front().sequence_id <= retired) {
+            next_event_keys.erase(
+                simulation::simulation_event_key(to_simulation(next_retained.front().event)));
+            next_retained.pop_front();
+        }
+        next_retired = retired;
+    }
+
+    AuthorityReceiptDelta delta;
+    delta.receipts.reserve(snapshot.authority_receipts.size());
+    for (const auto& receipt : snapshot.authority_receipts) {
+        if (next_accepted.is_valid() && receipt.sequence_id <= next_accepted) {
+            const auto existing = std::find_if(
+                next_retained.begin(), next_retained.end(), [&receipt](const auto& retained) {
+                    return retained.sequence_id == receipt.sequence_id;
+                });
+            if (existing == next_retained.end() || *existing != receipt) {
+                return AuthorityReceiptApplyError::ConflictingReceipt;
+            }
+            continue;
+        }
+
+        const auto expected =
+            next_accepted.is_valid() ? next_accepted.value() + 1U : std::uint32_t{0};
+        if (receipt.sequence_id.value() != expected) {
+            return AuthorityReceiptApplyError::SequenceGap;
+        }
+        if (next_retained.size() >= protocol::kMaximumPendingAuthorityReceipts) {
+            return AuthorityReceiptApplyError::CapacityExceeded;
+        }
+        const auto key = simulation::simulation_event_key(to_simulation(receipt.event));
+        if (!next_event_keys.emplace(key, receipt.sequence_id).second) {
+            return AuthorityReceiptApplyError::DuplicateEventKey;
+        }
+        next_retained.push_back(receipt);
+        next_accepted = receipt.sequence_id;
+        delta.receipts.push_back(receipt);
+    }
+
+    retained_ = std::move(next_retained);
+    event_keys_ = std::move(next_event_keys);
+    accepted_through_ = next_accepted;
+    server_retired_through_ = next_retired;
+    return delta;
 }
 
-std::span<const protocol::AuthorityReceipt> ReplicatedWorld::authority_receipts() const noexcept {
-    return authority_receipts_;
+bool AuthorityReceiptInbox::mark_published_through(
+    protocol::AuthorityReceiptSequenceId sequence_id) noexcept {
+    if (!sequence_id.is_valid() || !accepted_through_.is_valid() ||
+        sequence_id > accepted_through_ ||
+        (published_through_.is_valid() && sequence_id < published_through_)) {
+        return false;
+    }
+    published_through_ = sequence_id;
+    return true;
+}
+
+std::vector<protocol::AuthorityReceipt> AuthorityReceiptInbox::pending_publication() const {
+    std::vector<protocol::AuthorityReceipt> result;
+    for (const auto& receipt : retained_) {
+        if (!published_through_.is_valid() || receipt.sequence_id > published_through_) {
+            result.push_back(receipt);
+        }
+    }
+    return result;
+}
+
+protocol::AuthorityReceiptSequenceId AuthorityReceiptInbox::accepted_through() const noexcept {
+    return accepted_through_;
+}
+
+protocol::AuthorityReceiptSequenceId AuthorityReceiptInbox::published_through() const noexcept {
+    return published_through_;
+}
+
+protocol::AuthorityReceiptSequenceId
+AuthorityReceiptInbox::server_retired_through() const noexcept {
+    return server_retired_through_;
+}
+
+std::size_t AuthorityReceiptInbox::retained_count() const noexcept {
+    return retained_.size();
+}
+
+std::size_t AuthorityReceiptInbox::pending_publication_count() const noexcept {
+    return static_cast<std::size_t>(
+        std::count_if(retained_.begin(), retained_.end(), [this](const auto& receipt) {
+            return !published_through_.is_valid() || receipt.sequence_id > published_through_;
+        }));
 }
 
 } // namespace dots::replication

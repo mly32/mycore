@@ -232,6 +232,7 @@ void complete_handshake(ManualEndpoint& endpoint,
     REQUIRE_FALSE(client.process_events(clock_time(10s)).has_value());
     REQUIRE(client.state() == dots::client_runtime::State::Ready);
     REQUIRE(client.predicted_position() == mycore::math::Vector2{});
+    static_cast<void>(client.take_prediction_event_batches());
     endpoint.sent_delivery.clear();
     endpoint.sent_payloads.clear();
 }
@@ -406,6 +407,15 @@ TEST_CASE("Predicted identity remaps a split child to its authoritative entity",
             dots::client_runtime::InputSendResult::Sent);
     REQUIRE(client.predicted_owned_entity_ids().size() == 2);
     CHECK(client.predicted_owned_entity_ids()[1] == dots::protocol::EntityId{9});
+    const auto predicted_batches = client.take_prediction_event_batches();
+    REQUIRE(predicted_batches.size() == 1);
+    REQUIRE(predicted_batches.front().kind == mycore::rollback::CommitKind::Advance);
+    REQUIRE(predicted_batches.front().changes.size() == 1);
+    CHECK(predicted_batches.front().changes.front().transition ==
+          mycore::rollback::EventTransition::FirstPredicted);
+    REQUIRE(predicted_batches.front().changes.front().current.has_value());
+    CHECK(std::holds_alternative<dots::simulation::PlayerSplit>(
+        *predicted_batches.front().changes.front().current));
 
     auto authority = snapshot(1, 1, dots::protocol::InputSequenceId{0}, {}, 0);
     authority.recipient.owned_entity_ids = {
@@ -439,9 +449,31 @@ TEST_CASE("Predicted identity remaps a split child to its authoritative entity",
                 },
         },
     };
+    authority.authority_receipts = {{
+        .sequence_id = dots::protocol::AuthorityReceiptSequenceId{0},
+        .event =
+            dots::protocol::PlayerSplit{
+                .server_tick = 1,
+                .owner_id = kControlledOwner,
+                .input_id = dots::protocol::InputSequenceId{0},
+                .child_ordinal = 0,
+                .parent_entity_id = kControlledEntity,
+                .child_entity_id = dots::protocol::EntityId{10},
+                .parent_mass = 8.0F,
+                .child_mass = 8.0F,
+            },
+    }};
     push_snapshot(endpoint, connection, authority);
     REQUIRE_FALSE(client.process_events(clock_time(11s)).has_value());
 
+    const auto confirmed_batches = client.take_prediction_event_batches();
+    REQUIRE(confirmed_batches.size() == 1);
+    REQUIRE(confirmed_batches.front().changes.size() == 1);
+    CHECK(confirmed_batches.front().changes.front().transition ==
+          mycore::rollback::EventTransition::Confirmed);
+    REQUIRE(confirmed_batches.front().changes.front().current.has_value());
+    CHECK(std::holds_alternative<dots::simulation::PlayerSplit>(
+        *confirmed_batches.front().changes.front().current));
     REQUIRE(client.predicted_world() != nullptr);
     CHECK_FALSE(client.predicted_world()->contains(dots::simulation::EntityId{9}));
     CHECK(client.predicted_world()->contains(dots::simulation::EntityId{10}));
@@ -803,9 +835,29 @@ TEST_CASE("Confirmed spectating accepts a missing primary and clears prediction"
         .defeat_tick = 1,
         .respawn_available_tick = 91,
     };
+    missing.authority_receipts = {{
+        .sequence_id = dots::protocol::AuthorityReceiptSequenceId{0},
+        .event =
+            dots::protocol::PlayerAbsorbed{
+                .server_tick = 1,
+                .absorber_entity_id = dots::protocol::EntityId{9},
+                .victim_entity_id = kControlledEntity,
+                .absorber_owner_id = dots::protocol::PlayerOwnerId{4},
+                .victim_owner_id = kControlledOwner,
+                .transferred_mass = 16.0F,
+            },
+    }};
     push_snapshot(endpoint, connection, missing);
 
     REQUIRE_FALSE(client.process_events(clock_time(11s)).error.has_value());
+    const auto terminal_batches = client.take_prediction_event_batches();
+    REQUIRE(terminal_batches.size() == 1);
+    REQUIRE(terminal_batches.front().changes.size() == 1);
+    CHECK(terminal_batches.front().changes.front().transition ==
+          mycore::rollback::EventTransition::AuthorityOnly);
+    REQUIRE(terminal_batches.front().changes.front().current.has_value());
+    CHECK(std::holds_alternative<dots::simulation::PlayerAbsorbed>(
+        *terminal_batches.front().changes.front().current));
     CHECK(client.world().snapshot_id() == dots::protocol::SnapshotId{1});
     CHECK(client.session_mode() == dots::protocol::SessionMode::Spectating);
     CHECK_FALSE(client.primary_entity_id().is_valid());

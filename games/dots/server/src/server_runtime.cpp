@@ -652,7 +652,8 @@ private:
             session.last_processed_input_id,
             static_cast<std::uint8_t>(session.pending_inputs.size()),
             recipient_state(session),
-            std::move(authority_receipts));
+            std::move(authority_receipts),
+            session.last_acknowledged_authority_receipt);
         if (const auto* error = std::get_if<replication::SnapshotBuildError>(&snapshot)) {
             switch (*error) {
             case replication::SnapshotBuildError::InvalidSnapshotId:

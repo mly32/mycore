@@ -252,6 +252,7 @@ void complete_manual_handshake(ManualEndpoint& endpoint,
     });
     REQUIRE_FALSE(client.process_events().has_value());
     REQUIRE(client.state() == dots::client_runtime::State::Ready);
+    static_cast<void>(client.take_prediction_event_batches());
     endpoint.sent_delivery.clear();
     endpoint.sent_payloads.clear();
 }
@@ -399,6 +400,7 @@ TEST_CASE("Protocol version 4 split receipts repeat until the client acknowledge
     REQUIRE(split_snapshot->owners.size() == 1);
     REQUIRE(split_snapshot->entities.size() == 2);
     REQUIRE(split_snapshot->authority_receipts.size() == 1);
+    CHECK_FALSE(split_snapshot->authority_receipts_retired_through.is_valid());
     CHECK(split_snapshot->authority_receipts[0].sequence_id ==
           dots::protocol::AuthorityReceiptSequenceId{0});
     const auto* split_event =
@@ -423,6 +425,8 @@ TEST_CASE("Protocol version 4 split receipts repeat until the client acknowledge
     const auto acknowledged_snapshot = find_snapshot(client.poll());
     REQUIRE(acknowledged_snapshot.has_value());
     CHECK(acknowledged_snapshot->authority_receipts.empty());
+    CHECK(acknowledged_snapshot->authority_receipts_retired_through ==
+          dots::protocol::AuthorityReceiptSequenceId{0});
 }
 
 TEST_CASE("Client input acknowledges the highest contiguous authority receipt",
@@ -452,12 +456,80 @@ TEST_CASE("Client input acknowledges the highest contiguous authority receipt",
         }),
     });
     REQUIRE_FALSE(client.process_events().has_value());
+    const auto event_batches = client.take_prediction_event_batches();
+    REQUIRE(event_batches.size() == 1);
+    REQUIRE(event_batches.front().changes.size() == 1);
+    CHECK(event_batches.front().changes.front().transition ==
+          mycore::rollback::EventTransition::AuthorityOnly);
+    REQUIRE(event_batches.front().changes.front().current.has_value());
+    CHECK(std::holds_alternative<dots::simulation::FoodConsumed>(
+        *event_batches.front().changes.front().current));
+    const auto receipt_statistics = client.prediction_statistics();
+    CHECK(receipt_statistics.authority_receipts_accepted_through ==
+          dots::protocol::AuthorityReceiptSequenceId{0});
+    CHECK(receipt_statistics.authority_receipts_published_through ==
+          dots::protocol::AuthorityReceiptSequenceId{0});
+    CHECK_FALSE(receipt_statistics.authority_receipts_server_retired_through.is_valid());
     REQUIRE(client.send_input(0, {}) == dots::client_runtime::InputSendResult::Sent);
     REQUIRE(endpoint.sent_payloads.size() == 1);
     auto message = decode_bytes(endpoint.sent_payloads.front());
     const auto* input = std::get_if<dots::protocol::InputPacket>(&message);
     REQUIRE(input != nullptr);
     CHECK(input->last_received_authority_receipt_sequence ==
+          dots::protocol::AuthorityReceiptSequenceId{0});
+}
+
+TEST_CASE("Pre-welcome authority receipts publish after prediction initialization",
+          "[dots][session][rollback][receipts]") {
+    ManualEndpoint endpoint;
+    dots::client_runtime::Runtime client{endpoint};
+    const mycore::net_transport::ConnectionHandle connection{25};
+
+    endpoint.events.push_back(mycore::net_transport::Connected{.connection = connection});
+    REQUIRE_FALSE(client.process_events().has_value());
+    endpoint.events.push_back(mycore::net_transport::PayloadReceived{
+        .connection = connection,
+        .delivery = mycore::net_transport::DeliveryMode::Unreliable,
+        .payload = encode_bytes(dots::protocol::FullSnapshot{
+            .snapshot_id = dots::protocol::SnapshotId{0},
+            .recipient = playing_session(),
+            .entities = {player_state()},
+            .authority_receipts = {{
+                .sequence_id = dots::protocol::AuthorityReceiptSequenceId{0},
+                .event =
+                    dots::protocol::FoodConsumed{
+                        .food_entity_id = dots::protocol::EntityId{30},
+                        .consumer_entity_id = dots::protocol::EntityId{8},
+                        .consumer_owner_id = dots::protocol::PlayerOwnerId{3},
+                        .transferred_mass = 1.0F,
+                    },
+            }},
+        }),
+    });
+    REQUIRE_FALSE(client.process_events().has_value());
+    CHECK(client.state() == dots::client_runtime::State::Handshaking);
+    CHECK(client.take_prediction_event_batches().empty());
+    auto receipt_statistics = client.prediction_statistics();
+    CHECK(receipt_statistics.authority_receipts_accepted_through ==
+          dots::protocol::AuthorityReceiptSequenceId{0});
+    CHECK_FALSE(receipt_statistics.authority_receipts_published_through.is_valid());
+
+    endpoint.events.push_back(mycore::net_transport::PayloadReceived{
+        .connection = connection,
+        .delivery = mycore::net_transport::DeliveryMode::Reliable,
+        .payload = encode_bytes(dots::protocol::ServerWelcome{
+            .client_id = dots::protocol::ClientId{2},
+        }),
+    });
+    REQUIRE_FALSE(client.process_events().has_value());
+    CHECK(client.state() == dots::client_runtime::State::Ready);
+    const auto event_batches = client.take_prediction_event_batches();
+    REQUIRE(event_batches.size() == 1);
+    REQUIRE(event_batches.front().changes.size() == 1);
+    CHECK(event_batches.front().changes.front().transition ==
+          mycore::rollback::EventTransition::AuthorityOnly);
+    receipt_statistics = client.prediction_statistics();
+    CHECK(receipt_statistics.authority_receipts_published_through ==
           dots::protocol::AuthorityReceiptSequenceId{0});
 }
 
@@ -862,6 +934,8 @@ TEST_CASE("Authority receipt snapshots send bounded batches from the contiguous 
     REQUIRE_FALSE(server.step().has_value());
     const auto second_batch = find_snapshot(client.poll());
     REQUIRE(second_batch.has_value());
+    CHECK(second_batch->authority_receipts_retired_through ==
+          dots::protocol::AuthorityReceiptSequenceId{15});
     REQUIRE(second_batch->authority_receipts.size() == 4);
     CHECK(second_batch->authority_receipts.front().sequence_id ==
           dots::protocol::AuthorityReceiptSequenceId{16});

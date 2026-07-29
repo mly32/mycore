@@ -16,16 +16,19 @@ For a game-integration recipe and public API reference, use the
   typed food, absorption, split, and merge events; predicted split children carry stable
   identity.
 - **Current Dots prediction adapter:** Feature 14 steps 3 and 4 provide mechanic contracts,
-  `InteractionClosure`, `FullReplicated`, and `OwnedMovement` scopes, causal-coverage fallback,
+  `InteractionClosure`, `FullReplicated`, and `OwnedGameplay` scopes, causal-coverage fallback,
   scope projection, retained remote movement assumptions, canonical checkpoint digests, typed
   differences, and complete-World rollback tests for movement, food, absorption, split, and
   merge. Dots event handlers demonstrate predicted-once, cancelable, and confirmed-only
   delivery through the engine router. Offline play advances through this adapter.
-- **Current client integration:** Feature 14 step 6 replaces the position-only predictor with the
+- **Current client integration:** Feature 14 steps 6 and 6.5 replace the position-only predictor
+  with the
   complete Dots timeline. The client hydrates and verifies authoritative checkpoints, predicts an
   `InteractionClosure`, replays retained input with recorded remote movement assumptions, maps
   predicted identities to authority, renders predicted topology, and exposes graphical split.
-  Confirmed session state remains separate from speculative player existence.
+  Confirmed session state remains separate from speculative player existence. Prediction scopes
+  separately declare owner-participant event subscriptions. A bounded receipt inbox tracks
+  accepted, event-batch-published, and server-retired frontiers; the client ACKs only publication.
 - **Remote presentation baseline:** Feature 12 renders remote entities from delayed known
   snapshots and holds at the newest endpoint.
 - **Authoritative lifecycle baseline:** Feature 13 implements deterministic absorption and
@@ -130,12 +133,14 @@ The engine exposes these behavioral values:
 - `Commit<Model>`: commit kind, typed diff, replay coordinates, event transitions, and diagnostic
   digests. The corresponding immutable committed state is read from the timeline after success.
 - `CommitResult<Model>`: accepted commit or a typed rejection/recovery reason.
+- `EventBatch<Model>`: movable post-commit event changes and retirement hints for a
+  presentation/consequence boundary; authority-only receipts use the same batch shape.
 
 `Timeline<Model>` initializes from authority, advances one predicted tick, reconciles
-transactionally, rebases a prediction scope, hard-resyncs, and exposes immutable committed and
-debug views. Initialization is itself `CommitKind::Initialize`, so authoritative events in the
-first accepted frame pass through the same observer/router path. Callers cannot access scratch
-state.
+transactionally, refreshes a later validated view at the same authority tick, rebases a prediction
+scope, hard-resyncs, and exposes immutable committed and debug views. Initialization is itself
+`CommitKind::Initialize`, so authoritative events in the first accepted frame pass through the
+same observer/router path. Callers cannot access scratch state.
 
 ## Replay Stimuli and Rollforward
 
@@ -263,6 +268,12 @@ The fixed-point builder expands through four providers:
 4. **Causal/global dependency:** include a global value or authority stream when it can change a
    predicted result without a spatial interaction.
 
+`owner_ids` and entity membership define causal simulation state. The separate
+`subscribed_event_owner_ids` set defines which participant-involving journal events enter the
+rollback consequence lifecycle. A remote entity may therefore be simulated because it can affect
+an owned result without exposing unrelated remote-to-remote cues. The server receipt filter and
+the prediction adapter use the same simulation-owned participant extraction.
+
 State follows these defaults:
 
 | State class | Prediction rule |
@@ -284,7 +295,7 @@ Prediction profiles are:
 |---|---|---|
 | `InteractionClosure` | Owned pieces plus the fixed-point closure of every entity and mechanic that can affect them during the replay horizon. | Default |
 | `FullReplicated` | Every entity in the reconstructed replicated view. | Correctness oracle and workload benchmark |
-| `OwnedMovement` | Owned movement only; contested mechanics remain authoritative. | Safe incomplete-state fallback |
+| `OwnedGameplay` | Owned movement plus owner-local split/launch/cooldown/cohesion/merge; contested food and enemy absorption remain authoritative. | Safe incomplete-state fallback |
 
 Closure starts from owned pieces and their owner/global dependencies, then expands through
 conservative swept bounds. Growth from food, split launch reach, and recursively reachable player
@@ -304,7 +315,7 @@ scope and are rejected.
 Every participant in a predicted interaction and every cause of predicted non-spatial state must
 share the same timeline or be an explicit retained authority fact. Excluded entities do not
 collide with or otherwise affect the predicted island. Missing required entity, owner, global, or
-causal state causes an atomic fallback to `OwnedMovement` with an `IncompleteClosure` reason; the
+causal state causes an atomic fallback to `OwnedGameplay` with an `IncompleteClosure` reason; the
 client never guesses the missing dependency.
 
 Feature 15 AOI must replicate the conservative interaction margin required to construct this
@@ -443,19 +454,24 @@ loss-tolerant receipt:
 - Each receipt contains server tick, typed event key, and the minimum confirmed payload needed by
   a consequence handler.
 - Full snapshots repeat bounded batches of unacknowledged receipts.
-- Input packets acknowledge the highest contiguous receipt sequence.
+- Input packets acknowledge the highest contiguous event-batch-published receipt sequence.
 - The server retains up to 256 receipts and sends at most 16 per snapshot. Reaching the bound is
   an explicit session error; receipts are never silently dropped.
+- Snapshots echo the highest receipt sequence retired from server storage.
 - Identical duplicates are ignored, conflicting duplicates reject the frame, and a receipt is
-  delivered to the consequence router only with an accepted authority commit at or beyond its
-  server tick.
+  published toward the consequence router only with an accepted authority commit at or beyond
+  its server tick.
 
 Protocol v4, the authoritative server queues, and the replicated client inbox implement the
 transport portion of this contract. Receipts are relevant-owner scoped for the current complete
-replication model. The network client converts each newly accepted receipt into a confirmed event
-on the same transactional authority frame and acknowledges the highest contiguous validated
-sequence. Persistent consequence handlers attach in Feature 14 step 7; until then, receipt event
-transitions are consumed by the timeline without exposing audio or particle side effects.
+replication model. The inbox validates a gap-free sequence and rejects live semantic-key reuse,
+but acceptance alone does not advance the ACK. The network client converts pending receipts into
+confirmed events on the same transactional authority frame (or an authority-only batch without a
+timeline), queues the resulting batch, and only then advances its published/ACK frontier.
+Pre-welcome receipts remain pending; a terminal receipt publishes before prediction is cleared on
+entry to Spectating. Payloads and live key records are pruned only after the server echoes
+retirement. Persistent consequence handlers attach in Feature 14 step 7; until then, the
+composition root drains batches without exposing audio or particle side effects.
 
 Repeated Feature 13 session fields remain authoritative state. Receipts control one-time
 consequence delivery and do not replace those state fields.
@@ -505,7 +521,9 @@ time do not. Empty queues hold level movement but never repeat edge actions.
 
 History retains 64 ticks, approximately 2.13 seconds at 30 Hz. Missing history, capacity
 exhaustion, incompatible checkpoint/scope, or ambiguous identity causes a hard resync to newest
-validated authority.
+validated authority. That explicit recovery may accept a validated ACK beyond timeline history
+because it discards the history; normal reconcile, authority-refresh, and rebase transactions
+may not.
 
 Replay has a 2 ms warning, not a cutoff. Duration alone never publishes incorrect partial state.
 First evaluate simulation optimization, closure size, and reconciliation frequency.

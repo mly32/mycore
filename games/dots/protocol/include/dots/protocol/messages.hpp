@@ -205,6 +205,7 @@ struct FullSnapshot {
     RecipientSessionState recipient;
     std::vector<OwnerState> owners;
     std::vector<EntityState> entities;
+    AuthorityReceiptSequenceId authority_receipts_retired_through;
     std::vector<AuthorityReceipt> authority_receipts;
 
     bool operator==(const FullSnapshot&) const = default;

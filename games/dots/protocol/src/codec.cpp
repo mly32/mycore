@@ -534,6 +534,19 @@ template <class Values, class Projection>
     }
 
     std::set<std::pair<std::uint8_t, std::vector<std::uint32_t>>> event_keys;
+    if (!message.authority_receipts.empty()) {
+        const auto expected_first = message.authority_receipts_retired_through.is_valid()
+                                        ? message.authority_receipts_retired_through.value() + 1U
+                                        : std::uint32_t{0};
+        if (message.authority_receipts_retired_through.is_valid() &&
+            message.authority_receipts_retired_through.value() ==
+                AuthorityReceiptSequenceId::kInvalidValue - 1U) {
+            return CodecError::InvalidReceiptOrdering;
+        }
+        if (message.authority_receipts.front().sequence_id.value() != expected_first) {
+            return CodecError::InvalidReceiptOrdering;
+        }
+    }
     for (std::size_t index = 0; index < message.authority_receipts.size(); ++index) {
         const auto& receipt = message.authority_receipts[index];
         if (!receipt.sequence_id.is_valid()) {
@@ -764,6 +777,7 @@ void encode_payload(Writer& writer, const FullSnapshot& message) {
     writer.write_u32(message.server_tick);
     writer.write_u32(message.last_processed_input_id.value());
     writer.write_u8(message.pending_input_count);
+    writer.write_u32(message.authority_receipts_retired_through.value());
     writer.write_u16(message.checkpoint_schema_id);
     writer.write_u64(message.checkpoint_digest);
     writer.write_u32(message.next_entity_id.value());
@@ -966,6 +980,7 @@ void encode_payload(Writer& writer, const FullSnapshot& message) {
 [[nodiscard]] DecodeResult decode_full_snapshot(Reader& reader) {
     std::uint32_t snapshot_id{};
     std::uint32_t last_processed_input_id{};
+    std::uint32_t authority_receipts_retired_through{};
     std::uint8_t session_mode{};
     std::uint32_t next_entity_id{};
     std::uint32_t primary_entity_id{};
@@ -979,6 +994,7 @@ void encode_payload(Writer& writer, const FullSnapshot& message) {
     FullSnapshot message;
     if (!reader.read_u32(snapshot_id) || !reader.read_u32(message.server_tick) ||
         !reader.read_u32(last_processed_input_id) || !reader.read_u8(message.pending_input_count) ||
+        !reader.read_u32(authority_receipts_retired_through) ||
         !reader.read_u16(message.checkpoint_schema_id) ||
         !reader.read_u64(message.checkpoint_digest) || !reader.read_u32(next_entity_id) ||
         !reader.read_u8(session_mode) || !reader.read_u32(primary_entity_id) ||
@@ -1000,6 +1016,8 @@ void encode_payload(Writer& writer, const FullSnapshot& message) {
 
     message.snapshot_id = SnapshotId{snapshot_id};
     message.last_processed_input_id = InputSequenceId{last_processed_input_id};
+    message.authority_receipts_retired_through =
+        AuthorityReceiptSequenceId{authority_receipts_retired_through};
     message.next_entity_id = EntityId{next_entity_id};
     message.recipient.mode = static_cast<SessionMode>(session_mode);
     message.recipient.primary_entity_id = EntityId{primary_entity_id};

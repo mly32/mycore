@@ -61,7 +61,7 @@ lets tests instantiate small non-Dots models.
 
 Predicting every replicated entity is valuable as a correctness oracle but is not the
 1,000-player steady-state. The normal profile is the fixed-point interaction closure seeded from
-owned pieces. `FullReplicated` remains a benchmark/oracle, and `OwnedMovement` is the safe
+owned pieces. `FullReplicated` remains a benchmark/oracle, and `OwnedGameplay` is the safe
 fallback when required closure state is missing.
 
 ### Event journal before side effects
@@ -218,7 +218,7 @@ fresh result; a smaller result retains the safe existing superset instead of osc
 presentation ownership as ACK depth changes. Newly required membership or a changed causal
 subscription forces an atomic scope rebase from latest authority and replay. Excluded entities
 cannot interact with the predicted island. Missing required entity, owner, global, or causal
-state falls back to `OwnedMovement` and reports `IncompleteClosure`.
+state falls back to `OwnedGameplay` and reports `IncompleteClosure`.
 
 State policy is:
 
@@ -256,7 +256,9 @@ For authority at tick `T`:
 
 Stale or invalid authority does not mutate committed state. Missing history, capacity exhaustion,
 incompatible checkpoint/scope, or ambiguous identity hard-resyncs to newest validated authority.
-Duration alone never chooses an incorrect partial state.
+The explicit hard-resync recovery may accept a validated ACK beyond timeline history because it
+discards that history; normal replay transactions may not. Duration alone never chooses an
+incorrect partial state.
 
 The [Feature 14 prediction-stutter postmortem](../feature14_prediction_stutter_postmortem.md)
 records why the storage bound, causal horizon, immutable input, and refreshable assumption must
@@ -289,7 +291,7 @@ Policy is per handler, not per event type:
   starts that handler twice in the session.
 - `PredictCancelable` owns a typed token and receives predict/revise/cancel/confirm lifecycle
   calls. A one-shot sound must use `PredictOnce`, not this mode.
-- `ConfirmOnce` receives only an accepted authoritative receipt and deduplicates repeated
+- `ConfirmOnce` receives only a published authoritative receipt batch and deduplicates repeated
   snapshots.
 
 The router stages ledger changes before handler invocation. Handler errors are surfaced and not
@@ -305,10 +307,11 @@ Dots stable keys are explicit variants:
 - Merge: sorted consumed-piece identities.
 
 Protocol version 4 adds per-session monotonic authority-receipt sequences. Snapshots repeat up to
-16 unacknowledged receipts, input packets ACK the highest contiguous sequence, and the server
-retains up to 256. Overflow is an explicit session failure rather than silent cue loss. Session
-state remains repeated snapshot state; receipts exist only to deliver transient confirmed
-consequences once.
+16 unacknowledged receipts, input packets ACK the highest contiguous published sequence, and the
+server retains up to 256. Snapshots echo server retirement so the bounded client inbox can prune
+payloads and live-key records. Overflow is an explicit session failure rather than silent cue
+loss. Session state remains repeated snapshot state; receipts exist only to deliver transient
+confirmed consequences once.
 
 ## Split and Merge Rules
 
@@ -421,7 +424,7 @@ Keep commits focused and reviewable, but do not add approval gates between these
    entity-scale workloads, documentation updates, and the measured same-frame/multi-frame
    decision.
 
-Steps 1 through 6 are implemented on `feature/14`; step 6.5 must complete before step 7.
+Steps 1 through 6.5 are implemented on `feature/14`; step 7 is next.
 `MyCore::Rollback` now provides the generic
 timeline and consequence machinery. Dots Simulation now provides immutable `WorldRules`, sorted
 complete checkpoints, atomic restore, one owner-scoped command batch per tick, typed food and
@@ -464,7 +467,7 @@ entities outside it remain on Feature 12 interpolation-and-hold. Predicted child
 `PredictionKey` across replay and report an entity-ID remap when authority assigns a different
 ID. Predicted removal of the final local piece does not enter Spectating or stop input capture;
 only the confirmed replicated session can do that. The client also converts new authority
-receipts into confirmed timeline events and ACKs their contiguous sequence. Persistent
+receipts into confirmed timeline events and ACKs their contiguous published sequence. Persistent
 consequence handlers, structural presentation transitions, and bounded outside-closure
 extrapolation remain step 7 work. Remote interpolation endpoint ghosts remain visible for
 in-scope players when enabled so the predicted and authoritative presentation layers can still
@@ -472,6 +475,16 @@ be compared. Local and comparable same-head remote corrections now emit entity-s
 records into a configurable bounded presentation history. The history keeps the magenta
 pre-correction hue stable, fades opacity over two seconds, and excludes ordinary movement between
 different predicted head ticks.
+
+The step 6.5 audit remediation makes the fallback transition-closed as `OwnedGameplay`, separates
+causal state membership from owner-participant event subscriptions, and routes every observable
+initialize/advance/reconcile/authority-refresh/scope-rebase/hard-resync result through a bounded
+post-commit `EventBatch`. Replicated World state no longer accumulates receipts. A separate
+bounded inbox tracks accepted, published, and server-retired frontiers, rejects sequence gaps,
+conflicting retransmissions, and live stable-key reuse, and ACKs only after a batch is queued.
+Pre-welcome receipts remain pending; terminal Spectating receipts publish before prediction is
+cleared. Same-tick authority refinement and explicit hard resync preserve their distinct history
+semantics.
 
 ## Test Plan
 

@@ -12,14 +12,16 @@ rationale; it is not the onboarding guide for the engine library.
 
 The library provides:
 
-- A typed `Timeline<Model>` with initialization, predicted advance, authoritative
-  reconciliation, scope rebase, and hard resync.
+- A typed `Timeline<Model>` with initialization, predicted advance, newer-tick reconciliation,
+  same-tick authority refresh, scope rebase, and hard resync.
 - Bounded history of sampled commands, explicit per-frame assumptions, checkpoints, digests,
   and event journals.
 - Scratch restore/replay followed by one atomic commit.
 - Typed state differences and diagnostic digests supplied by the game model.
 - Stable event transitions: first predicted, revised, retracted, confirmed, and
   authority-only.
+- Movable `EventBatch<Model>` output for publishing only post-commit event transitions, including
+  an authority-only resolver for clients without an active predicted timeline.
 - `StaticConsequenceRouter` policies for predicted one-shots, cancelable effects, and
   confirmed-only effects.
 
@@ -42,7 +44,7 @@ sampled command + assumptions ────> Timeline::advance
                                            v
                                    committed game State
                                            │
-                             Commit + consequence routing
+                           Commit/EventBatch + consequence routing
                                            │
                                            v
                                       presentation
@@ -272,13 +274,24 @@ correct for sampled local commands but not for a superseded authority-derived as
 | `advance(sequence, stimulus)` | None | Appends one predicted frame | Predict exactly one tick. |
 | `reconcile(frame)` | Authority tick strictly newer than the last authoritative tick; same scope epoch | Drops acknowledged frames and replays the suffix | Normal server correction. |
 | `reconcile_with_stimulus_refresh(frame, refresh)` | Same as `reconcile` | Drops acknowledged frames, refreshes each retained stimulus in scratch, and replays it | New authority revises derived external assumptions but not sampled player commands. |
+| `refresh_authority(frame)` | Authority tick and scope epoch equal the current authoritative base | Replaces the validated same-tick base and replays retained history | Publish late authority events or a later validated view of the same tick without discarding future prediction. |
+| `refresh_authority_with_stimulus_refresh(frame, refresh)` | Same as `refresh_authority` | Refreshes and replays retained stimuli from the replacement base | Same-tick authority also refines derived assumptions. |
 | `rebase_scope(frame, scope)` | Scope epoch strictly increases; authority tick is the same or newer | Replays retained stimuli under the new scope | Membership, horizon, or mechanic-policy change. |
 | `rebase_scope_with_stimulus_refresh(frame, scope, refresh)` | Same as `rebase_scope` | Refreshes and replays retained stimuli under the new scope | A new scope changes derived per-frame assumptions. |
 | `hard_resync(frame, scope)` | Authority tick is the same or newer; scope epoch cannot regress | Clears retained history | Recover when replay cannot safely continue. |
 
-A same-tick `rebase_scope` must use the exact current authoritative base checkpoint.
-`hard_resync` may replace that checkpoint. Scope epochs describe incompatible prediction
-membership; they are not simulation ticks.
+A same-tick authority refresh or scope rebase may replace the base checkpoint because a
+caller-validated later snapshot can refine the state projected into that scope. The caller must
+first prove that the frame is newer in its own transport/snapshot ordering; the generic timeline
+does not know that ordering. `hard_resync` may also replace the checkpoint. Scope epochs describe
+incompatible prediction membership; they are not simulation ticks.
+
+Normal reconcile/refresh/rebase calls reject an acknowledgement beyond the timeline's last
+submitted command. `hard_resync` is the deliberate exception: after the caller independently
+validates a coherent authority frame, it may advance the acknowledgement beyond timeline history
+because the operation discards that history. This supports commands that an outer client buffered
+while its predicted model temporarily could not advance, such as input retained after speculative
+local elimination.
 
 After any successful call, read the immutable committed state through `timeline.state()`.
 Do not cache its pointer across later timeline mutations. `Commit::state_diff` describes the
@@ -290,6 +303,13 @@ Useful commit fields include:
 - The game-defined typed state difference.
 - Authoritative, predicted, and prior-at-authority diagnostic digests.
 - Event changes for consequence/presentation observers.
+
+Move event output across composition boundaries with
+`event_batch_from_commit(std::move(commit))`. Empty batches have no observable event lifecycle
+and need not be queued. If authority events arrive before initialization or while no predicted
+state exists, validate and convert them with `resolve_authority_only_events(model, events)`.
+Both paths produce the same `EventBatch<Model>` contract consumed by
+`StaticConsequenceRouter`.
 
 ## Simulation events and presentation consequences
 
@@ -406,12 +426,14 @@ Before a new game enables prediction:
 4. Every enabled mechanic has a causally closed scope or an explicit safe fallback.
 5. Authority hydration validates schema, tick, rules, IDs, scope, acknowledgement, and receipts
    before calling the timeline.
-6. Event keys survive rollback and never identify two semantic occurrences.
-7. Continuous presentation comes from committed state; one-shot consequences use an explicit
+6. Receipt streams distinguish semantic acceptance, event-batch publication, consequence
+   delivery, network acknowledgement, and server-confirmed retirement.
+7. Event keys survive rollback and never identify two semantic occurrences.
+8. Continuous presentation comes from committed state; one-shot consequences use an explicit
    policy.
-8. Every failure path preserves the last committed state and chooses a documented recovery.
-9. History capacity covers the intended replay window at an acceptable checkpoint memory cost.
-10. Tests cover multi-frame correction, structural restoration, event revision/retraction,
+9. Every failure path preserves the last committed state and chooses a documented recovery.
+10. History capacity covers the intended replay window at an acceptable checkpoint memory cost.
+11. Tests cover multi-frame correction, structural restoration, event revision/retraction,
     acknowledgement trimming, scope rebase, capacity exhaustion, and hard resync.
 
 The complete minimal model and consequence examples are in
@@ -421,5 +443,6 @@ adapter is
 [rollback prediction design](rollback_prediction_design.md). Its first network composition is
 [`games/dots/client_runtime`](../games/dots/client_runtime/): it demonstrates verified
 checkpoint hydration, interaction-closure selection, retained input/remote assumptions, atomic
-authority reconciliation, authority-derived remote-assumption refresh, identity remapping, and
-a separate confirmed session lifecycle.
+authority reconciliation and same-tick refresh, authority-derived remote-assumption refresh,
+identity remapping, a bounded accepted/published/retired authority-receipt inbox, and a separate
+confirmed session lifecycle.
