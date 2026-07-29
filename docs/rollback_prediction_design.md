@@ -303,14 +303,20 @@ interactions enlarge the set. The production client derives the required replay 
 retained unacknowledged input suffix with a five-tick operating floor, never from the replay
 ring's storage capacity. Before each predicted step it recomputes the closure for the next suffix
 depth. The existing scope remains valid while it contains that freshly computed causal
-membership and subscriptions; a smaller closure retains the safe existing superset so ACK depth
-cannot thrash presentation ownership. Newly required membership or a causal subscription change
-forces a scope rebase from latest authority before the step.
+membership and subscriptions **and the newest authoritative checkpoint still projects completely
+into it**. A smaller closure normally retains the safe existing superset so ACK depth cannot
+thrash presentation ownership. If topology changes inside a retained-but-no-longer-required
+remote owner—for example, that owner splits and gains a child absent from the old scope—the old
+superset is no longer a complete owner projection. The client rebases to the freshly required
+scope instead of installing partial owner state. Newly required membership, an unprojectable
+retained scope, or a causal subscription change forces a scope rebase from latest authority
+before the step.
 
 Locally predicted split children are admitted by a unique `PredictionKey` belonging to an owned
 owner even though their authoritative entity IDs did not exist when the scope was built.
-Unkeyed additions, duplicate prediction keys, and remote-owner additions remain outside the
-scope and are rejected.
+Unkeyed additions and duplicate prediction keys are rejected. A structural addition to a remote
+owner that remains required expands the next scope; an addition to a stale retained remote owner
+invalidates that retained superset and causes it to be dropped by scope rebase.
 
 Every participant in a predicted interaction and every cause of predicted non-spatial state must
 share the same timeline or be an explicit retained authority fact. Excluded entities do not

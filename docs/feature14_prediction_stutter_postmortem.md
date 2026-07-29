@@ -200,9 +200,14 @@ source. They never infer newest remote intent from predicted or presentation sta
 ### Make presentation ownership stable
 
 The scope horizon follows the retained suffix with its operating floor. An existing safe causal
-superset remains selected when ACKs shrink the immediate requirement. A newly required entity or
-causal channel still forces an atomic scope rebase from newest authority because old stimuli did
-not contain assumptions for newly admitted state.
+superset remains selected when ACKs shrink the immediate requirement, but only while the newest
+authority checkpoint can still project completely into it. A follow-up split stress failure
+showed why this second condition matters: a remote owner could leave the newly required closure,
+remain in the older superset, and then gain a split child absent from that old scope. The client
+now treats the retained scope as invalid and rebases to the fresh closure instead of attempting a
+partial owner projection. A newly required entity or causal channel likewise forces an atomic
+scope rebase from newest authority because old stimuli did not contain assumptions for newly
+admitted state.
 
 ### Add targeted observability
 
@@ -323,7 +328,7 @@ wrong meaning.
 | Server input hold/stop | Client continues movement after authority's hold expires | Authoritative zero movement refreshes retained assumptions like any other level change |
 | Split, merge, launch, and cooldowns | Derived topology or timers are reconstructed from presentation or incomplete state | Structural state and deadlines are checkpointed; unknown remote edges are not invented |
 | Food and player interactions | A participant enters causal reach but is absent from the replay island | Scope is closed over the full replay horizon before stepping |
-| Entity lifecycle | A scope admits a new entity but old frames have no cause for it | Rebase from newest authority and regenerate complete retained stimuli |
+| Entity lifecycle | A scope admits a new entity but old frames have no cause for it, or a retained remote owner changes topology outside the new closure | Rebase from newest authority, require complete checkpoint projection, and regenerate complete retained stimuli |
 | Score, resources, or other non-spatial state | A local delta is treated as complete global truth | Predict only a causally closed aggregate or keep confirmed base plus explicitly speculative delta |
 | RNG and scheduled facts | Replay polls a mutable generator, clock, or service | Seed/state is checkpointed or the fact is an explicit stimulus |
 | Consequences | Replayed simulation repeats sound, particles, analytics, or UI | Simulation emits stable keyed events; post-commit consequence policy owns exposure |

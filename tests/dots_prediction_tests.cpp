@@ -600,6 +600,73 @@ TEST_CASE("Client prediction closure follows retained replay depth instead of ri
     CHECK(retained_scope.scope_rebase_count == expanded_scope.scope_rebase_count);
 }
 
+TEST_CASE("Retained prediction scope rebases when an excluded remote owner splits",
+          "[dots][prediction][scope][split]") {
+    ManualEndpoint endpoint;
+    dots::client_runtime::Runtime client{endpoint};
+    const mycore::net_transport::ConnectionHandle connection{35};
+    complete_handshake(endpoint, client, connection);
+
+    auto remote_parent = dots::protocol::EntityState{
+        .entity_id = dots::protocol::EntityId{9},
+        .kind = dots::protocol::EntityKind::Player,
+        .owner_id = dots::protocol::PlayerOwnerId{4},
+        .position_x = 10.0F,
+        .mass = 16.0F,
+    };
+    auto nearby = snapshot(1, 2, dots::protocol::InputSequenceId::invalid(), {});
+    nearby.entities.push_back(remote_parent);
+    push_snapshot(endpoint, connection, nearby);
+    REQUIRE_FALSE(client.process_events(clock_time(11s)).has_value());
+
+    const auto remote_parent_id = remote_parent.entity_id;
+    REQUIRE(std::ranges::find(client.predicted_scope_entity_ids(), remote_parent_id) !=
+            client.predicted_scope_entity_ids().end());
+    const auto expanded_scope = client.prediction_statistics(clock_time(11s));
+
+    remote_parent.position_x = 50.0F;
+    auto outside = snapshot(2, 4, dots::protocol::InputSequenceId::invalid(), {});
+    outside.entities.push_back(remote_parent);
+    push_snapshot(endpoint, connection, outside);
+    REQUIRE_FALSE(client.process_events(clock_time(12s)).has_value());
+    const auto retained_scope = client.prediction_statistics(clock_time(12s));
+    CHECK(retained_scope.scope_epoch == expanded_scope.scope_epoch);
+    REQUIRE(std::ranges::find(client.predicted_scope_entity_ids(), remote_parent_id) !=
+            client.predicted_scope_entity_ids().end());
+
+    remote_parent.mass = 8.0F;
+    auto remote_child = dots::protocol::EntityState{
+        .entity_id = dots::protocol::EntityId{10},
+        .kind = dots::protocol::EntityKind::Player,
+        .owner_id = remote_parent.owner_id,
+        .position_x = 50.0F,
+        .mass = 8.0F,
+        .prediction_key =
+            dots::protocol::PredictionKey{
+                .owner_id = remote_parent.owner_id,
+                .input_id = dots::protocol::InputSequenceId{42},
+                .child_ordinal = 0,
+            },
+    };
+    auto split = snapshot(3, 6, dots::protocol::InputSequenceId::invalid(), {});
+    split.owners.push_back({
+        .owner_id = remote_parent.owner_id,
+        .last_input_id = dots::protocol::InputSequenceId{42},
+    });
+    split.entities.push_back(remote_parent);
+    split.entities.push_back(remote_child);
+    push_snapshot(endpoint, connection, split);
+    REQUIRE_FALSE(client.process_events(clock_time(13s)).has_value());
+
+    const auto rebased_scope = client.prediction_statistics(clock_time(13s));
+    CHECK(rebased_scope.scope_epoch > retained_scope.scope_epoch);
+    CHECK(rebased_scope.scope_rebase_count == retained_scope.scope_rebase_count + 1);
+    CHECK(std::ranges::find(client.predicted_scope_entity_ids(), remote_parent_id) ==
+          client.predicted_scope_entity_ids().end());
+    CHECK(std::ranges::find(client.predicted_scope_entity_ids(), remote_child.entity_id) ==
+          client.predicted_scope_entity_ids().end());
+}
+
 TEST_CASE("Future remote assumptions use newest authority after replaying an older guess",
           "[dots][prediction][remote][reconciliation]") {
     ManualEndpoint endpoint;

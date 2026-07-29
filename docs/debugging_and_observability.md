@@ -248,7 +248,7 @@ Important log categories include:
 | `dots.client.simulation` | Client fixed-step overload warnings, escalation, and recovery. |
 | `dots.client.presentation` | Rejection of a noncanonical/stale remote extrapolation sample, including candidate and prior snapshot coordinates. Such rejection fails the session rather than drawing unvalidated state. |
 | `dots.client.consequence` | Non-retried Dots consequence-handler failures after an otherwise successful rollback commit. |
-| `dots.client.prediction` | Prediction history pressure/recovery, hard resyncs, replay-budget warnings, and explicit debug fault injection. |
+| `dots.client.prediction` | Prediction history pressure/recovery, hard resyncs, replay-budget warnings, explicit debug fault injection, and fatal scope/timeline operation failures. Timeline failures name the operation, engine rollback error, and any nested Dots model/checkpoint/tick error; scope failures name the failed build or projection and scope epoch/counts. |
 | `dots.client.prediction.scope` | Successful scope-epoch changes with replay depth, horizon, and before/after causal-owner, event-owner, player, and food membership counts when `debug.prediction_log_level` is `info` or `debug`. |
 | `dots.client.prediction.reconciliation` | At `debug.prediction_log_level = "debug"`, each nonzero largest common remote-player displacement across an installed predicted head, including whether the before/after heads represent the same tick. Zero-displacement installs are omitted. |
 | `dots.server` | Headless server startup, listen address, tick lifetime, and shutdown. |
@@ -545,6 +545,16 @@ smoothing until the underlying divergence is understood.
 Snapshot acknowledgements have stalled for several seconds. Inspect snapshot age, loss,
 connection state, and server health. At full capacity the client performs a visible hard resync
 rather than retaining an unreplayable prediction.
+
+### Prediction timeline or scope failure
+
+Read the preceding `dots.client.prediction` error before the application-level runtime failure.
+For a timeline failure it identifies the failed operation and typed rollback/model error. For a
+scope failure it identifies whether scope construction or authority projection failed and
+includes the authority tick and scope epoch. A split or merge immediately before
+`checkpoint outside scope` usually means an older retained scope admitted a remote owner but not
+that owner's new topology; the runtime should rebase to a completely projectable scope, never
+install partial owner state.
 
 ### Remote cursor repeatedly holds
 

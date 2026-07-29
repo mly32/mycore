@@ -147,10 +147,11 @@ struct SnapshotProcessResult {
 
 enum class TimelineAdvanceStatus : std::uint8_t {
     Deferred,
-    Failed,
+    StimulusUnavailable,
 };
 
-using TimelineAdvanceResult = std::variant<prediction::Commit, TimelineAdvanceStatus>;
+using TimelineAdvanceResult =
+    std::variant<prediction::Commit, prediction::TimelineFailure, TimelineAdvanceStatus>;
 
 enum class AuthorityInstallReason : std::uint8_t {
     NewAuthority,
@@ -171,6 +172,99 @@ struct RemotePlayerDisplacement {
     float distance{};
     float mass{};
 };
+
+[[nodiscard]] constexpr std::string_view
+prediction_error_name(prediction::PredictionErrorCode error) noexcept {
+    using prediction::PredictionErrorCode;
+    switch (error) {
+    case PredictionErrorCode::InvalidScope:
+        return "invalid scope";
+    case PredictionErrorCode::IncompatibleRules:
+        return "incompatible rules";
+    case PredictionErrorCode::CheckpointOutsideScope:
+        return "checkpoint outside scope";
+    case PredictionErrorCode::CheckpointRestoreFailed:
+        return "checkpoint restore failed";
+    case PredictionErrorCode::InvalidStimulus:
+        return "invalid stimulus";
+    case PredictionErrorCode::TickFailed:
+        return "tick failed";
+    }
+    return "unknown";
+}
+
+[[nodiscard]] constexpr std::string_view
+scope_build_error_name(prediction::ScopeBuildError error) noexcept {
+    using prediction::ScopeBuildError;
+    switch (error) {
+    case ScopeBuildError::InvalidRequest:
+        return "invalid request";
+    case ScopeBuildError::InvalidCheckpoint:
+        return "invalid checkpoint";
+    case ScopeBuildError::MissingOwnedOwner:
+        return "missing owned owner";
+    case ScopeBuildError::IncompleteOwnedState:
+        return "incomplete owned state";
+    case ScopeBuildError::UnsupportedMechanic:
+        return "unsupported mechanic";
+    }
+    return "unknown";
+}
+
+[[nodiscard]] constexpr std::string_view
+checkpoint_error_name(simulation::CheckpointRestoreError error) noexcept {
+    using simulation::CheckpointRestoreError;
+    switch (error) {
+    case CheckpointRestoreError::InvalidRules:
+        return "invalid rules";
+    case CheckpointRestoreError::InvalidOrdering:
+        return "invalid ordering";
+    case CheckpointRestoreError::InvalidOwnerState:
+        return "invalid owner state";
+    case CheckpointRestoreError::InvalidEntityState:
+        return "invalid entity state";
+    case CheckpointRestoreError::InvalidGeometry:
+        return "invalid geometry";
+    }
+    return "unknown";
+}
+
+[[nodiscard]] constexpr std::string_view tick_error_name(simulation::TickError error) noexcept {
+    using simulation::TickError;
+    switch (error) {
+    case TickError::InvalidCommand:
+        return "invalid command";
+    case TickError::DuplicateOwnerCommand:
+        return "duplicate owner command";
+    case TickError::SimulationRejected:
+        return "simulation rejected";
+    }
+    return "unknown";
+}
+
+void log_timeline_failure(std::string_view operation, const prediction::TimelineFailure& failure) {
+    if (!failure.model_error) {
+        mycore::debug::log_error("dots.client.prediction",
+                                 "{} failed with rollback error {}",
+                                 operation,
+                                 mycore::rollback::timeline_error_name(failure.code));
+        return;
+    }
+
+    const auto& model_error = *failure.model_error;
+    const auto checkpoint_error = model_error.checkpoint_error
+                                      ? checkpoint_error_name(*model_error.checkpoint_error)
+                                      : std::string_view{"none"};
+    const auto tick_error = model_error.tick_error ? tick_error_name(*model_error.tick_error)
+                                                   : std::string_view{"none"};
+    mycore::debug::log_error("dots.client.prediction",
+                             "{} failed with rollback error {}: model {}, checkpoint {}, tick {}",
+                             operation,
+                             mycore::rollback::timeline_error_name(failure.code),
+                             prediction_error_name(model_error.code),
+                             checkpoint_error,
+                             tick_error);
+}
 
 [[nodiscard]] std::vector<RemotePlayerDisplacement>
 remote_player_displacements(const simulation::WorldCheckpoint& previous,
@@ -1069,14 +1163,14 @@ private:
         }
         const auto stimulus = make_stimulus(timeline, sample, owner_id, movement_authority);
         if (!stimulus) {
-            return TimelineAdvanceStatus::Failed;
+            return TimelineAdvanceStatus::StimulusUnavailable;
         }
         auto advanced = timeline.advance(
             mycore::rollback::CommandSequence{sample.sequence_id.value()}, *stimulus);
         if (auto* commit = std::get_if<prediction::Commit>(&advanced)) {
             return std::move(*commit);
         }
-        return TimelineAdvanceStatus::Failed;
+        return std::get<prediction::TimelineFailure>(std::move(advanced));
     }
 
     [[nodiscard]] std::vector<prediction::AuthorityEvent>
@@ -1113,6 +1207,13 @@ private:
         if (auto* scope = std::get_if<prediction::PredictionScope>(&result)) {
             return std::move(*scope);
         }
+        mycore::debug::log_error(
+            "dots.client.prediction",
+            "Prediction scope build failed at authority tick {} for owner {}, horizon {}: {}",
+            authority.tick.value(),
+            owner_id.value(),
+            required_replay_horizon.value(),
+            scope_build_error_name(std::get<prediction::ScopeBuildError>(result)));
         return RuntimeError::PredictionScopeFailed;
     }
 
@@ -1143,6 +1244,13 @@ private:
                 const auto* projected_authority =
                     std::get_if<simulation::WorldCheckpoint>(&projected);
                 if (projected_authority == nullptr) {
+                    const auto& error = std::get<prediction::PredictionError>(projected);
+                    mycore::debug::log_error(
+                        "dots.client.prediction",
+                        "Terminal authority projection failed at tick {} in scope epoch {}: {}",
+                        authority->tick.value(),
+                        timeline_->scope_epoch().value(),
+                        prediction_error_name(error.code));
                     return RuntimeError::PredictionScopeFailed;
                 }
                 prediction::Timeline scratch_timeline = *timeline_;
@@ -1158,9 +1266,7 @@ private:
                 auto* commit = std::get_if<prediction::Commit>(&resynced);
                 if (commit == nullptr) {
                     const auto& failure = std::get<prediction::TimelineFailure>(resynced);
-                    mycore::debug::log_error("dots.client.prediction",
-                                             "Terminal hard resync failed with rollback error {}",
-                                             mycore::rollback::timeline_error_name(failure.code));
+                    log_timeline_failure("Terminal hard resync", failure);
                     return RuntimeError::PredictionTimelineFailed;
                 }
                 append_observable_event_batch(committed_batches, std::move(*commit));
@@ -1170,6 +1276,11 @@ private:
                         prediction::WorldModel{}, pending_authority_events);
                 auto* batch = std::get_if<PredictionEventBatch>(&resolved);
                 if (batch == nullptr) {
+                    mycore::debug::log_error(
+                        "dots.client.prediction",
+                        "Terminal authority-only event resolution failed with rollback error {}",
+                        mycore::rollback::timeline_error_name(
+                            std::get<mycore::rollback::TimelineErrorCode>(resolved)));
                     return RuntimeError::PredictionTimelineFailed;
                 }
                 append_observable_event_batch(committed_batches, std::move(*batch));
@@ -1180,6 +1291,13 @@ private:
             }
             if (!pending_receipts.empty() &&
                 !candidate_receipts.mark_published_through(pending_receipts.back().sequence_id)) {
+                mycore::debug::log_error(
+                    "dots.client.prediction",
+                    "Terminal authority receipt publication failed at sequence {} (accepted {}, "
+                    "published {})",
+                    pending_receipts.back().sequence_id.value(),
+                    candidate_receipts.accepted_through().value(),
+                    candidate_receipts.published_through().value());
                 return RuntimeError::PredictionTimelineFailed;
             }
             for (auto& batch : committed_batches) {
@@ -1205,9 +1323,18 @@ private:
         }
 
         auto selected_scope = *required;
-        auto rebuild = !timeline_ || !timeline_->scope() ||
-                       !scope_covers(*timeline_->scope(), selected_scope) ||
-                       confirmed_owner_id_ != *owner;
+        auto rebuild = !timeline_ || !timeline_->scope() || confirmed_owner_id_ != *owner ||
+                       !scope_covers(*timeline_->scope(), selected_scope);
+        std::optional<simulation::WorldCheckpoint> projected_authority;
+        if (!rebuild) {
+            auto retained_projection =
+                prediction::project_checkpoint(*authority, *timeline_->scope());
+            if (auto* checkpoint = std::get_if<simulation::WorldCheckpoint>(&retained_projection)) {
+                projected_authority = std::move(*checkpoint);
+            } else {
+                rebuild = true;
+            }
+        }
         if (!rebuild) {
             selected_scope = *timeline_->scope();
         } else if (timeline_) {
@@ -1226,11 +1353,24 @@ private:
             selected_scope = *required;
         }
 
-        const auto projected_result = prediction::project_checkpoint(*authority, selected_scope);
-        const auto* projected_authority =
-            std::get_if<simulation::WorldCheckpoint>(&projected_result);
-        if (projected_authority == nullptr) {
-            return RuntimeError::PredictionScopeFailed;
+        if (!projected_authority) {
+            auto projected_result = prediction::project_checkpoint(*authority, selected_scope);
+            if (auto* checkpoint = std::get_if<simulation::WorldCheckpoint>(&projected_result)) {
+                projected_authority = std::move(*checkpoint);
+            } else {
+                const auto& error = std::get<prediction::PredictionError>(projected_result);
+                mycore::debug::log_error(
+                    "dots.client.prediction",
+                    "Authority projection failed at tick {} in scope epoch {}: {} (owners {}, "
+                    "players {}, food {})",
+                    authority->tick.value(),
+                    selected_scope.scope_epoch.value(),
+                    prediction_error_name(error.code),
+                    selected_scope.owner_ids.size(),
+                    selected_scope.player_ids.size(),
+                    selected_scope.food_ids.size());
+                return RuntimeError::PredictionScopeFailed;
+            }
         }
 
         const auto previous_checkpoint =
@@ -1261,6 +1401,8 @@ private:
             auto resynced = scratch_timeline.hard_resync(frame, selected_scope);
             auto* commit = std::get_if<prediction::Commit>(&resynced);
             if (commit == nullptr) {
+                log_timeline_failure("Authority hard resync",
+                                     std::get<prediction::TimelineFailure>(resynced));
                 return RuntimeError::PredictionTimelineFailed;
             }
             append_observable_event_batch(committed_batches, std::move(*commit));
@@ -1276,6 +1418,8 @@ private:
                 });
             auto* commit = std::get_if<prediction::Commit>(&reconciled);
             if (commit == nullptr) {
+                log_timeline_failure("Authority reconciliation",
+                                     std::get<prediction::TimelineFailure>(reconciled));
                 return RuntimeError::PredictionTimelineFailed;
             }
             append_observable_event_batch(committed_batches, std::move(*commit));
@@ -1291,6 +1435,8 @@ private:
                 });
             auto* commit = std::get_if<prediction::Commit>(&refreshed);
             if (commit == nullptr) {
+                log_timeline_failure("Same-tick authority refresh",
+                                     std::get<prediction::TimelineFailure>(refreshed));
                 return RuntimeError::PredictionTimelineFailed;
             }
             append_observable_event_batch(committed_batches, std::move(*commit));
@@ -1308,9 +1454,7 @@ private:
             auto* commit = std::get_if<prediction::Commit>(&rebased);
             if (commit == nullptr) {
                 const auto& failure = std::get<prediction::TimelineFailure>(rebased);
-                mycore::debug::log_error("dots.client.prediction",
-                                         "Scope rebase failed with rollback error {}",
-                                         mycore::rollback::timeline_error_name(failure.code));
+                log_timeline_failure("Scope rebase", failure);
                 return RuntimeError::PredictionTimelineFailed;
             }
             append_observable_event_batch(committed_batches, std::move(*commit));
@@ -1320,6 +1464,8 @@ private:
             auto initialized = scratch_timeline.initialize(frame, selected_scope);
             auto* commit = std::get_if<prediction::Commit>(&initialized);
             if (commit == nullptr) {
+                log_timeline_failure("Timeline initialization",
+                                     std::get<prediction::TimelineFailure>(initialized));
                 return RuntimeError::PredictionTimelineFailed;
             }
             append_observable_event_batch(committed_batches, std::move(*commit));
@@ -1336,18 +1482,22 @@ private:
                 continue;
             }
             auto advance_result = advance_timeline(scratch_timeline, sample, *owner, *authority);
+            if (const auto* failure = std::get_if<prediction::TimelineFailure>(&advance_result)) {
+                log_timeline_failure("Buffered input replay", *failure);
+                return RuntimeError::PredictionTimelineFailed;
+            }
             const auto* status = std::get_if<TimelineAdvanceStatus>(&advance_result);
-            if (status != nullptr && *status == TimelineAdvanceStatus::Failed) {
+            if (status != nullptr && *status == TimelineAdvanceStatus::StimulusUnavailable) {
+                mycore::debug::log_error(
+                    "dots.client.prediction",
+                    "Buffered input replay could not refresh a remote movement assumption");
                 return RuntimeError::PredictionTimelineFailed;
             }
             if (status != nullptr && *status == TimelineAdvanceStatus::Deferred) {
                 break;
             }
-            auto* commit = std::get_if<prediction::Commit>(&advance_result);
-            if (commit == nullptr) {
-                return RuntimeError::PredictionTimelineFailed;
-            }
-            append_observable_event_batch(committed_batches, std::move(*commit));
+            append_observable_event_batch(committed_batches,
+                                          std::get<prediction::Commit>(std::move(advance_result)));
             last_timeline_sequence = sample.sequence_id;
         }
 
@@ -1389,6 +1539,12 @@ private:
         }
         if (!pending_receipts.empty() &&
             !candidate_receipts.mark_published_through(pending_receipts.back().sequence_id)) {
+            mycore::debug::log_error(
+                "dots.client.prediction",
+                "Authority receipt publication failed at sequence {} (accepted {}, published {})",
+                pending_receipts.back().sequence_id.value(),
+                candidate_receipts.accepted_through().value(),
+                candidate_receipts.published_through().value());
             return RuntimeError::PredictionTimelineFailed;
         }
         timeline_ = std::move(scratch_timeline);
@@ -1541,22 +1697,29 @@ private:
     [[nodiscard]] std::optional<RuntimeError>
     advance_prediction(const protocol::InputSample& sample) {
         if (!timeline_ || !latest_authority_checkpoint_ || !confirmed_owner_id_.is_valid()) {
+            mycore::debug::log_error(
+                "dots.client.prediction",
+                "Local prediction advance is missing timeline, authority, or owner state");
             return RuntimeError::PredictionTimelineFailed;
         }
         auto result = advance_timeline(
             *timeline_, sample, confirmed_owner_id_, *latest_authority_checkpoint_);
+        if (const auto* failure = std::get_if<prediction::TimelineFailure>(&result)) {
+            log_timeline_failure("Local prediction advance", *failure);
+            return RuntimeError::PredictionTimelineFailed;
+        }
         const auto* status = std::get_if<TimelineAdvanceStatus>(&result);
-        if (status != nullptr && *status == TimelineAdvanceStatus::Failed) {
+        if (status != nullptr && *status == TimelineAdvanceStatus::StimulusUnavailable) {
+            mycore::debug::log_error(
+                "dots.client.prediction",
+                "Local prediction advance could not refresh a remote movement assumption");
             return RuntimeError::PredictionTimelineFailed;
         }
         if (status != nullptr && *status == TimelineAdvanceStatus::Deferred) {
             return std::nullopt;
         }
-        auto* commit = std::get_if<prediction::Commit>(&result);
-        if (commit == nullptr) {
-            return RuntimeError::PredictionTimelineFailed;
-        }
-        append_observable_event_batch(prediction_event_batches_, std::move(*commit));
+        append_observable_event_batch(prediction_event_batches_,
+                                      std::get<prediction::Commit>(std::move(result)));
         const auto projection = project_predicted_owner(*timeline_->state(),
                                                         confirmed_owner_id_,
                                                         world_.recipient().primary_entity_id,
@@ -1575,6 +1738,9 @@ private:
                             std::chrono::steady_clock::time_point now) {
         if (!latest_authority_snapshot_ || !world_rules_ || !timeline_ ||
             !confirmed_owner_id_.is_valid()) {
+            mycore::debug::log_error(
+                "dots.client.prediction",
+                "Prediction scope validation is missing snapshot, rules, timeline, or owner state");
             return RuntimeError::PredictionTimelineFailed;
         }
         const auto hydrated =

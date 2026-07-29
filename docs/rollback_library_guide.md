@@ -432,7 +432,10 @@ Before a new game enables prediction:
 2. Replaying the same checkpoint and stimuli produces identical checkpoints and event journals.
 3. Every external cause is checkpoint state or a stimulus field; sampled player intent is
    immutable and every refreshable authority-derived field is explicitly identified and tested.
-4. Every enabled mechanic has a causally closed scope or an explicit safe fallback.
+4. Every enabled mechanic has a causally closed scope or an explicit safe fallback. Before
+   retaining an older superset scope, prove that the newest authority checkpoint still projects
+   completely into it; owner membership can change even after that owner leaves the newly
+   required closure.
 5. Authority hydration validates schema, tick, rules, IDs, scope, acknowledgement, and receipts
    before calling the timeline.
 6. Receipt streams distinguish semantic acceptance, event-batch publication, consequence
