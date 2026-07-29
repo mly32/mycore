@@ -67,16 +67,6 @@ template <typename T> void reserve_for_append(std::vector<T>& values) {
     return tick + mycore::time::TickDelta{tick_count};
 }
 
-[[nodiscard]] mycore::math::Vector2
-decayed_velocity(mycore::math::Vector2 velocity, float decay_units_per_second_squared) noexcept {
-    const auto speed = mycore::math::length(velocity);
-    const auto decay_per_tick = decay_units_per_second_squared / static_cast<float>(kTickRateHz);
-    if (speed <= decay_per_tick) {
-        return {};
-    }
-    return velocity * ((speed - decay_per_tick) / speed);
-}
-
 template <class Range, class Projection>
 [[nodiscard]] bool is_strictly_sorted(const Range& values, Projection projection) {
     return std::adjacent_find(values.begin(), values.end(), [&](const auto& lhs, const auto& rhs) {
@@ -695,6 +685,8 @@ bool World::advance_simulation(std::vector<OwnerCheckpoint> next_owners,
                     .child_ordinal = child_ordinal,
                     .parent_entity_id = parent_id,
                     .child_entity_id = *child_id,
+                    .origin_position = position,
+                    .initial_launch_velocity = launch_velocities_.back(),
                     .parent_mass = split_mass,
                     .child_mass = split_mass,
                 });
@@ -744,19 +736,25 @@ bool World::advance_simulation(std::vector<OwnerCheckpoint> next_owners,
         if (owner == owners_.end() || owner->owner_id != owner_ids_[index]) {
             throw std::logic_error{"Player owner is missing from the Dots tick state"};
         }
-        auto velocity = owner->movement * rules_.player_speed_units_per_second;
-        velocity += launch_velocities_[index];
-        next_launch_velocities[index] = decayed_velocity(
-            launch_velocities_[index], rules_.launch_decay_units_per_second_squared);
+        auto additional_velocity = mycore::math::Vector2{};
         if (mechanics.split_merge) {
             if (owner->player_ids.size() > 1 && completed_tick >= merge_eligible_ticks_[index]) {
                 const auto owner_index = static_cast<std::size_t>(owner - owners_.begin());
                 const auto cohesion_direction = mycore::math::normalized_or_zero(
                     owner_centroids[owner_index] - positions_[index]);
-                velocity += cohesion_direction * rules_.cohesion_speed_units_per_second;
+                additional_velocity = cohesion_direction * rules_.cohesion_speed_units_per_second;
             }
         }
-        const auto next_position = positions_[index] + (velocity / static_cast<float>(kTickRateHz));
+        const auto advanced = advance_player_kinematics(
+            {
+                .position = positions_[index],
+                .launch_velocity = launch_velocities_[index],
+            },
+            owner->movement,
+            rules_,
+            additional_velocity);
+        const auto next_position = advanced.position;
+        next_launch_velocities[index] = advanced.launch_velocity;
         if (!spatial_grid_.can_index({.center = next_position, .radius = radii_[index]})) {
             return false;
         }
@@ -835,6 +833,8 @@ bool World::advance_simulation(std::vector<OwnerCheckpoint> next_owners,
             .victim_entity_id = entity_ids_[candidate.victim_index],
             .absorber_owner_id = owner_ids_[candidate.absorber_index],
             .victim_owner_id = owner_ids_[candidate.victim_index],
+            .absorber_position = next_positions[candidate.absorber_index],
+            .victim_position = next_positions[candidate.victim_index],
             .transferred_mass = next_masses[candidate.victim_index],
         });
     }
@@ -945,11 +945,16 @@ bool World::advance_simulation(std::vector<OwnerCheckpoint> next_owners,
         next_radii[consumption.player_index] =
             radius_for_mass(next_masses[consumption.player_index]);
         consumed_food_ids.push_back(consumption.food_id);
+        const auto food_index = find_food_index(consumption.food_id);
+        if (!food_index) {
+            throw std::logic_error{"Consumed food disappeared before event publication"};
+        }
         next_events.emplace_back(FoodConsumed{
             .tick = completed_tick,
             .food_entity_id = consumption.food_id,
             .consumer_entity_id = consumption.player_id,
             .consumer_owner_id = owner_ids_[consumption.player_index],
+            .food_position = food_positions_[*food_index],
             .transferred_mass = rules_.food_mass,
         });
     }

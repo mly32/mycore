@@ -48,6 +48,7 @@ struct FoodConsumed {
     EntityId food_entity_id;
     EntityId consumer_entity_id;
     PlayerOwnerId consumer_owner_id;
+    mycore::math::Vector2 food_position;
     float transferred_mass{};
 
     bool operator==(const FoodConsumed&) const = default;
@@ -59,6 +60,8 @@ struct PlayerAbsorbed {
     EntityId victim_entity_id;
     PlayerOwnerId absorber_owner_id;
     PlayerOwnerId victim_owner_id;
+    mycore::math::Vector2 absorber_position;
+    mycore::math::Vector2 victim_position;
     float transferred_mass{};
 
     bool operator==(const PlayerAbsorbed&) const = default;
@@ -71,6 +74,8 @@ struct PlayerSplit {
     std::uint16_t child_ordinal{};
     EntityId parent_entity_id;
     EntityId child_entity_id;
+    mycore::math::Vector2 origin_position;
+    mycore::math::Vector2 initial_launch_velocity;
     float parent_mass{};
     float child_mass{};
 

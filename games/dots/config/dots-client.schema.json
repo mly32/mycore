@@ -344,6 +344,23 @@
             }
           ]
         },
+        "remote_presentation_mode": {
+          "description": "Networked playing presentation outside the predicted interaction closure. Extrapolated advances known movement/launch for at most 200 ms, interpolated uses delayed authority, and comparison overlays both.",
+          "type": "string",
+          "default": "extrapolated",
+          "anyOf": [
+            {
+              "enum": [
+                "extrapolated",
+                "interpolated",
+                "comparison"
+              ]
+            },
+            {
+              "pattern": "^(?:[eE][xX][tT][rR][aA][pP][oO][lL][aA][tT][eE][dD]|[iI][nN][tT][eE][rR][pP][oO][lL][aA][tT][eE][dD]|[cC][oO][mM][pP][aA][rR][iI][sS][oO][nN])$"
+            }
+          ]
+        },
         "prediction_log_level": {
           "description": "Prediction-category log detail. Off suppresses scope/reconciliation details, info logs scope changes, and debug also logs comparable remote corrections. Names are case-insensitive.",
           "type": "string",

@@ -42,6 +42,7 @@ target_link_libraries(
         Dots::ClientRuntime
         Dots::Prediction
         Dots::Presentation
+        Dots::RollbackPresentation
         Dots::Server
         MyCore::DebugUI
         MyCore::NetTransport

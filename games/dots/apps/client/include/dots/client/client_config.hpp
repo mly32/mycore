@@ -18,6 +18,12 @@ enum class PresentationMode : std::uint8_t {
     Comparison,
 };
 
+enum class RemotePresentationMode : std::uint8_t {
+    Extrapolated,
+    Interpolated,
+    Comparison,
+};
+
 enum class NetworkMode : std::uint8_t {
     Offline,
     InMemory,
@@ -49,6 +55,19 @@ enum class PredictionLogLevel : std::uint8_t {
     case PresentationMode::Fixed:
         return "FIXED";
     case PresentationMode::Comparison:
+        return "COMPARISON";
+    }
+    return "UNKNOWN";
+}
+
+[[nodiscard]] constexpr std::string_view
+remote_presentation_mode_name(RemotePresentationMode mode) noexcept {
+    switch (mode) {
+    case RemotePresentationMode::Extrapolated:
+        return "EXTRAPOLATED";
+    case RemotePresentationMode::Interpolated:
+        return "INTERPOLATED";
+    case RemotePresentationMode::Comparison:
         return "COMPARISON";
     }
     return "UNKNOWN";
@@ -103,6 +122,7 @@ struct SpectatorSettings {
 struct DebugSettings {
     bool enabled{true};
     PresentationMode presentation_mode{PresentationMode::Interpolated};
+    RemotePresentationMode remote_presentation_mode{RemotePresentationMode::Extrapolated};
     PredictionLogLevel prediction_log_level{PredictionLogLevel::Off};
     std::size_t correction_history_count{kDefaultCorrectionHistoryCount};
 };

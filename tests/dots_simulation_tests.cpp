@@ -456,6 +456,7 @@ TEST_CASE("Checkpoint replay regenerates deterministic typed event journals",
                            .food_entity_id = *food,
                            .consumer_entity_id = *first,
                            .consumer_owner_id = first_owner,
+                           .food_position = {},
                            .transferred_mass = dots::simulation::kFoodMass,
                        });
     CHECK(dots::simulation::simulation_event_key(first_journal.events[0]) ==
@@ -490,6 +491,8 @@ TEST_CASE("Checkpoint replay regenerates deterministic typed event journals",
                            .victim_entity_id = *second,
                            .absorber_owner_id = first_owner,
                            .victim_owner_id = second_owner,
+                           .absorber_position = {0.2F, 0.0F},
+                           .victim_position = {0.2F, 0.0F},
                            .transferred_mass = dots::simulation::kInitialPlayerMass,
                        });
     CHECK(dots::simulation::simulation_event_key(second_journal.events[0]) ==
@@ -656,6 +659,8 @@ TEST_CASE("A strictly larger player absorbs a touching opponent and emits a valu
                                   .victim_entity_id = *victim,
                                   .absorber_owner_id = dots::simulation::PlayerOwnerId{10},
                                   .victim_owner_id = dots::simulation::PlayerOwnerId{20},
+                                  .absorber_position = {},
+                                  .victim_position = {},
                                   .transferred_mass = dots::simulation::kInitialPlayerMass,
                               });
 

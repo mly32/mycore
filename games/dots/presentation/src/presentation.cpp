@@ -289,6 +289,250 @@ std::size_t PredictionCorrectionHistory::remote_count() const noexcept {
     }));
 }
 
+PersistentWorldPresentation::SemanticEntityKey
+PersistentWorldPresentation::key_for(const CircleInstance& circle) {
+    return {
+        .kind = circle.kind == CircleKind::Food ? protocol::EntityKind::Food
+                                                : protocol::EntityKind::Player,
+        .entity_id = circle.prediction_key ? protocol::EntityId{} : circle.entity_id,
+        .prediction_key = circle.prediction_key,
+    };
+}
+
+CircleInstance PersistentWorldPresentation::evaluate(
+    const Track& track, float fixed_tick_alpha, std::chrono::steady_clock::time_point now) const {
+    auto result = track.current;
+    if (track.current.source == PresentationSource::Predicted &&
+        track.previous.source == PresentationSource::Predicted &&
+        track.previous.source_revision != track.current.source_revision) {
+        result.position = track.previous.position +
+                          ((track.current.position - track.previous.position) * fixed_tick_alpha);
+        result.mass =
+            track.previous.mass + ((track.current.mass - track.previous.mass) * fixed_tick_alpha);
+        result.radius = track.previous.radius +
+                        ((track.current.radius - track.previous.radius) * fixed_tick_alpha);
+    }
+    if (track.correction_active) {
+        const auto age = std::max(now - track.correction_started_at,
+                                  std::chrono::steady_clock::duration::zero());
+        const auto progress = std::clamp(
+            std::chrono::duration<float>{age}.count() /
+                std::chrono::duration<float>{kStructuralPresentationSmoothingDuration}.count(),
+            0.0F,
+            1.0F);
+        result.position += track.correction_offset * (1.0F - progress);
+        result.radius += track.radius_correction * (1.0F - progress);
+        result.radius = std::max(result.radius, 0.0F);
+    }
+    return result;
+}
+
+FrameData PersistentWorldPresentation::compose(const FrameData& desired,
+                                               float fixed_tick_alpha,
+                                               std::uint64_t hard_resync_sequence,
+                                               protocol::EntityId motion_trail_entity_id,
+                                               std::chrono::steady_clock::time_point now) {
+    if (!std::isfinite(fixed_tick_alpha) || fixed_tick_alpha < 0.0F || fixed_tick_alpha > 1.0F) {
+        throw std::runtime_error{"Dots persistent presentation encountered invalid tick alpha"};
+    }
+    if (!initialized_ || hard_resync_sequence != last_hard_resync_sequence_) {
+        tracks_.clear();
+        motion_trail_.clear();
+        last_hard_resync_sequence_ = hard_resync_sequence;
+        initialized_ = true;
+    }
+
+    const auto gameplay_circle = [](const CircleInstance& circle) {
+        return circle.kind == CircleKind::Food || circle.kind == CircleKind::Player;
+    };
+    std::vector<SemanticEntityKey> observed_keys;
+    observed_keys.reserve(desired.circles.size());
+    for (const auto& circle : desired.circles) {
+        if (!gameplay_circle(circle)) {
+            continue;
+        }
+        if (!circle.entity_id.is_valid() || !finite(circle.position) ||
+            !std::isfinite(circle.mass) || circle.mass <= 0.0F || !std::isfinite(circle.radius) ||
+            circle.radius <= 0.0F) {
+            throw std::runtime_error{"Dots persistent presentation encountered invalid entity"};
+        }
+        const auto key = key_for(circle);
+        observed_keys.push_back(key);
+        const auto [iterator, inserted] =
+            tracks_.try_emplace(key,
+                                Track{
+                                    .previous = circle,
+                                    .current = circle,
+                                    .correction_offset = {},
+                                    .radius_correction = 0.0F,
+                                    .correction_started_at = {},
+                                    .last_seen_at = now,
+                                    .disappearing_since = {},
+                                    .last_entity_id = circle.entity_id,
+                                    .correction_active = false,
+                                    .disappearing = false,
+                                });
+        if (inserted) {
+            continue;
+        }
+
+        auto& track = iterator->second;
+        const auto previous_visual = evaluate(track, fixed_tick_alpha, now);
+        const auto source_changed = track.current.source != circle.source;
+        const auto revision_changed = track.current.source_revision != circle.source_revision;
+        const auto identity_remapped = track.last_entity_id != circle.entity_id;
+        const auto same_revision_prediction_changed =
+            circle.source == PresentationSource::Predicted && !revision_changed &&
+            (track.current.position != circle.position || track.current.radius != circle.radius);
+        const auto smooth_change =
+            source_changed || identity_remapped ||
+            (circle.source != PresentationSource::Predicted && revision_changed) ||
+            same_revision_prediction_changed;
+
+        if (circle.source == PresentationSource::Predicted && revision_changed && !source_changed) {
+            track.previous = track.current;
+            track.current = circle;
+        } else if (circle.source != PresentationSource::Predicted || source_changed ||
+                   identity_remapped || same_revision_prediction_changed) {
+            track.previous = circle;
+            track.current = circle;
+        }
+        if (smooth_change) {
+            track.correction_offset = previous_visual.position - circle.position;
+            track.radius_correction = previous_visual.radius - circle.radius;
+            track.correction_started_at = now;
+            track.correction_active = track.correction_offset != mycore::math::Vector2{} ||
+                                      track.radius_correction != 0.0F;
+            if (track.correction_active) {
+                ++statistics_.smoothed_correction_count;
+                statistics_.maximum_smoothed_distance =
+                    std::max(statistics_.maximum_smoothed_distance,
+                             mycore::math::length(track.correction_offset));
+            }
+        }
+        if (source_changed) {
+            ++statistics_.source_handoff_count;
+        }
+        if (identity_remapped) {
+            ++statistics_.identity_remap_count;
+        }
+        track.last_entity_id = circle.entity_id;
+        track.last_seen_at = now;
+        track.disappearing = false;
+    }
+
+    for (auto& [key, track] : tracks_) {
+        if (std::ranges::find(observed_keys, key) == observed_keys.end() && !track.disappearing) {
+            track.disappearing = true;
+            track.disappearing_since = now;
+        }
+    }
+
+    FrameData result{.camera = desired.camera, .circles = {}};
+    result.circles.reserve(desired.circles.size() + tracks_.size() + motion_trail_.size());
+    for (const auto& circle : desired.circles) {
+        if (!gameplay_circle(circle)) {
+            result.circles.push_back(circle);
+            continue;
+        }
+        const auto found = tracks_.find(key_for(circle));
+        if (found != tracks_.end()) {
+            result.circles.push_back(evaluate(found->second, fixed_tick_alpha, now));
+        }
+    }
+
+    for (auto iterator = tracks_.begin(); iterator != tracks_.end();) {
+        auto& track = iterator->second;
+        if (!track.disappearing) {
+            ++iterator;
+            continue;
+        }
+        const auto age =
+            std::max(now - track.disappearing_since, std::chrono::steady_clock::duration::zero());
+        const auto progress = std::clamp(
+            std::chrono::duration<float>{age}.count() /
+                std::chrono::duration<float>{kStructuralPresentationSmoothingDuration}.count(),
+            0.0F,
+            1.0F);
+        if (progress >= 1.0F) {
+            iterator = tracks_.erase(iterator);
+            continue;
+        }
+        auto fading = evaluate(track, fixed_tick_alpha, now);
+        fading.kind = track.current.kind == CircleKind::Food ? CircleKind::FoodStructuralFade
+                                                             : CircleKind::StructuralFade;
+        fading.radius *= 1.0F - progress;
+        fading.opacity *= 1.0F - progress;
+        result.circles.push_back(fading);
+        ++iterator;
+    }
+
+    const auto trail_entity =
+        std::ranges::find_if(result.circles, [motion_trail_entity_id](const auto& circle) {
+            return circle.kind == CircleKind::Player && circle.entity_id == motion_trail_entity_id;
+        });
+    if (trail_entity != result.circles.end() && motion_trail_entity_id.is_valid()) {
+        const auto should_append =
+            motion_trail_.empty() ||
+            (now - motion_trail_.back().observed_at >= std::chrono::milliseconds{30} &&
+             mycore::math::length(trail_entity->position - motion_trail_.back().position) >= 0.05F);
+        if (should_append) {
+            if (motion_trail_.size() == kMotionTrailCapacity) {
+                motion_trail_.erase(motion_trail_.begin());
+            }
+            motion_trail_.push_back({
+                .position = trail_entity->position,
+                .radius = trail_entity->radius,
+                .observed_at = now,
+            });
+        }
+    }
+    const auto trail_expiry = now - kMotionTrailRetentionDuration;
+    std::erase_if(motion_trail_, [trail_expiry](const TrailSample& sample) {
+        return sample.observed_at <= trail_expiry;
+    });
+    for (const auto& sample : motion_trail_) {
+        const auto age =
+            std::max(now - sample.observed_at, std::chrono::steady_clock::duration::zero());
+        const auto progress =
+            std::clamp(std::chrono::duration<float>{age}.count() /
+                           std::chrono::duration<float>{kMotionTrailRetentionDuration}.count(),
+                       0.0F,
+                       1.0F);
+        result.circles.push_back({
+            .position = sample.position,
+            .mass = 1.0F,
+            .radius = std::max(sample.radius * 0.18F, 0.05F),
+            .kind = CircleKind::MotionTrail,
+            .entity_id = motion_trail_entity_id,
+            .opacity = (1.0F - progress) * 0.55F,
+            .prediction_key = std::nullopt,
+            .source = PresentationSource::State,
+            .source_revision = 0,
+        });
+    }
+
+    statistics_.track_count = tracks_.size();
+    statistics_.structural_fade_count =
+        static_cast<std::size_t>(std::ranges::count_if(tracks_, [](const auto& entry) {
+            return entry.second.disappearing;
+        }));
+    statistics_.motion_trail_count = motion_trail_.size();
+    return result;
+}
+
+void PersistentWorldPresentation::reset() noexcept {
+    tracks_.clear();
+    motion_trail_.clear();
+    statistics_ = {};
+    last_hard_resync_sequence_ = 0;
+    initialized_ = false;
+}
+
+const PersistentPresentationStatistics& PersistentWorldPresentation::statistics() const noexcept {
+    return statistics_;
+}
+
 FrameData extract_frame(const simulation::World& world,
                         mycore::math::Vector2 camera,
                         std::span<const EntityPositionOverride> position_overrides) {
@@ -320,6 +564,10 @@ FrameData extract_frame(const simulation::World& world,
                 .radius = *radius,
                 .kind = kind,
                 .entity_id = protocol::EntityId{entity_id.value()},
+                .opacity = 1.0F,
+                .prediction_key = std::nullopt,
+                .source = PresentationSource::State,
+                .source_revision = 0,
             });
         }
     };
@@ -362,6 +610,10 @@ FrameData extract_interpolated_follow_frame(const simulation::World& world,
             .radius = *radius,
             .kind = CircleKind::PositionGhost,
             .entity_id = protocol::EntityId{follow_target.entity_id.value()},
+            .opacity = 1.0F,
+            .prediction_key = std::nullopt,
+            .source = PresentationSource::State,
+            .source_revision = 0,
         });
     }
     return frame;
@@ -388,6 +640,10 @@ FrameData extract_replicated_frame(const replication::ReplicatedWorld& world,
             .kind =
                 entity.kind == protocol::EntityKind::Food ? CircleKind::Food : CircleKind::Player,
             .entity_id = entity.entity_id,
+            .opacity = 1.0F,
+            .prediction_key = entity.prediction_key,
+            .source = PresentationSource::State,
+            .source_revision = world.snapshot_id().value(),
         });
     }
     return frame;
@@ -430,6 +686,10 @@ FrameData extract_predicted_replicated_frame(const replication::ReplicatedWorld&
             .radius = radius,
             .kind = kind,
             .entity_id = controlled_player.entity_id,
+            .opacity = 1.0F,
+            .prediction_key = std::nullopt,
+            .source = PresentationSource::State,
+            .source_revision = 0,
         });
     };
     if (controlled_player.show_prediction_layers) {
@@ -455,6 +715,9 @@ FrameData extract_predicted_replicated_frame(const replication::ReplicatedWorld&
                 .kind = CircleKind::PreCorrectionGhost,
                 .entity_id = correction.entity_id,
                 .opacity = correction.opacity,
+                .prediction_key = std::nullopt,
+                .source = PresentationSource::State,
+                .source_revision = 0,
             });
         }
     }
@@ -477,7 +740,9 @@ FrameData extract_remote_interpolated_predicted_frame_impl(
     std::span<const protocol::EntityId> predicted_scope_entity_ids,
     const RemotePresentationFrame& remotes,
     std::span<const RemoteEntityEndpoints> remote_endpoints,
-    const PredictedReplicatedPlayer& controlled_player) {
+    const PredictedReplicatedPlayer& controlled_player,
+    PresentationSource remote_source,
+    std::uint64_t remote_revision) {
     if (!finite(controlled_player.presentation_position) ||
         !finite(controlled_player.predicted_position) ||
         (controlled_player.pre_correction_position &&
@@ -527,6 +792,10 @@ FrameData extract_remote_interpolated_predicted_frame_impl(
             .kind =
                 entity.kind == protocol::EntityKind::Food ? CircleKind::Food : CircleKind::Player,
             .entity_id = entity.entity_id,
+            .opacity = 1.0F,
+            .prediction_key = entity.prediction_key,
+            .source = remote_source,
+            .source_revision = remote_revision,
         });
     }
     auto rendered_controlled = false;
@@ -539,6 +808,10 @@ FrameData extract_remote_interpolated_predicted_frame_impl(
                 .radius = simulation::radius_for_mass(checkpoint.rules.food_mass),
                 .kind = CircleKind::Food,
                 .entity_id = protocol::EntityId{food.entity_id.value()},
+                .opacity = 1.0F,
+                .prediction_key = std::nullopt,
+                .source = PresentationSource::Predicted,
+                .source_revision = checkpoint.tick.value(),
             });
         }
         for (const auto& player : checkpoint.players) {
@@ -551,6 +824,20 @@ FrameData extract_remote_interpolated_predicted_frame_impl(
                 .radius = simulation::radius_for_mass(player.mass),
                 .kind = CircleKind::Player,
                 .entity_id = entity_id,
+                .opacity = 1.0F,
+                .prediction_key =
+                    player.prediction_key
+                        ? std::optional{protocol::PredictionKey{
+                              .owner_id =
+                                  protocol::PlayerOwnerId{player.prediction_key->owner_id.value()},
+                              .input_id =
+                                  protocol::InputSequenceId{
+                                      player.prediction_key->input_id.value()},
+                              .child_ordinal = player.prediction_key->child_ordinal,
+                          }}
+                        : std::nullopt,
+                .source = controlled ? PresentationSource::State : PresentationSource::Predicted,
+                .source_revision = checkpoint.tick.value(),
             });
         }
     }
@@ -561,6 +848,10 @@ FrameData extract_remote_interpolated_predicted_frame_impl(
             .radius = simulation::radius_for_mass(controlled_mass),
             .kind = CircleKind::Player,
             .entity_id = controlled_player.entity_id,
+            .opacity = 1.0F,
+            .prediction_key = std::nullopt,
+            .source = PresentationSource::State,
+            .source_revision = 0,
         });
     }
     const auto append_remote_endpoint = [&frame](const RemoteEntitySample& entity,
@@ -571,6 +862,10 @@ FrameData extract_remote_interpolated_predicted_frame_impl(
             .radius = simulation::radius_for_mass(entity.mass),
             .kind = kind,
             .entity_id = entity.entity_id,
+            .opacity = 1.0F,
+            .prediction_key = std::nullopt,
+            .source = PresentationSource::State,
+            .source_revision = 0,
         });
     };
     for (const auto& endpoints : remote_endpoints) {
@@ -599,6 +894,10 @@ FrameData extract_remote_interpolated_predicted_frame_impl(
                     .radius = 0.0F,
                     .kind = kConnectorKinds[index],
                     .entity_id = older.entity_id,
+                    .opacity = 1.0F,
+                    .prediction_key = std::nullopt,
+                    .source = PresentationSource::State,
+                    .source_revision = 0,
                 });
             }
         }
@@ -613,6 +912,10 @@ FrameData extract_remote_interpolated_predicted_frame_impl(
             .radius = radius,
             .kind = kind,
             .entity_id = controlled_player.entity_id,
+            .opacity = 1.0F,
+            .prediction_key = std::nullopt,
+            .source = PresentationSource::State,
+            .source_revision = 0,
         });
     };
     if (controlled_player.show_prediction_layers) {
@@ -638,6 +941,9 @@ FrameData extract_remote_interpolated_predicted_frame_impl(
                 .kind = CircleKind::PreCorrectionGhost,
                 .entity_id = correction.entity_id,
                 .opacity = correction.opacity,
+                .prediction_key = std::nullopt,
+                .source = PresentationSource::State,
+                .source_revision = 0,
             });
         }
     }
@@ -657,7 +963,14 @@ extract_remote_interpolated_predicted_frame(const replication::ReplicatedWorld& 
                                             std::span<const RemoteEntityEndpoints> remote_endpoints,
                                             const PredictedReplicatedPlayer& controlled_player) {
     return extract_remote_interpolated_predicted_frame_impl(
-        world, nullptr, {}, remotes, remote_endpoints, controlled_player);
+        world,
+        nullptr,
+        {},
+        remotes,
+        remote_endpoints,
+        controlled_player,
+        PresentationSource::Interpolated,
+        remotes.bracket ? remotes.bracket->newer_snapshot_id.value() : 0);
 }
 
 FrameData extract_remote_interpolated_predicted_frame(
@@ -667,12 +980,63 @@ FrameData extract_remote_interpolated_predicted_frame(
     const RemotePresentationFrame& remotes,
     std::span<const RemoteEntityEndpoints> remote_endpoints,
     const PredictedReplicatedPlayer& controlled_player) {
+    return extract_remote_interpolated_predicted_frame_impl(
+        world,
+        &predicted_world,
+        predicted_scope_entity_ids,
+        remotes,
+        remote_endpoints,
+        controlled_player,
+        PresentationSource::Interpolated,
+        remotes.bracket ? remotes.bracket->newer_snapshot_id.value() : 0);
+}
+
+FrameData extract_remote_extrapolated_predicted_frame(
+    const replication::ReplicatedWorld& world,
+    const simulation::World& predicted_world,
+    std::span<const protocol::EntityId> predicted_scope_entity_ids,
+    const RemoteExtrapolationFrame& remotes,
+    std::span<const RemoteEntityEndpoints> remote_endpoints,
+    const PredictedReplicatedPlayer& controlled_player) {
+    const auto compatible = RemotePresentationFrame{
+        .entities = remotes.entities,
+        .bracket = std::nullopt,
+        .presentation_tick = static_cast<double>(remotes.server_tick) + remotes.extrapolation_ticks,
+        .ready = remotes.ready,
+        .holding = remotes.holding,
+    };
     return extract_remote_interpolated_predicted_frame_impl(world,
                                                             &predicted_world,
                                                             predicted_scope_entity_ids,
-                                                            remotes,
+                                                            compatible,
                                                             remote_endpoints,
-                                                            controlled_player);
+                                                            controlled_player,
+                                                            PresentationSource::Extrapolated,
+                                                            remotes.snapshot_id.value());
+}
+
+void append_interpolated_remote_comparison(
+    FrameData& frame,
+    const RemotePresentationFrame& interpolated,
+    std::span<const protocol::EntityId> excluded_entity_ids) {
+    for (const auto& entity : interpolated.entities) {
+        if (entity.kind != protocol::EntityKind::Player ||
+            std::ranges::find(excluded_entity_ids, entity.entity_id) != excluded_entity_ids.end()) {
+            continue;
+        }
+        frame.circles.push_back({
+            .position = entity.position,
+            .mass = entity.mass,
+            .radius = simulation::radius_for_mass(entity.mass),
+            .kind = CircleKind::RemoteInterpolatedComparisonGhost,
+            .entity_id = entity.entity_id,
+            .opacity = 1.0F,
+            .prediction_key = entity.prediction_key,
+            .source = PresentationSource::Interpolated,
+            .source_revision =
+                interpolated.bracket ? interpolated.bracket->newer_snapshot_id.value() : 0,
+        });
+    }
 }
 
 FrameData
@@ -697,6 +1061,10 @@ extract_remote_interpolated_spectator_frame(const RemotePresentationFrame& remot
             .kind =
                 entity.kind == protocol::EntityKind::Food ? CircleKind::Food : CircleKind::Player,
             .entity_id = entity.entity_id,
+            .opacity = 1.0F,
+            .prediction_key = entity.prediction_key,
+            .source = PresentationSource::Interpolated,
+            .source_revision = remotes.bracket ? remotes.bracket->newer_snapshot_id.value() : 0,
         });
     }
 
@@ -712,6 +1080,10 @@ extract_remote_interpolated_spectator_frame(const RemotePresentationFrame& remot
             .radius = simulation::radius_for_mass(entity.mass),
             .kind = kind,
             .entity_id = entity.entity_id,
+            .opacity = 1.0F,
+            .prediction_key = std::nullopt,
+            .source = PresentationSource::State,
+            .source_revision = 0,
         });
     };
     for (const auto& endpoints : remote_endpoints) {
@@ -740,6 +1112,10 @@ extract_remote_interpolated_spectator_frame(const RemotePresentationFrame& remot
                     .radius = 0.0F,
                     .kind = kConnectorKinds[index],
                     .entity_id = older.entity_id,
+                    .opacity = 1.0F,
+                    .prediction_key = std::nullopt,
+                    .source = PresentationSource::State,
+                    .source_revision = 0,
                 });
             }
         }
@@ -809,6 +1185,13 @@ mycore::render_2d::DrawList build_draw_list(const FrameData& frame, const Settin
                            settings);
             continue;
         }
+        if (circle.kind == CircleKind::RemoteInterpolatedComparisonGhost) {
+            auto color = settings.remote_older_endpoint_outline;
+            color.alpha *= circle.opacity;
+            append_outline(
+                draw_list, circle, color, kAuthoritativeOutlineRadiusOffsetPixels, settings);
+            continue;
+        }
         if (circle.kind == CircleKind::RemoteNewerEndpointGhost) {
             append_outline(draw_list,
                            circle,
@@ -833,6 +1216,47 @@ mycore::render_2d::DrawList build_draw_list(const FrameData& frame, const Settin
                 .radius =
                     kRemoteInterpolationConnectorRadiusPixels / settings.pixels_per_world_unit,
                 .color = connector_color,
+                .outline_color = {},
+                .outline_width_pixels = 0.0F,
+            });
+            continue;
+        }
+        if (circle.kind == CircleKind::MotionTrail || circle.kind == CircleKind::StructuralFade ||
+            circle.kind == CircleKind::FoodStructuralFade) {
+            auto color = circle.kind == CircleKind::FoodStructuralFade
+                             ? settings.food
+                             : player_color(circle.entity_id, settings);
+            color.alpha *= circle.opacity;
+            draw_list.circles.push_back({
+                .center = circle.position,
+                .radius = circle.radius,
+                .color = color,
+                .outline_color = {},
+                .outline_width_pixels = 0.0F,
+            });
+            continue;
+        }
+        if (circle.kind == CircleKind::SplitFlash || circle.kind == CircleKind::SplitLaunch ||
+            circle.kind == CircleKind::ConsumeFlash ||
+            circle.kind == CircleKind::ConfirmedAbsorption) {
+            auto color = circle.kind == CircleKind::ConsumeFlash
+                             ? lerp(settings.food, settings.player_growth, 0.5F)
+                             : settings.player_growth;
+            color.alpha *= circle.opacity;
+            append_outline(draw_list,
+                           circle,
+                           color,
+                           circle.kind == CircleKind::ConfirmedAbsorption ? 3.0F : 1.5F,
+                           settings);
+            continue;
+        }
+        if (circle.kind == CircleKind::FoodPop || circle.kind == CircleKind::ConsumeCollapse) {
+            auto color = settings.food;
+            color.alpha *= circle.opacity;
+            draw_list.circles.push_back({
+                .center = circle.position,
+                .radius = circle.radius,
+                .color = color,
                 .outline_color = {},
                 .outline_width_pixels = 0.0F,
             });

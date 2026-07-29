@@ -392,6 +392,15 @@ non-rewindable. Current `PredictOnce` and `ConfirmOnce` tombstones live for the 
 `PredictCancelable` entry is erased and may be activated again if that semantic key legitimately
 returns.
 
+`ConsequenceDispatchReport::handlers` gives the per-batch delta for every statically registered
+handler, including its tuple index and declared policy. `router.handler_statistics()` exposes
+the corresponding session-cumulative totals. Use these values to identify a specific handler;
+aggregate `report.statistics` alone cannot distinguish two handlers that subscribe to the same
+event type with different policies. Dots' production adapter in
+`games/dots/presentation/` is the concrete example: state-derived movement/merge visuals remain
+outside the router, while split, food, absorption, and confirmed HUD feedback use the three
+policies.
+
 ## Failure and recovery
 
 Inspect both `TimelineFailure::code` and its optional game-defined `model_error`.

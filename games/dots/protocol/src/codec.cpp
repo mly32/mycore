@@ -30,13 +30,13 @@ constexpr std::size_t kInputPacketPrefixBytes = 9;
 constexpr std::size_t kInputSampleBytes = 18;
 constexpr std::size_t kFullSnapshotBaseBytes = 57;
 constexpr std::size_t kOwnedEntityIdBytes = 4;
-constexpr std::size_t kPlayerAbsorbedBytes = 24;
+constexpr std::size_t kPlayerAbsorbedBytes = 40;
 constexpr std::size_t kOwnerStateBytes = 28;
 constexpr std::size_t kEntityStateBaseBytes = 34;
 constexpr std::size_t kPredictionKeyBytes = 10;
 constexpr std::size_t kAuthorityReceiptPrefixBytes = 5;
-constexpr std::size_t kFoodConsumedBytes = 20;
-constexpr std::size_t kPlayerSplitBytes = 30;
+constexpr std::size_t kFoodConsumedBytes = 28;
+constexpr std::size_t kPlayerSplitBytes = 46;
 constexpr std::size_t kPiecesMergedBytes = 20;
 constexpr float kMaximumMovementLengthSquared = 1.0001F;
 
@@ -296,7 +296,9 @@ template <class Values, class Projection>
         event.absorber_owner_id == event.victim_owner_id) {
         return CodecError::InvalidId;
     }
-    if (!std::isfinite(event.transferred_mass)) {
+    if (!std::isfinite(event.absorber_position_x) || !std::isfinite(event.absorber_position_y) ||
+        !std::isfinite(event.victim_position_x) || !std::isfinite(event.victim_position_y) ||
+        !std::isfinite(event.transferred_mass)) {
         return CodecError::InvalidNumber;
     }
     if (event.transferred_mass <= 0.0F || event.server_tick > snapshot_tick) {
@@ -316,7 +318,9 @@ template <class Values, class Projection>
                     event.food_entity_id == event.consumer_entity_id) {
                     return CodecError::InvalidId;
                 }
-                if (!std::isfinite(event.transferred_mass)) {
+                if (!std::isfinite(event.food_position_x) ||
+                    !std::isfinite(event.food_position_y) ||
+                    !std::isfinite(event.transferred_mass)) {
                     return CodecError::InvalidNumber;
                 }
                 if (event.transferred_mass <= 0.0F || event.server_tick > snapshot_tick) {
@@ -330,7 +334,11 @@ template <class Values, class Projection>
                     event.parent_entity_id == event.child_entity_id) {
                     return CodecError::InvalidId;
                 }
-                if (!std::isfinite(event.parent_mass) || !std::isfinite(event.child_mass)) {
+                if (!std::isfinite(event.origin_position_x) ||
+                    !std::isfinite(event.origin_position_y) ||
+                    !std::isfinite(event.initial_launch_velocity_x) ||
+                    !std::isfinite(event.initial_launch_velocity_y) ||
+                    !std::isfinite(event.parent_mass) || !std::isfinite(event.child_mass)) {
                     return CodecError::InvalidNumber;
                 }
                 if (event.parent_mass <= 0.0F || event.child_mass <= 0.0F ||
@@ -694,6 +702,10 @@ void encode_absorption(Writer& writer, const PlayerAbsorbed& event) {
     writer.write_u32(event.victim_entity_id.value());
     writer.write_u32(event.absorber_owner_id.value());
     writer.write_u32(event.victim_owner_id.value());
+    writer.write_float(event.absorber_position_x);
+    writer.write_float(event.absorber_position_y);
+    writer.write_float(event.victim_position_x);
+    writer.write_float(event.victim_position_y);
     writer.write_float(event.transferred_mass);
 }
 
@@ -704,7 +716,10 @@ void encode_absorption(Writer& writer, const PlayerAbsorbed& event) {
     std::uint32_t victim_owner_id{};
     if (!reader.read_u32(event.server_tick) || !reader.read_u32(absorber_entity_id) ||
         !reader.read_u32(victim_entity_id) || !reader.read_u32(absorber_owner_id) ||
-        !reader.read_u32(victim_owner_id) || !reader.read_float(event.transferred_mass)) {
+        !reader.read_u32(victim_owner_id) || !reader.read_float(event.absorber_position_x) ||
+        !reader.read_float(event.absorber_position_y) ||
+        !reader.read_float(event.victim_position_x) ||
+        !reader.read_float(event.victim_position_y) || !reader.read_float(event.transferred_mass)) {
         return false;
     }
     event.absorber_entity_id = EntityId{absorber_entity_id};
@@ -724,6 +739,8 @@ void encode_authority_event(Writer& writer, const AuthorityEvent& event) {
                 writer.write_u32(value.food_entity_id.value());
                 writer.write_u32(value.consumer_entity_id.value());
                 writer.write_u32(value.consumer_owner_id.value());
+                writer.write_float(value.food_position_x);
+                writer.write_float(value.food_position_y);
                 writer.write_float(value.transferred_mass);
             } else if constexpr (std::is_same_v<Event, PlayerAbsorbed>) {
                 writer.write_u8(static_cast<std::uint8_t>(AuthorityEventKind::PlayerAbsorbed));
@@ -736,6 +753,10 @@ void encode_authority_event(Writer& writer, const AuthorityEvent& event) {
                 writer.write_u16(value.child_ordinal);
                 writer.write_u32(value.parent_entity_id.value());
                 writer.write_u32(value.child_entity_id.value());
+                writer.write_float(value.origin_position_x);
+                writer.write_float(value.origin_position_y);
+                writer.write_float(value.initial_launch_velocity_x);
+                writer.write_float(value.initial_launch_velocity_y);
                 writer.write_float(value.parent_mass);
                 writer.write_float(value.child_mass);
             } else {
@@ -921,6 +942,8 @@ void encode_payload(Writer& writer, const FullSnapshot& message) {
         std::uint32_t consumer_owner_id{};
         if (!reader.read_u32(value.server_tick) || !reader.read_u32(food_entity_id) ||
             !reader.read_u32(consumer_entity_id) || !reader.read_u32(consumer_owner_id) ||
+            !reader.read_float(value.food_position_x) ||
+            !reader.read_float(value.food_position_y) ||
             !reader.read_float(value.transferred_mass)) {
             return CodecError::Truncated;
         }
@@ -947,6 +970,10 @@ void encode_payload(Writer& writer, const FullSnapshot& message) {
         if (!reader.read_u32(value.server_tick) || !reader.read_u32(owner_id) ||
             !reader.read_u32(input_id) || !reader.read_u16(value.child_ordinal) ||
             !reader.read_u32(parent_entity_id) || !reader.read_u32(child_entity_id) ||
+            !reader.read_float(value.origin_position_x) ||
+            !reader.read_float(value.origin_position_y) ||
+            !reader.read_float(value.initial_launch_velocity_x) ||
+            !reader.read_float(value.initial_launch_velocity_y) ||
             !reader.read_float(value.parent_mass) || !reader.read_float(value.child_mass)) {
             return CodecError::Truncated;
         }

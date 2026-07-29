@@ -439,11 +439,12 @@ their remaining presentation.
 | Confirmed absorption/defeat | Server-confirmed durable result | Kill/defeat banner and stinger hook | `ConfirmOnce` |
 | Merge | Topology and combined mass | Blob geometry and motion | State-derived commit projection |
 
-Dots currently has no audio backend. Step 4 demonstrates the generic policies with real Dots
-split and absorption events plus deterministic handlers: a predicted split drives both
-predicted-once and cancelable handlers, rejection cancels the latter, confirmation finalizes it,
-and absorption reaches a confirmed-only handler only through authority. Persistent visual cue
-handlers remain step 7 work; Feature 14 does not introduce a speculative engine audio subsystem.
+Dots currently has no audio backend. Its production presentation adapter demonstrates the
+generic policies with real Dots split, food, and absorption events: a predicted split drives
+both predicted-once and cancelable visuals, rejection fades the latter, confirmation finalizes
+it, and absorption reaches a confirmed-only HUD/stinger hook only through authority. The same
+adapter is used by offline and networked composition roots. Feature 14 does not introduce a
+speculative engine audio subsystem.
 
 ## Authoritative Event Receipts
 
@@ -468,10 +469,10 @@ replication model. The inbox validates a gap-free sequence and rejects live sema
 but acceptance alone does not advance the ACK. The network client converts pending receipts into
 confirmed events on the same transactional authority frame (or an authority-only batch without a
 timeline), queues the resulting batch, and only then advances its published/ACK frontier.
-Pre-welcome receipts remain pending; a terminal receipt publishes before prediction is cleared on
-entry to Spectating. Payloads and live key records are pruned only after the server echoes
-retirement. Persistent consequence handlers attach in Feature 14 step 7; until then, the
-composition root drains batches without exposing audio or particle side effects.
+Pre-welcome receipts remain pending; the presentation router begins consuming them only after
+the local owner is known. A terminal receipt publishes before prediction is cleared on entry to
+Spectating. Payloads and live key records are pruned only after the server echoes retirement.
+Handler failures are counted and logged without retrying or failing the authoritative session.
 
 Repeated Feature 13 session fields remain authoritative state. Receipts control one-time
 consequence delivery and do not replace those state fields.
@@ -500,6 +501,11 @@ collision or gameplay logic for at most six ticks/200 ms, then holds. This visua
 - Coexists with Feature 12 delayed interpolation as spectator mode, fallback, and A/B comparison.
 
 Extrapolation makes presentation look newer; it is not more authoritative.
+Playing clients default to this extrapolated source; configuration can select delayed
+interpolation or an A/B mode that draws extrapolation plus an interpolated outline. Spectators
+always use delayed interpolation. Persistent semantic tracks use `PredictionKey` when present
+and entity ID otherwise, interpolate consecutive predicted fixed ticks, and decay correction,
+source-handoff, and remap offsets over 100 ms.
 
 ## Adaptive Command Buffer
 
@@ -551,7 +557,8 @@ Feature 14 exposes:
 - Predicted spawn pending/matched/rejected/authority-only/ambiguous counts.
 - Event keys and `FirstPredicted`, `Revised`, `Retracted`, `Confirmed`, and `AuthorityOnly`
   transition counts.
-- Per-policy delivered, suppressed, updated, canceled, and confirmed consequence counts.
+- Per-handler policy plus delivered, suppressed, revised, canceled, confirmed, and failure
+  counts, along with aggregate batch and transition totals.
 - Receipt queue/ACK depth and duplicate/conflict counts.
 - Authoritative, predicted, interpolated/extrapolated, pre-correction, and presentation layers.
 - A bounded recent pre-correction history shared by local and remote predicted entities. Remote

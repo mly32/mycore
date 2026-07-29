@@ -24,4 +24,29 @@ advance_player_position(mycore::math::Vector2 position,
                         mycore::math::Vector2 normalized_movement,
                         float speed_units_per_second = kPlayerSpeedUnitsPerSecond) noexcept;
 
+struct PlayerKinematicState {
+    mycore::math::Vector2 position;
+    mycore::math::Vector2 launch_velocity;
+
+    bool operator==(const PlayerKinematicState&) const = default;
+};
+
+// Shared movement/launch integration used by the authoritative World and presentation-only
+// extrapolation. The caller owns any additional causally dependent velocity, such as cohesion.
+// normalized_movement must already satisfy is_valid_player_movement.
+[[nodiscard]] mycore::math::Vector2
+decayed_launch_velocity(mycore::math::Vector2 launch_velocity,
+                        float decay_units_per_second_squared) noexcept;
+
+[[nodiscard]] mycore::math::Vector2
+player_kinematic_velocity(mycore::math::Vector2 normalized_movement,
+                          mycore::math::Vector2 launch_velocity,
+                          const WorldRules& rules) noexcept;
+
+[[nodiscard]] PlayerKinematicState
+advance_player_kinematics(PlayerKinematicState state,
+                          mycore::math::Vector2 normalized_movement,
+                          const WorldRules& rules,
+                          mycore::math::Vector2 additional_velocity = {}) noexcept;
+
 } // namespace dots::simulation

@@ -88,6 +88,7 @@ simulation::SimulationEvent to_simulation(const protocol::AuthorityEvent& event)
                     .food_entity_id = simulation::EntityId{value.food_entity_id.value()},
                     .consumer_entity_id = simulation::EntityId{value.consumer_entity_id.value()},
                     .consumer_owner_id = simulation::PlayerOwnerId{value.consumer_owner_id.value()},
+                    .food_position = {value.food_position_x, value.food_position_y},
                     .transferred_mass = value.transferred_mass,
                 };
             } else if constexpr (std::is_same_v<Event, protocol::PlayerAbsorbed>) {
@@ -97,6 +98,8 @@ simulation::SimulationEvent to_simulation(const protocol::AuthorityEvent& event)
                     .victim_entity_id = simulation::EntityId{value.victim_entity_id.value()},
                     .absorber_owner_id = simulation::PlayerOwnerId{value.absorber_owner_id.value()},
                     .victim_owner_id = simulation::PlayerOwnerId{value.victim_owner_id.value()},
+                    .absorber_position = {value.absorber_position_x, value.absorber_position_y},
+                    .victim_position = {value.victim_position_x, value.victim_position_y},
                     .transferred_mass = value.transferred_mass,
                 };
             } else if constexpr (std::is_same_v<Event, protocol::PlayerSplit>) {
@@ -107,6 +110,9 @@ simulation::SimulationEvent to_simulation(const protocol::AuthorityEvent& event)
                     .child_ordinal = value.child_ordinal,
                     .parent_entity_id = simulation::EntityId{value.parent_entity_id.value()},
                     .child_entity_id = simulation::EntityId{value.child_entity_id.value()},
+                    .origin_position = {value.origin_position_x, value.origin_position_y},
+                    .initial_launch_velocity = {value.initial_launch_velocity_x,
+                                                value.initial_launch_velocity_y},
                     .parent_mass = value.parent_mass,
                     .child_mass = value.child_mass,
                 };
@@ -137,6 +143,8 @@ AuthorityEventBuildResult to_protocol(const simulation::SimulationEvent& event) 
                     .food_entity_id = to_protocol(value.food_entity_id),
                     .consumer_entity_id = to_protocol(value.consumer_entity_id),
                     .consumer_owner_id = to_protocol(value.consumer_owner_id),
+                    .food_position_x = value.food_position.x,
+                    .food_position_y = value.food_position.y,
                     .transferred_mass = value.transferred_mass,
                 }};
             } else if constexpr (std::is_same_v<Event, simulation::PlayerAbsorbed>) {
@@ -146,6 +154,10 @@ AuthorityEventBuildResult to_protocol(const simulation::SimulationEvent& event) 
                     .victim_entity_id = to_protocol(value.victim_entity_id),
                     .absorber_owner_id = to_protocol(value.absorber_owner_id),
                     .victim_owner_id = to_protocol(value.victim_owner_id),
+                    .absorber_position_x = value.absorber_position.x,
+                    .absorber_position_y = value.absorber_position.y,
+                    .victim_position_x = value.victim_position.x,
+                    .victim_position_y = value.victim_position.y,
                     .transferred_mass = value.transferred_mass,
                 }};
             } else if constexpr (std::is_same_v<Event, simulation::PlayerSplit>) {
@@ -156,6 +168,10 @@ AuthorityEventBuildResult to_protocol(const simulation::SimulationEvent& event) 
                     .child_ordinal = value.child_ordinal,
                     .parent_entity_id = to_protocol(value.parent_entity_id),
                     .child_entity_id = to_protocol(value.child_entity_id),
+                    .origin_position_x = value.origin_position.x,
+                    .origin_position_y = value.origin_position.y,
+                    .initial_launch_velocity_x = value.initial_launch_velocity.x,
+                    .initial_launch_velocity_y = value.initial_launch_velocity.y,
                     .parent_mass = value.parent_mass,
                     .child_mass = value.child_mass,
                 }};

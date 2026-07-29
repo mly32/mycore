@@ -142,11 +142,36 @@ whether a request is eligible.
 Remote entities inside the local interaction closure participate in rollback because their held
 level movement, momentum, topology, and collisions can affect an owned piece. The retained
 assumption uses their newest authoritative movement; unknown remote edge actions are neutral.
-Remote entities outside that closure render about six server ticks (200 ms) behind newest known
-authority, interpolating between two known samples and holding on underrun. They do not run
-gameplay logic or extrapolation yet. See the
+While Playing, remote players outside that closure default to presentation-only extrapolation
+from the newest accepted authoritative movement and launch velocity. The client uses the shared
+movement/launch integrator for at most six ticks (200 ms), then holds; it does not run cohesion,
+collision, consumption, absorption, split, merge, or other gameplay there. A config switch can
+instead use six-tick delayed interpolation or overlay that delayed position for comparison.
+Spectators always use delayed interpolation and hold on underrun. See the
 [networked prediction and time reference](networked_prediction_reference.md) for state ownership
 and timing terminology.
+
+Presentation keeps semantic tracks by predicted spawn key when available and entity ID
+otherwise. Predicted fixed-tick poses interpolate with the client accumulator. Reconciliation,
+prediction-to-remote source changes, and authoritative child-ID remaps preserve the old visual
+pose and decay only the presentation residual over 100 ms. Removed circles fade for 100 ms, and
+the followed piece leaves an eight-sample/300 ms motion trail.
+
+Rollback-generated event journals drive Dots-owned consequence handlers only after an atomic
+timeline commit:
+
+| Mechanic | Visible feedback | Delivery behavior |
+|---|---|---|
+| Split | 180 ms flash | Predicted once; replay and confirmation cannot duplicate it. |
+| Split | Child launch ring/trail, up to one second | Revised, canceled, or confirmed through a keyed token. |
+| Food consumption | 250 ms four-particle food pop | Canceled with an 80 ms fade if rollback restores the food. |
+| Player absorption | 150 ms consume flash | Predicted once; one brief false positive is accepted. |
+| Player absorption | 300 ms victim-collapse pulse | Revised, canceled, or confirmed through a keyed token. |
+| Confirmed absorption | 1.5 second kill/defeat banner and monotonic stinger hook | Appears only from authority and only once. |
+| Merge | Survivor smoothing and consumed-piece fade | Derived from committed state rather than an event side effect. |
+
+Dots has no audio backend yet. The confirmed stinger sequence is an explicit future-audio hook;
+it does not play sound today.
 
 Player fill color is a deterministic hash of the authoritative entity ID, so the same player has
 the same color on every client for the life of that server world. Mass changes radius, not fill
@@ -155,7 +180,5 @@ color.
 ## Planned gameplay, not current rules
 
 Future plans may add scoring or winning, richer resource/energy mechanics, and additional
-cooldowns. Feature 14 still has to attach persistent presentation consequences, structural
-correction transitions, and bounded visual extrapolation outside the prediction closure. These
-must be specified here as they become implemented gameplay behavior; feature plans remain design
-documents until then.
+cooldowns. These remain unimplemented; feature plans remain design documents until the behavior
+is added here.

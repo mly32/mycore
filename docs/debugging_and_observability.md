@@ -16,13 +16,13 @@ but this guide must clearly distinguish implemented behavior from planned behavi
 
 This document uses three status labels:
 
-- **Current:** Feature 14 step 6 complete-World prediction/reconciliation, Feature 12 remote
-  interpolation-and-hold outside the prediction closure, and Feature 13's authoritative
-  absorption/session lifecycle are implemented. Feature 13's follow/free spectator presentation
-  and authoritative Gameplay output are also implemented.
-- **Feature 14 remaining:** persistent consequences, bounded outside-closure extrapolation,
-  structural transition presentation, adaptive command cadence, and complete Rollback output
-  specified in
+- **Current:** Feature 14 step 7 complete-World prediction/reconciliation, persistent
+  rollback-aware presentation, consequence handlers, and bounded outside-closure extrapolation
+  are implemented. Feature 12 delayed interpolation remains the spectator/fallback/comparison
+  path, and Feature 13's authoritative lifecycle and spectator presentation remain implemented.
+- **Feature 14 remaining:** adaptive command cadence, expanded fault controls and Rollback
+  diagnostics, measured workload evidence, router tombstone pruning, and the same-frame versus
+  multi-frame replay decision specified in
   [`plans/14-selectable-world-rollback.md`](plans/14-selectable-world-rollback.md) and
   [`rollback_prediction_design.md`](rollback_prediction_design.md).
 
@@ -43,7 +43,7 @@ Networking debug output is useful only when the state being measured is named pr
 | Pre-correction state | Prediction immediately before a nonzero reconciliation correction. | Client runtime debug history |
 | Presentation state | The transient positions and geometry submitted for drawing. | Dots presentation/client app |
 | Interpolated remote state | Presentation sampled between two known remote snapshot states. | Feature 12 presentation |
-| Extrapolated remote state | Feature 14 bounded visual-only advancement outside the prediction closure; never gameplay input. | Planned Dots presentation |
+| Extrapolated remote state | Feature 14 bounded visual-only advancement outside the prediction closure; never gameplay input. | Current Dots presentation |
 | Confirmed consequence | A durable session/gameplay result shown only after authority reports it, even if related reversible World state was predicted. | Server decision/client display |
 
 A native client cannot observe the server's live current position. A client debug ghost labeled
@@ -121,11 +121,13 @@ left lower **Dots session** pane with **Runtime**, **Network**, and **Gameplay**
 lower **Dots diagnostics** pane with **Prediction**, **Interpolation**, and **Tools** tabs.
 `[debug].enabled` defaults to `true`; set it to `false` to hide these panes, suppress world-space
 diagnostic layers, and prevent the UI from receiving input. Disabling debug does not change
-simulation or gameplay presentation. Fault injection and visual-layer controls live under Tools
+simulation or gameplay presentation. A confirmed kill/defeat banner is non-debug gameplay UI:
+it still uses the shared ImGui rendering context when debug panes are disabled, never captures
+input, and fades after 1.5 seconds. Fault injection and visual-layer controls live under Tools
 rather than extending the Prediction metrics view. `MyCore::DebugUI` owns ImGui integration, but
-the fields and their meanings remain Dots-owned. Subdued explanatory descriptions and visual-layer
-legends wrap to their pane's available width; disabled or unavailable values remain distinct
-interaction/state output.
+the fields and their meanings remain Dots-owned. Subdued explanatory descriptions and
+visual-layer legends wrap to their pane's available width; disabled or unavailable values remain
+distinct interaction/state output.
 
 ### World and presentation fields — Current
 
@@ -138,7 +140,7 @@ the Gameplay tab. It labels a zero estimate `eligible`; the server still decides
 | Label | Source and units | Meaning |
 |---|---|---|
 | `Input` | Client configuration | Active mouse, keyboard, or hybrid input mapping mode. |
-| `Presentation` | Client mode | Offline presentation mode, `NETWORKED PREDICTED` while playing, or `NETWORKED SPECTATOR` after a confirmed spectator transition. Remote entities use Feature 12's delayed known-authority presentation frame. |
+| `Presentation` | Client mode | Offline presentation mode, `NETWORKED PREDICTED` while playing, or `NETWORKED SPECTATOR` after a confirmed spectator transition. Playing remotes use the configured extrapolated/interpolated source; spectators use Feature 12 delayed interpolation. |
 | `Tick` | Offline world tick or latest replicated server tick | In offline play this is the local world tick. In networked play it is the tick stored in the latest accepted server snapshot. |
 | `Players` | Current offline or replicated entity collection | Number of player entities visible to this client state. It is not the server's total connected-client count. |
 | `Food` | Current offline or replicated entity collection | Number of food entities visible to this client state. |
@@ -244,6 +246,8 @@ Important log categories include:
 | `dots.client` | Client startup and general runtime information. |
 | `dots.client.session` | Client transport, handshake, assigned identity, disconnect lifecycle, and newly confirmed absorption, session-mode, follow-target-loss, and respawn-result transitions. |
 | `dots.client.simulation` | Client fixed-step overload warnings, escalation, and recovery. |
+| `dots.client.presentation` | Rejection of a noncanonical/stale remote extrapolation sample, including candidate and prior snapshot coordinates. Such rejection fails the session rather than drawing unvalidated state. |
+| `dots.client.consequence` | Non-retried Dots consequence-handler failures after an otherwise successful rollback commit. |
 | `dots.client.prediction` | Prediction history pressure/recovery, hard resyncs, replay-budget warnings, and explicit debug fault injection. |
 | `dots.client.prediction.scope` | Successful scope-epoch changes with replay depth, horizon, and before/after causal-owner, event-owner, player, and food membership counts when `debug.prediction_log_level` is `info` or `debug`. |
 | `dots.client.prediction.reconciliation` | At `debug.prediction_log_level = "debug"`, each nonzero largest common remote-player displacement across an installed predicted head, including whether the before/after heads represent the same tick. Zero-displacement installs are omitted. |
@@ -272,9 +276,10 @@ new epoch only when new causal membership is required, because old stimuli conta
 assumptions for newly admitted entities.
 
 The graphical client draws all predicted food and player topology inside that interaction island;
-duplicates are removed from the delayed Feature 12 frame. The controlled primary and camera use
-corrected prediction plus the current visual-only smoothing offset. Remote entities outside the
-island remain interpolated and hold on underrun.
+duplicates are removed from the selected outside-closure frame. The controlled primary and
+camera use corrected prediction plus the current visual-only smoothing offset. Remote entities
+outside the island default to latest-snapshot movement/launch extrapolation capped at six ticks
+and then hold. Delayed interpolation remains selectable and is always used by spectators.
 
 The runtime exposes `predicted_world()`, `predicted_primary_entity_id()`,
 `predicted_owned_entity_ids()`, `predicted_scope_entity_ids()`,
@@ -323,6 +328,8 @@ The **Prediction** tab rows are:
 | Hard resync | Lifetime count of full-ring recoveries that rebuild prediction from the newest verified authoritative checkpoint and clear retained input/debug replay state. |
 | Smoothing offset | Current presentation-only displacement vector and magnitude. It decays linearly to zero over 100 ms without modifying predicted state. |
 | Injected faults | Pending/total client-only packet drops and the number of explicit prediction-error injections. These do not alter transport loss metrics. |
+| Rollback consequences | Consumed batch count, currently visible cue count, monotonic stinger sequence, all five event-transition totals, and per-handler declared policy with delivered/suppressed/revised/canceled/confirmed/failure totals. |
+| Persistent presentation | Active semantic tracks, structural fades, retained motion-trail samples, and cumulative source handoffs, smoothed corrections, and prediction-key identity remaps. |
 
 History-pressure warnings begin above 75% occupancy and are rate-limited to once per five
 seconds while pressure persists. Recovery is logged once occupancy returns to 75% or below. All
@@ -340,7 +347,7 @@ capacity from 1 through 64 and defaults to 8. This changes diagnostics only.
 
 | Visual | Meaning |
 |---|---|
-| Filled player/food | Predicted interaction-island topology combined with interpolated outside-closure entities; the primary uses its smoothed presentation position. |
+| Filled player/food | Predicted interaction-island topology combined with the configured outside-closure source; the primary uses its smoothed presentation position. |
 | White outline | Corrected predicted simulation position. |
 | Orange outline | Latest received authoritative sample. It is historical, not the server's live position. |
 | Magenta outline | An entity position immediately before a recent nonzero correction. This includes the local primary and comparable remote players. New entries are opaque and older entries fade without changing hue. |
@@ -376,7 +383,7 @@ rendered frames. Suppressed sends still record and predict their input exactly a
 network loss would. Injected drops have a separate counter and are never added to transport
 packet-loss measurements.
 
-## Remote Interpolation Output — Current
+## Remote Presentation Output — Current
 
 Feature 12 uses a 32-sample presentation buffer and a remote render cursor delayed by six server
 ticks, currently 200 ms. The client receives every accepted snapshot from a runtime poll, then
@@ -386,6 +393,10 @@ The **Interpolation** tab in the right-hand **Diagnostics** pane reports:
 
 | Field | Meaning |
 |---|---|
+| Playing mode | `EXTRAPOLATED`, `INTERPOLATED`, or `COMPARISON` from `debug.remote_presentation_mode`. Spectator mode always uses delayed interpolation. |
+| Extrapolation age/ticks | Local steady-clock age of the newest accepted authoritative kinematic snapshot and the clamped 0–6 tick advancement applied to movement/launch. |
+| Extrapolating/held/static | Outside-closure players still within the six-tick horizon, players held at the horizon, and non-player entities kept at their authoritative positions. |
+| Extrapolation accepted/rejected | Samples accepted by the monotonic finite/canonical kinematic buffer or rejected by its validation. |
 | Buffer fill | Samples stored out of the fixed capacity. |
 | Coverage | Difference between oldest and newest buffered server ticks, shown in ticks and milliseconds. |
 | Target delay | Intentional six-tick separation between newest authority and remote presentation. |
@@ -416,6 +427,16 @@ blue is the newer endpoint that the delayed cursor is approaching. The **Interpo
 lists endpoint values for the lowest-ID sampled remote player as a representative example.
 Endpoint circles are debug-only and never feed presentation or gameplay state.
 
+For Playing clients, `extrapolated` is the default. It advances the newest accepted owner
+movement plus each player's launch velocity with the shared Dots kinematic helper, including
+launch decay, for at most six ticks/200 ms. Food is static and cohesion, collision, consumption,
+absorption, split, merge, and closure logic never run in this layer. `interpolated` selects the
+Feature 12 delayed frame. `comparison` draws extrapolation normally and adds an outline at the
+delayed interpolated position. New authority, prediction-closure entry, and predicted-child
+entity-ID remaps hand off through persistent semantic tracks; visible pose/radius residuals decay
+over 100 ms. Movement trails retain at most eight samples for 300 ms, and removed gameplay
+circles use a 100 ms structural fade.
+
 Feature 12 presentation-clock correction and future local input-clock synchronization solve
 different problems. Feature 12 keeps a delayed remote cursor centered in known snapshots. A
 future tick-synchronization feature would map local input ticks to estimated server ticks and
@@ -445,11 +466,11 @@ until both a deadline and snapshot-age anchor exist. The tab labels the estimate
 presentation-only because a local `eligible` display can precede the server receiving or accepting
 a request.
 
-## Complete Rollback Output — Remaining Feature 14 Work
+## Complete Rollback Output — Remaining Feature 14 Step 8 Work
 
-Feature 14 step 6 runs the complete rollback path while retaining the existing **Prediction** and
-Feature 12 interpolation diagnostics. A separate **Rollback** tab and the complete fields below
-remain planned for step 8.
+Feature 14 step 7 runs the complete rollback and presentation path while extending the existing
+**Prediction** and **Interpolation** diagnostics. A separate **Rollback** tab and the expanded
+fields below remain planned for step 8.
 
 | Field | Meaning |
 |---|---|
@@ -463,12 +484,11 @@ remain planned for step 8.
 | Continuous divergence | Position, velocity, mass, radius, and deadline corrections that preserve topology. |
 | Structural divergence | Entity create/remove, ownership, component-set, split, merge, and elimination corrections. |
 | Predicted spawns | Pending, matched, rejected, authority-only, and ambiguous prediction-key counts. Ambiguity causes hard resync. |
-| Event lifecycle | `FirstPredicted`, `Revised`, `Retracted`, `Confirmed`, and `AuthorityOnly` counts, with the selected stable event key. |
-| Consequence delivery | Per-policy delivered, suppressed, revised, canceled, confirmed, and authority-only counts for `PredictOnce`, `PredictCancelable`, and `ConfirmOnce`. |
+| Event lifecycle detail | Selected stable event key and per-event history beyond the current aggregate transition and per-handler consequence counters. |
 | Authority receipts | Per-event transition/key detail plus duplicate, conflict, invalid-retirement, queue-overflow, and receipt-capacity failure counts beyond the current accepted/published/server-retired frontiers and depth counters. |
 | Command buffer | Target/latest/EWMA server queue depth, cadence scale, low/high events, and accumulated phase correction. |
 | Remote assumption | Source snapshot and tick range over which last-known remote movement was held; remote edge actions remain zero. |
-| Outside-closure presentation | Latest-authority age, visual extrapolation age/cap, hold count, closure-entry transition, and interpolation fallback. No gameplay is executed for this layer. |
+| Outside-closure presentation detail | Closure-entry transition history and longer-term fallback/hold distributions beyond the current age, cap, mode, and entity counters. |
 
 The selected-entity world overlay draws independently labeled latest-known authoritative,
 predicted, Feature 12 interpolated, bounded extrapolated, pre-correction, and smoothed
@@ -538,26 +558,26 @@ The newest-snapshot distance is persistently outside its target. This may indica
 clock drift, bursty delivery, or insufficient fixed interpolation delay. Use measured data before
 adding adaptive delay.
 
-### Structural corrections repeat — Feature 14 planned
+### Structural corrections repeat
 
 Compare prediction profile/closure, predicted-spawn classification, held remote assumptions,
 checkpoint configuration, and the first topology tick that differs. Position smoothing cannot
 repair an entity create/remove, ownership, split, merge, or deadline mismatch.
 
-### A one-shot consequence repeats — Feature 14 planned
+### A one-shot consequence repeats
 
 Inspect its stable event key, transition history, handler policy, and suppression count.
 `PredictOnce` and `ConfirmOnce` are keyed per handler, so replaying or confirming the same key
 must not invoke that handler twice. A changing key indicates incorrect game identity; a stable
 key with repeated delivery indicates an occurrence-ledger defect.
 
-### A predicted effect remains after rejection — Feature 14 planned
+### A predicted effect remains after rejection
 
 Confirm the handler uses `PredictCancelable`, produced a stored lifecycle token, and received a
 `Retracted` transition. `PredictOnce` deliberately cannot erase a cue already perceived; use it
 only when one brief false positive is acceptable.
 
-### Hard resyncs rise — Feature 14 planned
+### Hard resyncs rise
 
 Group reasons by missing history, capacity exhaustion, incompatible checkpoint, and ambiguous
 prediction key. Then compare snapshot age, ACK progress, history occupancy, and configuration

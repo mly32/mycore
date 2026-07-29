@@ -83,6 +83,8 @@ TEST_CASE("Client configuration defaults match the playable client", "[dots][cli
     REQUIRE(config.spectator.maximum_pixels_per_world_unit == 80.0F);
     REQUIRE(config.debug.enabled);
     REQUIRE(config.debug.presentation_mode == dots::client::PresentationMode::Interpolated);
+    REQUIRE(config.debug.remote_presentation_mode ==
+            dots::client::RemotePresentationMode::Extrapolated);
     REQUIRE(config.debug.prediction_log_level == dots::client::PredictionLogLevel::Off);
     REQUIRE(config.debug.correction_history_count == dots::client::kDefaultCorrectionHistoryCount);
     REQUIRE(config.colors.player == dots::client::RgbColor{0x4C, 0xC9, 0xF0});
@@ -105,6 +107,12 @@ TEST_CASE("Presentation modes have display labels", "[dots][client][config]") {
     REQUIRE(dots::client::presentation_mode_name(dots::client::PresentationMode::Fixed) == "FIXED");
     REQUIRE(dots::client::presentation_mode_name(dots::client::PresentationMode::Comparison) ==
             "COMPARISON");
+    REQUIRE(dots::client::remote_presentation_mode_name(
+                dots::client::RemotePresentationMode::Extrapolated) == "EXTRAPOLATED");
+    REQUIRE(dots::client::remote_presentation_mode_name(
+                dots::client::RemotePresentationMode::Interpolated) == "INTERPOLATED");
+    REQUIRE(dots::client::remote_presentation_mode_name(
+                dots::client::RemotePresentationMode::Comparison) == "COMPARISON");
 }
 
 TEST_CASE("Client configuration accepts complete TOML", "[dots][client][config]") {
@@ -155,6 +163,7 @@ maximum_pixels_per_world_unit = 70.0
 [debug]
 enabled = false
 presentation_mode = "comparison"
+remote_presentation_mode = "interpolated"
 prediction_log_level = "debug"
 correction_history_count = 12
 
@@ -191,6 +200,8 @@ food = "#FEDCBA"
     REQUIRE(config.spectator.maximum_pixels_per_world_unit == 70.0F);
     REQUIRE_FALSE(config.debug.enabled);
     REQUIRE(config.debug.presentation_mode == dots::client::PresentationMode::Comparison);
+    REQUIRE(config.debug.remote_presentation_mode ==
+            dots::client::RemotePresentationMode::Interpolated);
     REQUIRE(config.debug.prediction_log_level == dots::client::PredictionLogLevel::Debug);
     REQUIRE(config.debug.correction_history_count == 12);
     REQUIRE(config.colors.background == dots::client::RgbColor{0x01, 0x02, 0x03});
@@ -212,6 +223,7 @@ mode = "HyBrId"
 [debug]
 enabled = false
 presentation_mode = "FiXeD"
+remote_presentation_mode = "CoMpArIsOn"
 prediction_log_level = "InFo"
 
 [bindings]
@@ -229,6 +241,8 @@ quit = ["eScApE"]
     REQUIRE(config.controls.mode == dots::client::InputMode::Hybrid);
     REQUIRE_FALSE(config.debug.enabled);
     REQUIRE(config.debug.presentation_mode == dots::client::PresentationMode::Fixed);
+    REQUIRE(config.debug.remote_presentation_mode ==
+            dots::client::RemotePresentationMode::Comparison);
     REQUIRE(config.debug.prediction_log_level == dots::client::PredictionLogLevel::Info);
     REQUIRE(config.controls.bindings.up == std::vector{mycore::platform_sdl::Key::W});
     REQUIRE(config.controls.bindings.quit == std::vector{mycore::platform_sdl::Key::Escape});
@@ -328,6 +342,8 @@ TEST_CASE("Invalid client TOML reports the source and field", "[dots][client][co
                         "spectator.minimum_pixels_per_world_unit"},
         InvalidDocument{"[debug]\nenabled = 1", "debug.enabled"},
         InvalidDocument{"[debug]\npresentation_mode = \"predicted\"", "debug.presentation_mode"},
+        InvalidDocument{"[debug]\nremote_presentation_mode = \"future\"",
+                        "debug.remote_presentation_mode"},
         InvalidDocument{"[debug]\nprediction_log_level = \"verbose\"",
                         "debug.prediction_log_level"},
         InvalidDocument{"[debug]\ncorrection_history_count = 0", "debug.correction_history_count"},

@@ -92,6 +92,16 @@ struct ConsequenceDispatchStatistics {
     std::uint64_t canceled_count{};
     std::uint64_t confirmed_count{};
     std::uint64_t failure_count{};
+
+    bool operator==(const ConsequenceDispatchStatistics&) const = default;
+};
+
+struct ConsequenceHandlerDispatchStatistics {
+    std::size_t handler_index{};
+    ConsequencePolicy policy{ConsequencePolicy::PredictOnce};
+    ConsequenceDispatchStatistics statistics;
+
+    bool operator==(const ConsequenceHandlerDispatchStatistics&) const = default;
 };
 
 [[nodiscard]] std::string_view library_name() noexcept;

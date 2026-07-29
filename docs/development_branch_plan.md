@@ -521,6 +521,10 @@ Exit criterion:
 - Complete interaction-closed Dots gameplay converges atomically to server truth, Dots exercises
   every generic consequence policy, and `MyCore::Rollback` contains no game or protocol policy.
 
+Implementation status: steps 1 through 7 are complete. Adaptive command timing, expanded
+fault/diagnostic coverage, measured scale workloads, router-ledger pruning, and the conditional
+multi-frame replay decision remain in step 8.
+
 Implement Feature 14 incrementally, beginning with the game-neutral rollback kernel. Keep commits
 small enough to review independently; the roadmap does not require separate branches or approval
 gates for each implementation step.

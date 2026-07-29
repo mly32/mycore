@@ -3,7 +3,8 @@
 This guide assumes you understand the basic idea of a client and server: the client collects
 input and draws the game, while the server runs shared gameplay. It explains the boundaries
 between Dots protocol messages, the game-neutral transport, authoritative simulation, replicated
-client state, the complete rollback predictor, and remote presentation interpolation.
+client state, the complete rollback predictor, and remote presentation
+interpolation/extrapolation.
 
 ## The short version
 
@@ -17,15 +18,16 @@ client input -> interaction-closed predicted World -> smoothed local presentatio
 transport -> authoritative server simulation -> FullSnapshot -> replicated client world
                                                        |                 |
                                                        v                 v
-                                             rollback/replay         remote rendering
+                                             rollback/replay         bounded remote rendering
 ```
 
 The server owns the only authoritative gameplay `World`. The client sends input requests and
 speculatively steps a complete Dots World inside the fixed-point interaction closure around its
 owned pieces. A verified server checkpoint replaces the rollback base and the client atomically
 replays unacknowledged input through the previous prediction head. Gameplay state corrects
-immediately; only the visible primary-position correction decays over 100 ms. Remote entities
-outside the closure use the Feature 12 delayed interpolation buffer.
+immediately; only presentation residuals decay over 100 ms. While Playing, remote players outside
+the closure default to bounded movement/launch extrapolation from newest authority and then hold.
+Spectators use the Feature 12 delayed interpolation buffer.
 
 `dots_client --in-memory` exercises this complete path without opening a socket. Its client and
 server live in one process and communicate through the same abstract transport interface used by
@@ -36,9 +38,10 @@ lossless, while the native backend supports realistic outgoing latency and loss 
 The runtime has **complete interaction-closed prediction and reconciliation** through
 `MyCore::Rollback` and `Dots::Prediction`. The overlay says `NETWORKED PREDICTED` and separately
 displays the latest authoritative primary sample, corrected prediction, and smoothed
-presentation. Predicted topology is drawn for the entire interaction island; other entities
-render from Feature 12's delayed interpolation history and hold known state when a newer bracket
-is absent.
+presentation. Predicted topology is drawn for the entire interaction island. Other players
+default to at most six ticks/200 ms of presentation-only movement/launch extrapolation and then
+hold; delayed interpolation remains selectable, supplies comparison endpoints, and is mandatory
+while Spectating.
 
 ## Three different responsibilities
 
@@ -81,6 +84,8 @@ absorption, and explicit respawn result. Version 4 adds immutable `WorldRules`, 
 rollback-checkpoint fields, prediction keys, a canonical schema/digest, the split action bit,
 and sequenced typed authority receipts. There is no dual-version negotiation: older binaries
 receive `UnsupportedVersion` rather than having their payload interpreted as version 4.
+Food, absorption, and split receipts include occurrence geometry so presentation does not depend
+on an entity that the same event already removed or transformed.
 
 Integers and floating-point bit patterns have defined widths and use big-endian network byte
 order. Fields are encoded individually; the implementation never copies a C++ struct directly
@@ -399,9 +404,10 @@ After the handshake, each current in-memory fixed step is composed in this order
    authoritative `World` by one 30 Hz tick.
 6. Every two ticks, the server builds and sends a 15 Hz full snapshot for each ready client.
 7. The client polls and atomically installs a newer snapshot.
-8. While Playing, presentation composes the smoothed predicted primary with delayed remotes and
-   centers the camera on that primary. While Spectating, it draws the complete delayed remote
-   sample and uses confirmed-killer follow or a presentation-only free camera.
+8. While Playing, presentation composes the persistent predicted interaction island with bounded
+   outside-closure extrapolation by default and centers the camera on the smoothed primary. While
+   Spectating, it draws the complete delayed remote sample and uses confirmed-killer follow or a
+   presentation-only free camera.
 
 Each full snapshot currently contains every player and food entity in canonical identity order,
 plus:
@@ -536,11 +542,12 @@ hidden input-prediction or smoothing clock, and it never decides respawn eligibi
 
 | Mechanism | Status | Timeline/input it actually uses | Uses estimated live server time? |
 |---|---|---|---|
-| Interaction-closed World prediction | Current, Feature 14 step 6 | Local 30 Hz commands plus latest-authority remote assumptions applied to a complete scoped Dots World. | No. |
-| Reconciliation | Current, Feature 14 step 6 | Verified authoritative checkpoint plus replay of the unacknowledged input suffix. Server tick labels the rollback base but does not choose how far to replay. | No. |
+| Interaction-closed World prediction | Current, Feature 14 step 7 | Local 30 Hz commands plus latest-authority remote assumptions applied to a complete scoped Dots World. | No. |
+| Reconciliation | Current, Feature 14 step 7 | Verified authoritative checkpoint plus replay of the unacknowledged input suffix. Server tick labels the rollback base but does not choose how far to replay. | No. |
 | Local correction smoothing | Current, Feature 11 | Local steady-clock age of a fixed 100 ms visual offset. | No. |
 | Remote presentation | Current, Feature 12 | Fractional cursor in historical server-tick coordinates, targeting six ticks behind the newest known snapshot; holds on underrun. | No. |
-| Interaction-closed World rollback | Current, Feature 14 step 6 | Authoritative checkpoint plus retained immutable local commands and transactionally refreshed remote assumptions, replayed through the previous prediction head. | No. |
+| Outside-closure extrapolation | Current, Feature 14 step 7 | Local steady-clock age of the newest snapshot converted to at most six shared movement/launch ticks; holds after the cap. | No. |
+| Interaction-closed World rollback | Current, Feature 14 step 7 | Authoritative checkpoint plus retained immutable local commands and transactionally refreshed remote assumptions, replayed through the previous prediction head. | No. |
 | Adaptive command buffer | Planned, Feature 14 | Reported server input-queue depth controls a bounded client command cadence. | No. |
 | Feature 13 respawn countdown | Current | Latest replicated server tick plus local steady time since snapshot receipt; unfiltered and presentation-only. | It is a limited estimate, never authority. |
 | Filtered smooth world-time UI | Deferred | A filtered mapping from local steady time to estimated server tick. | Potentially. |
@@ -888,14 +895,14 @@ The critical rule is:
 Gradually moving gameplay state toward the server result would make later predictions start
 from knowingly false state and compound the error.
 
-Feature 14 step 6 predicts movement, food consumption, player absorption, split, launch,
+Feature 14 step 7 predicts movement, food consumption, player absorption, split, launch,
 cohesion, and merge inside a closed Dots World. A correction may therefore change mass or
 topology as well as position. Predicted loss of the final owned piece remains speculative:
 Playing/Spectating, defeat, follow, and respawn state change only from confirmed snapshots.
 
-### Remote players: buffer and interpolate
+### Remote players: predict in the closure; extrapolate or interpolate outside it
 
-The client cannot know another human's future input. Feature 12 therefore uses a different
+The client cannot know another human's future input. Feature 12 provides the conservative
 strategy: render slightly in the past between two known snapshots.
 
 ```text
@@ -911,9 +918,12 @@ state is never invented by running guessed remote input.
 The owned player and every entity in its interaction closure are rendered from the current
 Predicted World. Remote participants in that closure use recorded last-known level movement and
 no invented edge actions, so shared collision and gameplay logic can affect the owned island.
-Entities outside the closure remain on delayed interpolation-and-hold. Feature 14 step 7 may
-advance their known movement/launch vectors for at most six ticks/200 ms without collision or
-gameplay logic, then hold. Interpolation remains the spectator, fallback, and comparison path.
+While Playing, entities outside the closure default to advancing their newest known owner
+movement and launch velocity for at most six ticks/200 ms, then hold. This path shares the Dots
+movement/launch integrator and launch decay but never runs cohesion, collision, food consumption,
+absorption, split, merge, or checkpoint logic. New authority and closure entry smooth only the
+visible presentation residual. Delayed interpolation remains the spectator, selectable fallback,
+and comparison path.
 
 ### What “latency compensation” means here
 
@@ -953,7 +963,9 @@ per-handler `PredictOnce`, `PredictCancelable`, or `ConfirmOnce` policies. A non
 occurrence ledger prevents replay from repeating one-shot feedback. Confirmed transient
 consequences use sequenced receipts repeated until acknowledged; durable Playing/Spectating and
 respawn state remains repeated snapshot state. The kernel and Dots adapter implement and test
-these policies; persistent graphical consequence handlers attach in Feature 14 step 7.
+these policies. Production Dots presentation uses `PredictOnce` split/consume flashes,
+`PredictCancelable` split-launch, food-pop, and consume-collapse tokens, and a `ConfirmOnce`
+kill/defeat banner plus monotonic future-audio hook.
 
 The timeline completes replay in the frame that accepts the snapshot unless measured workloads
 justify the separately planned conditional multi-frame spike.

@@ -302,6 +302,22 @@ PresentationMode parse_presentation_mode(std::string_view value,
     fail(source, field, "expected interpolated, fixed, or comparison");
 }
 
+RemotePresentationMode parse_remote_presentation_mode(std::string_view value,
+                                                      const std::filesystem::path& source,
+                                                      std::string_view field) {
+    const auto normalized = uppercase(value);
+    if (normalized == "EXTRAPOLATED") {
+        return RemotePresentationMode::Extrapolated;
+    }
+    if (normalized == "INTERPOLATED") {
+        return RemotePresentationMode::Interpolated;
+    }
+    if (normalized == "COMPARISON") {
+        return RemotePresentationMode::Comparison;
+    }
+    fail(source, field, "expected extrapolated, interpolated, or comparison");
+}
+
 void validate_binding_conflicts(const ClientConfig& config, const std::filesystem::path& source) {
     struct BindingView {
         std::string_view name;
@@ -562,11 +578,14 @@ void parse_spectator(const toml::table& table,
 void parse_debug(const toml::table& table,
                  ClientConfig& config,
                  const std::filesystem::path& source) {
-    validate_keys(
-        table,
-        {"enabled", "presentation_mode", "prediction_log_level", "correction_history_count"},
-        source,
-        "debug");
+    validate_keys(table,
+                  {"enabled",
+                   "presentation_mode",
+                   "remote_presentation_mode",
+                   "prediction_log_level",
+                   "correction_history_count"},
+                  source,
+                  "debug");
     if (table.contains("enabled")) {
         config.debug.enabled = read_bool(table, "enabled", source, "debug.enabled");
     }
@@ -575,6 +594,13 @@ void parse_debug(const toml::table& table,
             read_string(table, "presentation_mode", source, "debug.presentation_mode"),
             source,
             "debug.presentation_mode");
+    }
+    if (table.contains("remote_presentation_mode")) {
+        config.debug.remote_presentation_mode = parse_remote_presentation_mode(
+            read_string(
+                table, "remote_presentation_mode", source, "debug.remote_presentation_mode"),
+            source,
+            "debug.remote_presentation_mode");
     }
     if (table.contains("prediction_log_level")) {
         config.debug.prediction_log_level = parse_prediction_log_level(

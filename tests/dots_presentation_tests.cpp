@@ -9,6 +9,8 @@
 
 namespace {
 
+using namespace std::chrono_literals;
+
 [[nodiscard]] constexpr std::chrono::steady_clock::time_point
 clock_time(std::chrono::steady_clock::duration offset) noexcept {
     return std::chrono::steady_clock::time_point{offset};
@@ -23,7 +25,137 @@ playing_session(dots::protocol::EntityId primary_entity_id) {
     };
 }
 
+[[nodiscard]] dots::presentation::FrameData
+player_frame(float position_x,
+             std::uint64_t revision,
+             dots::presentation::PresentationSource source =
+                 dots::presentation::PresentationSource::Predicted,
+             dots::protocol::EntityId entity_id = dots::protocol::EntityId{1},
+             std::optional<dots::protocol::PredictionKey> prediction_key = std::nullopt) {
+    return {
+        .camera = {},
+        .circles = {{
+            .position = {position_x, 0.0F},
+            .mass = 16.0F,
+            .radius = 4.0F,
+            .kind = dots::presentation::CircleKind::Player,
+            .entity_id = entity_id,
+            .prediction_key = prediction_key,
+            .source = source,
+            .source_revision = revision,
+        }},
+    };
+}
+
 } // namespace
+
+TEST_CASE("Persistent presentation interpolates predicted fixed-tick state",
+          "[dots][presentation][persistent]") {
+    dots::presentation::PersistentWorldPresentation presentation;
+    auto first = presentation.compose(player_frame(0.0F, 1), 0.0F, 0, {}, clock_time(0ms));
+    REQUIRE(first.circles.size() == 1);
+    CHECK(first.circles.front().position.x == Catch::Approx(0.0F));
+
+    auto advanced = presentation.compose(player_frame(8.0F, 2), 0.25F, 0, {}, clock_time(10ms));
+    REQUIRE(advanced.circles.size() == 1);
+    CHECK(advanced.circles.front().position.x == Catch::Approx(2.0F));
+
+    auto later_render = presentation.compose(player_frame(8.0F, 2), 0.75F, 0, {}, clock_time(20ms));
+    REQUIRE(later_render.circles.size() == 1);
+    CHECK(later_render.circles.front().position.x == Catch::Approx(6.0F));
+    CHECK(presentation.statistics().smoothed_correction_count == 0);
+}
+
+TEST_CASE("Persistent presentation preserves PredictionKey identity across authority handoff",
+          "[dots][presentation][persistent]") {
+    const auto prediction_key = dots::protocol::PredictionKey{
+        .owner_id = dots::protocol::PlayerOwnerId{4},
+        .input_id = dots::protocol::InputSequenceId{7},
+        .child_ordinal = 1,
+    };
+    dots::presentation::PersistentWorldPresentation presentation;
+    static_cast<void>(
+        presentation.compose(player_frame(0.0F,
+                                          1,
+                                          dots::presentation::PresentationSource::Predicted,
+                                          dots::protocol::EntityId{100},
+                                          prediction_key),
+                             1.0F,
+                             0,
+                             {},
+                             clock_time(0ms)));
+
+    const auto handoff =
+        presentation.compose(player_frame(10.0F,
+                                          2,
+                                          dots::presentation::PresentationSource::Extrapolated,
+                                          dots::protocol::EntityId{200},
+                                          prediction_key),
+                             1.0F,
+                             0,
+                             {},
+                             clock_time(10ms));
+    REQUIRE(handoff.circles.size() == 1);
+    CHECK(handoff.circles.front().entity_id == dots::protocol::EntityId{200});
+    CHECK(handoff.circles.front().position.x == Catch::Approx(0.0F));
+
+    const auto halfway =
+        presentation.compose(player_frame(10.0F,
+                                          2,
+                                          dots::presentation::PresentationSource::Extrapolated,
+                                          dots::protocol::EntityId{200},
+                                          prediction_key),
+                             1.0F,
+                             0,
+                             {},
+                             clock_time(60ms));
+    REQUIRE(halfway.circles.size() == 1);
+    CHECK(halfway.circles.front().position.x == Catch::Approx(5.0F));
+    CHECK(presentation.statistics().source_handoff_count == 1);
+    CHECK(presentation.statistics().identity_remap_count == 1);
+    CHECK(presentation.statistics().smoothed_correction_count == 1);
+}
+
+TEST_CASE("Persistent presentation smooths a same-head predicted correction",
+          "[dots][presentation][persistent]") {
+    dots::presentation::PersistentWorldPresentation presentation;
+    static_cast<void>(presentation.compose(player_frame(0.0F, 3), 1.0F, 0, {}, clock_time(0ms)));
+
+    const auto corrected =
+        presentation.compose(player_frame(10.0F, 3), 1.0F, 0, {}, clock_time(10ms));
+    REQUIRE(corrected.circles.size() == 1);
+    CHECK(corrected.circles.front().position.x == Catch::Approx(0.0F));
+
+    const auto halfway =
+        presentation.compose(player_frame(10.0F, 3), 1.0F, 0, {}, clock_time(60ms));
+    REQUIRE(halfway.circles.size() == 1);
+    CHECK(halfway.circles.front().position.x == Catch::Approx(5.0F));
+    CHECK(presentation.statistics().smoothed_correction_count == 1);
+}
+
+TEST_CASE("Persistent presentation bounds structural fades and motion trails",
+          "[dots][presentation][persistent]") {
+    dots::presentation::PersistentWorldPresentation presentation;
+    for (std::uint64_t index = 0; index < 10; ++index) {
+        static_cast<void>(presentation.compose(player_frame(static_cast<float>(index), index + 1),
+                                               1.0F,
+                                               0,
+                                               dots::protocol::EntityId{1},
+                                               clock_time(std::chrono::milliseconds{31 * index})));
+    }
+    CHECK(presentation.statistics().motion_trail_count == dots::presentation::kMotionTrailCapacity);
+
+    const auto fading = presentation.compose({}, 1.0F, 0, {}, clock_time(310ms));
+    REQUIRE(fading.circles.size() == dots::presentation::kMotionTrailCapacity + 1);
+    CHECK(fading.circles.front().kind == dots::presentation::CircleKind::StructuralFade);
+    CHECK(presentation.statistics().structural_fade_count == 1);
+
+    const auto gone = presentation.compose({}, 1.0F, 0, {}, clock_time(411ms));
+    CHECK(std::ranges::none_of(gone.circles, [](const auto& circle) {
+        return circle.kind == dots::presentation::CircleKind::StructuralFade;
+    }));
+    CHECK(presentation.statistics().structural_fade_count == 0);
+}
 
 TEST_CASE("Dots presentation extracts live food before players", "[dots][presentation]") {
     dots::simulation::World world;

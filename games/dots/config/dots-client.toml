@@ -47,6 +47,9 @@ maximum_pixels_per_world_unit = 80.0
 [debug]
 enabled = true
 presentation_mode = "comparison"
+# Networked playing presentation outside the predicted interaction closure:
+# extrapolated, interpolated, or comparison.
+remote_presentation_mode = "extrapolated"
 prediction_log_level = "off"
 correction_history_count = 8
 

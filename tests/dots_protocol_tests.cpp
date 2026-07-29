@@ -440,6 +440,8 @@ TEST_CASE("Protocol version 4 carries complete checkpoint and authority receipt 
                     .food_entity_id = EntityId{90},
                     .consumer_entity_id = EntityId{1},
                     .consumer_owner_id = PlayerOwnerId{7},
+                    .food_position_x = 4.0F,
+                    .food_position_y = -3.0F,
                     .transferred_mass = 1.0F,
                 },
         },
@@ -452,6 +454,10 @@ TEST_CASE("Protocol version 4 carries complete checkpoint and authority receipt 
                     .victim_entity_id = EntityId{91},
                     .absorber_owner_id = PlayerOwnerId{7},
                     .victim_owner_id = PlayerOwnerId{8},
+                    .absorber_position_x = 1.0F,
+                    .absorber_position_y = 2.0F,
+                    .victim_position_x = 3.0F,
+                    .victim_position_y = 4.0F,
                     .transferred_mass = 16.0F,
                 },
         },
@@ -465,6 +471,10 @@ TEST_CASE("Protocol version 4 carries complete checkpoint and authority receipt 
                     .child_ordinal = 0,
                     .parent_entity_id = EntityId{1},
                     .child_entity_id = EntityId{92},
+                    .origin_position_x = 5.0F,
+                    .origin_position_y = 6.0F,
+                    .initial_launch_velocity_x = 18.0F,
+                    .initial_launch_velocity_y = -2.0F,
                     .parent_mass = 8.0F,
                     .child_mass = 8.0F,
                 },
@@ -511,6 +521,10 @@ TEST_CASE("Protocol version 4 carries complete checkpoint and authority receipt 
     invalid = snapshot;
     std::get<dots::protocol::FoodConsumed>(invalid.authority_receipts[0].event).server_tick = 21;
     require_encode_error(invalid, CodecError::OutOfRange);
+    invalid = snapshot;
+    std::get<dots::protocol::PlayerSplit>(invalid.authority_receipts[2].event)
+        .initial_launch_velocity_x = std::numeric_limits<float>::quiet_NaN();
+    require_encode_error(invalid, CodecError::InvalidNumber);
     invalid = snapshot;
     invalid.authority_receipts[1].event = invalid.authority_receipts[0].event;
     require_encode_error(invalid, CodecError::InvalidCheckpoint);

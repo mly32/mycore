@@ -424,7 +424,7 @@ Keep commits focused and reviewable, but do not add approval gates between these
    entity-scale workloads, documentation updates, and the measured same-frame/multi-frame
    decision.
 
-Steps 1 through 6.5 are implemented on `feature/14`; step 7 is next.
+Steps 1 through 7 are implemented on `feature/14`; step 8 is next.
 `MyCore::Rollback` now provides the generic
 timeline and consequence machinery. Dots Simulation now provides immutable `WorldRules`, sorted
 complete checkpoints, atomic restore, one owner-scoped command batch per tick, typed food and
@@ -462,19 +462,18 @@ the newest authority under a new scope epoch because older frames did not record
 admitted entities.
 
 Graphical input now submits an edge-triggered split on Space. Predicted topology, mass, launch,
-food, absorption, merge, and owner state are rendered from the predicted interaction island;
-entities outside it remain on Feature 12 interpolation-and-hold. Predicted children retain their
-`PredictionKey` across replay and report an entity-ID remap when authority assigns a different
-ID. Predicted removal of the final local piece does not enter Spectating or stop input capture;
-only the confirmed replicated session can do that. The client also converts new authority
-receipts into confirmed timeline events and ACKs their contiguous published sequence. Persistent
-consequence handlers, structural presentation transitions, and bounded outside-closure
-extrapolation remain step 7 work. Remote interpolation endpoint ghosts remain visible for
-in-scope players when enabled so the predicted and authoritative presentation layers can still
-be compared. Local and comparable same-head remote corrections now emit entity-specific runtime
-records into a configurable bounded presentation history. The history keeps the magenta
-pre-correction hue stable, fades opacity over two seconds, and excludes ordinary movement between
-different predicted head ticks.
+food, absorption, merge, and owner state are rendered from the predicted interaction island.
+Outside it, Playing clients advance only newest-authority movement and launch for at most six
+ticks/200 ms and then hold; Spectating clients retain Feature 12 interpolation-and-hold.
+Predicted children retain their `PredictionKey` across replay and through an authoritative
+entity-ID remap. Predicted removal of the final local piece does not enter Spectating or stop
+input capture; only the confirmed replicated session can do that. The client converts new
+authority receipts into confirmed timeline events and ACKs their contiguous published sequence.
+Remote interpolation endpoint ghosts remain visible for in-scope players when enabled so the
+predicted and authoritative presentation layers can still be compared. Local and comparable
+same-head remote corrections emit entity-specific runtime records into a configurable bounded
+presentation history. The history keeps the magenta pre-correction hue stable, fades opacity
+over two seconds, and excludes ordinary movement between different predicted head ticks.
 
 The step 6.5 audit remediation makes the fallback transition-closed as `OwnedGameplay`, separates
 causal state membership from owner-participant event subscriptions, and routes every observable
@@ -485,6 +484,63 @@ conflicting retransmissions, and live stable-key reuse, and ACKs only after a ba
 Pre-welcome receipts remain pending; terminal Spectating receipts publish before prediction is
 cleared. Same-tick authority refinement and explicit hard resync preserve their distinct history
 semantics.
+
+### Step 7 Decision Record
+
+Step 7 installs one Dots-owned rollback-aware presentation adapter in both offline and networked
+composition roots. It does not add game presentation policy to `MyCore::Rollback`. The adapter
+consumes the engine's post-commit `EventBatch`, owns a session-lifetime
+`StaticConsequenceRouter`, and projects persistent state and transient cues into Dots
+presentation data.
+
+The concrete policy demonstration is:
+
+| Mechanic | Dots presentation | Delivery |
+|---|---|---|
+| Movement | Fixed-tick avatar interpolation and an eight-sample/300 ms motion trail | State-derived |
+| Split | 180 ms expanding flash | `PredictOnce` |
+| Split | Child launch ring/trail for up to one second | `PredictCancelable` |
+| Food consumption | 250 ms food-pop group | `PredictCancelable` |
+| Player absorption | 150 ms immediate consume flash | `PredictOnce` |
+| Player absorption | 300 ms victim-collapse pulse | `PredictCancelable` |
+| Confirmed absorption | 1.5 second kill/defeat HUD banner and monotonic stinger hook | `ConfirmOnce` |
+| Merge | Smoothed survivor geometry and a 100 ms consumed-piece fade | State-derived |
+
+Cancelable split and absorption cues fade for 100 ms on rejection; a canceled food pop fades for
+80 ms. Confirmation updates the active token and any predicted-child entity-ID association
+without restarting it. Handler failure is counted and logged but is not retried and does not fail
+the authoritative session. The router survives respawn and lives until the client session ends.
+Hard resync clears presentation residuals and trails but not consequence tombstones.
+
+Simulation events carry the occurrence geometry required after topology has changed:
+`FoodConsumed` carries the food position, `PlayerAbsorbed` carries absorber and victim positions,
+and `PlayerSplit` carries its origin and initial launch velocity. Stable keys do not change.
+Protocol v4 receipt encoding includes this geometry without another version bump.
+
+Network presentation owns persistent semantic tracks keyed by `PredictionKey` when present and
+by entity ID otherwise. The selected source order while Playing is predicted closure, latest
+snapshot extrapolation, then delayed interpolation fallback. Predicted fixed-tick samples use the
+client accumulator alpha. Same-tick correction, predicted/remote source handoff, and structural
+replacement preserve the prior visual pose and decay only their presentation offset over 100 ms.
+
+Outside the prediction closure, presentation advances only known owner movement and per-entity
+launch velocity from the newest accepted snapshot. It executes the same Dots kinematic step for
+at most six ticks/200 ms and then holds. It never runs cohesion, collision, food consumption,
+absorption, split, merge, closure construction, or checkpoint logic. Spectators continue to use
+Feature 12 delayed interpolation. The debug-selectable remote modes are `Extrapolated` (default),
+`Interpolated`, and `Comparison`; comparison renders extrapolation normally and overlays the
+delayed interpolated position.
+
+The confirmed-only cue uses a noninteractive Dear ImGui HUD banner because Dots has no production
+font or audio backend. The ImGui frame may therefore render the HUD even when debug panes are
+disabled, but the banner never captures input. Its monotonic stinger sequence is the future audio
+hook; Feature 14 does not add audio or a general text renderer.
+
+Step 7 also adds game-neutral per-handler/policy dispatch statistics to the consequence report.
+The production Dots adapter exercises every row above in both offline and networked composition
+roots, including a noninteractive confirmed-only HUD banner and a monotonic future-audio hook.
+Adaptive command timing, complete fault controls, workload measurement, router tombstone pruning,
+and any multi-frame replay scheduler remain step 8.
 
 ## Test Plan
 

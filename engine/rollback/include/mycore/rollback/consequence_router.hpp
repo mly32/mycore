@@ -2,9 +2,11 @@
 
 #include "mycore/rollback/timeline.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <tuple>
 #include <type_traits>
 #include <unordered_map>
@@ -24,6 +26,7 @@ struct ConsequenceDispatchFailure {
 
 struct ConsequenceDispatchReport {
     ConsequenceDispatchStatistics statistics;
+    std::vector<ConsequenceHandlerDispatchStatistics> handlers;
     std::vector<ConsequenceDispatchFailure> failures;
 };
 
@@ -86,7 +89,8 @@ template <RollbackModel Model, class... Handlers> class StaticConsequenceRouter 
 
 public:
     explicit StaticConsequenceRouter(Handlers... handlers)
-        : handlers_(std::move(handlers)...) {}
+        : handlers_(std::move(handlers)...),
+          handler_statistics_(make_handler_statistics(std::index_sequence_for<Handlers...>{})) {}
 
     [[nodiscard]] ConsequenceDispatchReport consume(const Commit<Model>& commit) {
         return consume(event_batch_from_commit(commit));
@@ -94,6 +98,7 @@ public:
 
     [[nodiscard]] ConsequenceDispatchReport consume(const EventBatch<Model>& batch) {
         ConsequenceDispatchReport report;
+        initialize_handler_statistics(report, std::index_sequence_for<Handlers...>{});
         report.failures.reserve(batch.changes.size());
 
         for (const auto& change : batch.changes) {
@@ -104,6 +109,10 @@ public:
         }
 
         add_statistics(statistics_, report.statistics);
+        for (std::size_t index = 0; index < report.handlers.size(); ++index) {
+            add_statistics(handler_statistics_[index].statistics,
+                           report.handlers[index].statistics);
+        }
         return report;
     }
 
@@ -119,7 +128,36 @@ public:
         return statistics_;
     }
 
+    [[nodiscard]] std::span<const ConsequenceHandlerDispatchStatistics>
+    handler_statistics() const noexcept {
+        return handler_statistics_;
+    }
+
 private:
+    template <std::size_t... Indices>
+    [[nodiscard]] static constexpr auto
+    make_handler_statistics(std::index_sequence<Indices...>) noexcept {
+        return std::array<ConsequenceHandlerDispatchStatistics, sizeof...(Handlers)>{
+            ConsequenceHandlerDispatchStatistics{
+                .handler_index = Indices,
+                .policy = std::tuple_element_t<Indices, std::tuple<Handlers...>>::policy,
+                .statistics = {},
+            }...,
+        };
+    }
+
+    template <std::size_t... Indices>
+    void initialize_handler_statistics(ConsequenceDispatchReport& report,
+                                       std::index_sequence<Indices...>) const {
+        report.handlers = {
+            ConsequenceHandlerDispatchStatistics{
+                .handler_index = Indices,
+                .policy = std::tuple_element_t<Indices, std::tuple<Handlers...>>::policy,
+                .statistics = {},
+            }...,
+        };
+    }
+
     static void add_statistics(ConsequenceDispatchStatistics& destination,
                                const ConsequenceDispatchStatistics& source) noexcept {
         destination.delivered_count += source.delivered_count;
@@ -128,6 +166,19 @@ private:
         destination.canceled_count += source.canceled_count;
         destination.confirmed_count += source.confirmed_count;
         destination.failure_count += source.failure_count;
+    }
+
+    [[nodiscard]] static ConsequenceDispatchStatistics
+    statistics_delta(const ConsequenceDispatchStatistics& current,
+                     const ConsequenceDispatchStatistics& previous) noexcept {
+        return {
+            .delivered_count = current.delivered_count - previous.delivered_count,
+            .suppressed_count = current.suppressed_count - previous.suppressed_count,
+            .revised_count = current.revised_count - previous.revised_count,
+            .canceled_count = current.canceled_count - previous.canceled_count,
+            .confirmed_count = current.confirmed_count - previous.confirmed_count,
+            .failure_count = current.failure_count - previous.failure_count,
+        };
     }
 
     template <std::size_t... Indices>
@@ -148,6 +199,7 @@ private:
             return;
         }
 
+        const auto previous_statistics = report.statistics;
         if constexpr (Handler::policy == ConsequencePolicy::PredictOnce) {
             process_predict_once<Index>(change, current != nullptr ? *current : *previous, report);
         } else if constexpr (Handler::policy == ConsequencePolicy::PredictCancelable) {
@@ -156,6 +208,8 @@ private:
             static_assert(Handler::policy == ConsequencePolicy::ConfirmOnce);
             process_confirm_once<Index>(change, current != nullptr ? *current : *previous, report);
         }
+        add_statistics(report.handlers[Index].statistics,
+                       statistics_delta(report.statistics, previous_statistics));
     }
 
     template <class Event>
@@ -235,11 +289,15 @@ private:
             activate<Index>(change.key, *current, report);
             return;
         case EventTransition::Revised:
-            if (found == active.end() || !found->second) {
+            if (found == active.end()) {
                 ++report.statistics.suppressed_count;
                 return;
             }
-            if (!handler.on_revise(*found->second, change.key, *current)) {
+            if (!found->second.has_value()) {
+                ++report.statistics.suppressed_count;
+                return;
+            }
+            if (!handler.on_revise(found->second.value(), change.key, *current)) {
                 record_failure<Index>(ConsequenceOperation::Revise, report);
                 return;
             }
@@ -262,11 +320,15 @@ private:
                 activate<Index>(change.key, *current, report);
                 found = active.find(change.key);
             }
-            if (found == active.end() || !found->second) {
+            if (found == active.end()) {
                 ++report.statistics.suppressed_count;
                 return;
             }
-            const auto succeeded = handler.on_confirm(*found->second, change.key, *current);
+            if (!found->second.has_value()) {
+                ++report.statistics.suppressed_count;
+                return;
+            }
+            const auto succeeded = handler.on_confirm(found->second.value(), change.key, *current);
             found->second.reset();
             if (!succeeded) {
                 record_failure<Index>(ConsequenceOperation::Confirm, report);
@@ -280,11 +342,15 @@ private:
                 activate<Index>(change.key, *current, report);
                 found = active.find(change.key);
             }
-            if (found == active.end() || !found->second) {
+            if (found == active.end()) {
                 ++report.statistics.suppressed_count;
                 return;
             }
-            const auto succeeded = handler.on_confirm(*found->second, change.key, *current);
+            if (!found->second.has_value()) {
+                ++report.statistics.suppressed_count;
+                return;
+            }
+            const auto succeeded = handler.on_confirm(found->second.value(), change.key, *current);
             found->second.reset();
             if (!succeeded) {
                 record_failure<Index>(ConsequenceOperation::Confirm, report);
@@ -342,6 +408,7 @@ private:
     std::tuple<Handlers...> handlers_;
     std::tuple<detail::ConsequenceStorage<Model, Handlers>...> storage_;
     ConsequenceDispatchStatistics statistics_;
+    std::array<ConsequenceHandlerDispatchStatistics, sizeof...(Handlers)> handler_statistics_;
 };
 
 } // namespace mycore::rollback

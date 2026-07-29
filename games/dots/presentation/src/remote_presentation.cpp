@@ -27,7 +27,176 @@ constexpr double kMaximumCursorRate = 1.05;
     return older + ((newer - older) * alpha);
 }
 
+[[nodiscard]] bool valid_rules(const simulation::WorldRules& rules) noexcept {
+    return std::isfinite(rules.player_speed_units_per_second) &&
+           rules.player_speed_units_per_second > 0.0F &&
+           std::isfinite(rules.launch_decay_units_per_second_squared) &&
+           rules.launch_decay_units_per_second_squared >= 0.0F;
+}
+
+[[nodiscard]] const protocol::OwnerState* find_owner(std::span<const protocol::OwnerState> owners,
+                                                     protocol::PlayerOwnerId owner_id) noexcept {
+    const auto iterator =
+        std::lower_bound(owners.begin(),
+                         owners.end(),
+                         owner_id,
+                         [](const protocol::OwnerState& owner, protocol::PlayerOwnerId value) {
+                             return owner.owner_id < value;
+                         });
+    return iterator != owners.end() && iterator->owner_id == owner_id ? &*iterator : nullptr;
+}
+
+[[nodiscard]] double age_ticks(const RemoteKinematicSnapshot& sample,
+                               std::chrono::steady_clock::time_point now) noexcept {
+    const auto age =
+        std::max(now - sample.arrival_time, std::chrono::steady_clock::duration::zero());
+    return std::chrono::duration<double>{age}.count() * kServerTicksPerSecond;
+}
+
 } // namespace
+
+bool RemoteExtrapolationBuffer::insert(RemoteKinematicSnapshot sample) {
+    const auto valid_owner = [](const protocol::OwnerState& owner) {
+        return owner.owner_id.is_valid() &&
+               simulation::is_valid_player_movement({owner.movement_x, owner.movement_y});
+    };
+    const auto owners_sorted =
+        std::is_sorted(sample.owners.begin(),
+                       sample.owners.end(),
+                       [](const protocol::OwnerState& lhs, const protocol::OwnerState& rhs) {
+                           return lhs.owner_id < rhs.owner_id;
+                       });
+    const auto unique_owners =
+        std::adjacent_find(sample.owners.begin(),
+                           sample.owners.end(),
+                           [](const protocol::OwnerState& lhs, const protocol::OwnerState& rhs) {
+                               return lhs.owner_id == rhs.owner_id;
+                           }) == sample.owners.end();
+    if (!sample.snapshot_id.is_valid() || !valid_rules(sample.rules) || !owners_sorted ||
+        !unique_owners || !std::all_of(sample.owners.begin(), sample.owners.end(), valid_owner) ||
+        (latest_ && (sample.snapshot_id <= latest_->snapshot_id ||
+                     sample.server_tick < latest_->server_tick))) {
+        ++rejected_snapshot_count_;
+        return false;
+    }
+
+    const auto entities_valid =
+        std::all_of(sample.entities.begin(),
+                    sample.entities.end(),
+                    [&sample](const protocol::EntityState& entity) {
+                        if (!valid_entity(entity) || !std::isfinite(entity.launch_velocity_x) ||
+                            !std::isfinite(entity.launch_velocity_y)) {
+                            return false;
+                        }
+                        return entity.kind != protocol::EntityKind::Player ||
+                               (entity.owner_id.is_valid() &&
+                                find_owner(sample.owners, entity.owner_id) != nullptr);
+                    });
+    const auto entities_sorted =
+        std::is_sorted(sample.entities.begin(),
+                       sample.entities.end(),
+                       [](const protocol::EntityState& lhs, const protocol::EntityState& rhs) {
+                           return lhs.entity_id < rhs.entity_id;
+                       });
+    const auto unique_entities =
+        std::adjacent_find(sample.entities.begin(),
+                           sample.entities.end(),
+                           [](const protocol::EntityState& lhs, const protocol::EntityState& rhs) {
+                               return lhs.entity_id == rhs.entity_id;
+                           }) == sample.entities.end();
+    if (!entities_valid || !entities_sorted || !unique_entities) {
+        ++rejected_snapshot_count_;
+        return false;
+    }
+    latest_ = std::move(sample);
+    ++accepted_snapshot_count_;
+    return true;
+}
+
+RemoteExtrapolationFrame
+RemoteExtrapolationBuffer::sample(std::chrono::steady_clock::time_point now,
+                                  protocol::EntityId controlled_entity_id) const {
+    RemoteExtrapolationFrame frame;
+    if (!latest_) {
+        return frame;
+    }
+    const auto raw_ticks = age_ticks(*latest_, now);
+    const auto clamped_ticks =
+        std::clamp(raw_ticks, 0.0, static_cast<double>(kRemoteExtrapolationLimitTicks));
+    frame.snapshot_id = latest_->snapshot_id;
+    frame.server_tick = latest_->server_tick;
+    frame.extrapolation_ticks = clamped_ticks;
+    frame.ready = true;
+    frame.holding = raw_ticks >= static_cast<double>(kRemoteExtrapolationLimitTicks);
+    frame.entities.reserve(latest_->entities.size());
+
+    for (const auto& entity : latest_->entities) {
+        if (entity.entity_id == controlled_entity_id) {
+            continue;
+        }
+        auto entity_position = position(entity);
+        if (entity.kind == protocol::EntityKind::Player) {
+            const auto* owner = find_owner(latest_->owners, entity.owner_id);
+            if (owner == nullptr) {
+                continue;
+            }
+            const auto movement = mycore::math::Vector2{owner->movement_x, owner->movement_y};
+            auto kinematics = simulation::PlayerKinematicState{
+                .position = entity_position,
+                .launch_velocity = {entity.launch_velocity_x, entity.launch_velocity_y},
+            };
+            const auto whole_ticks = static_cast<std::uint32_t>(std::floor(clamped_ticks));
+            for (auto tick = std::uint32_t{}; tick < whole_ticks; ++tick) {
+                kinematics =
+                    simulation::advance_player_kinematics(kinematics, movement, latest_->rules);
+            }
+            const auto fraction =
+                static_cast<float>(clamped_ticks - static_cast<double>(whole_ticks));
+            if (fraction > 0.0F && whole_ticks < kRemoteExtrapolationLimitTicks) {
+                const auto velocity = simulation::player_kinematic_velocity(
+                    movement, kinematics.launch_velocity, latest_->rules);
+                kinematics.position +=
+                    velocity * (fraction / static_cast<float>(simulation::kTickRateHz));
+            }
+            entity_position = kinematics.position;
+        }
+        frame.entities.push_back({
+            .entity_id = entity.entity_id,
+            .kind = entity.kind,
+            .prediction_key = entity.prediction_key,
+            .position = entity_position,
+            .mass = entity.mass,
+        });
+    }
+    return frame;
+}
+
+RemoteExtrapolationStatistics
+RemoteExtrapolationBuffer::statistics(std::chrono::steady_clock::time_point now) const noexcept {
+    RemoteExtrapolationStatistics result;
+    result.accepted_snapshot_count = accepted_snapshot_count_;
+    result.rejected_snapshot_count = rejected_snapshot_count_;
+    if (!latest_) {
+        return result;
+    }
+    const auto raw_ticks = age_ticks(*latest_, now);
+    result.snapshot_id = latest_->snapshot_id;
+    result.sample_age_milliseconds = raw_ticks * (1000.0 / kServerTicksPerSecond);
+    result.extrapolation_ticks =
+        std::clamp(raw_ticks, 0.0, static_cast<double>(kRemoteExtrapolationLimitTicks));
+    for (const auto& entity : latest_->entities) {
+        if (entity.kind == protocol::EntityKind::Player) {
+            if (raw_ticks >= static_cast<double>(kRemoteExtrapolationLimitTicks)) {
+                ++result.held_player_count;
+            } else {
+                ++result.extrapolated_player_count;
+            }
+        } else {
+            ++result.static_entity_count;
+        }
+    }
+    return result;
+}
 
 void RemoteSnapshotBuffer::insert(RemoteSnapshotSample sample) {
     if (!sample.snapshot_id.is_valid() || std::any_of(sample.entities.begin(),
@@ -196,6 +365,7 @@ RemotePresentationFrame RemoteSnapshotBuffer::sample(protocol::EntityId controll
             frame.entities.push_back({
                 .entity_id = entity.entity_id,
                 .kind = entity.kind,
+                .prediction_key = entity.prediction_key,
                 .position = entity_position,
                 .mass = mass,
             });
@@ -261,6 +431,7 @@ RemoteEntityEndpoints RemoteSnapshotBuffer::endpoints(protocol::EntityId entity_
         return RemoteEntitySample{
             .entity_id = entity.entity_id,
             .kind = entity.kind,
+            .prediction_key = entity.prediction_key,
             .position = position(entity),
             .mass = entity.mass,
         };

@@ -69,8 +69,9 @@ Networked clients send protocol-v4 input packets at 30 Hz and receive authoritat
 player responds from a complete interaction-closed rollback World immediately, reconciles
 against verified checkpoints and server ACKs, and smooths only visible primary-position
 corrections over 100 ms. Movement, food, absorption, split, launch, cohesion, and merge are
-predicted inside that island. Remote entities outside it use six-tick delayed interpolation from
-accepted snapshot history and hold the last known remote sample during an underrun. The
+predicted inside that island. While Playing, remote players outside it default to advancing
+newest-authority movement and launch for at most six ticks/200 ms and then hold. Spectating uses
+six-tick delayed interpolation from accepted snapshot history and holds during an underrun. The
 [networking guide](../../docs/server_authoritative_networking_guide.md) covers authority,
 reliability, connection lifecycle, impairment, prediction, and compensation model.
 The [networked prediction and time reference](../../docs/networked_prediction_reference.md)
@@ -137,6 +138,11 @@ view, spectator, debug, and color settings. Its `#:schema` header connects the c
 schema for editor completion and early validation. Spectator pan speed defaults to 12 world units
 per second; zoom is clamped to the configured 5--80 pixels-per-world-unit range.
 
+`[debug].remote_presentation_mode` selects `extrapolated` (default), `interpolated`, or
+`comparison` for outside-closure players while Playing. Comparison draws the extrapolated
+presentation plus the delayed interpolated position. The setting never changes simulation,
+rollback membership, or spectator presentation.
+
 Configuration precedence is built-in defaults, then `dots-client.toml` in the working directory
 when present. `--config <path>` replaces that automatic path. CLI mode flags such as `--offline`,
 `--in-memory`, and `--connect` override the configured network mode.
@@ -146,7 +152,8 @@ comparing recovery behavior under simulated loss; redundancy is enabled by defau
 
 Set `[debug].enabled = false` to hide the in-game observability panel, suppress world-space
 diagnostic layers, and prevent the panel from receiving input. It defaults to `true`; this does
-not change simulation or gameplay presentation.
+not change simulation or gameplay presentation. Confirmed kill/defeat banners remain visible
+because they are non-debug gameplay UI and never capture input.
 
 ```bash
 ./build/macos-clang-debug/bin/dots_client \
@@ -159,7 +166,8 @@ When `[debug].enabled` is true, the in-game debug UI uses two panes: left **Dots
 **Runtime**, **Network**, and **Gameplay** tabs; right **Dots diagnostics** has **Prediction**,
 **Interpolation**, and **Tools** tabs. It reports
 server-assigned client/entity IDs, simulation and frame health, transport statistics, input ACK
-and history pressure, replay/correction metrics, authoritative/predicted/presentation state, and
+and history pressure, replay/correction metrics, consequence-handler delivery, persistent
+presentation handoffs, extrapolation age/cap/holds, authoritative/predicted/presentation state, and
 confirmed absorption, defeat, follow, respawn-deadline, and respawn-result state. The Gameplay
 countdown projects the latest server tick using snapshot receipt age for presentation only; the
 server tick decides eligibility. The compact top-left game-state panel repeats an active respawn

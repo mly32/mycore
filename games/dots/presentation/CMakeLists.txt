@@ -11,6 +11,7 @@ target_link_libraries(
     dots_remote_presentation
     PUBLIC
         Dots::Protocol
+        Dots::Simulation
         MyCore::Math
 )
 mycore_configure_target(dots_remote_presentation)
@@ -37,3 +38,24 @@ target_link_libraries(
         MyCore::Render2D
 )
 mycore_configure_target(dots_presentation)
+
+add_library(
+    dots_rollback_presentation STATIC
+    src/rollback_consequences.cpp
+)
+add_library(Dots::RollbackPresentation ALIAS dots_rollback_presentation)
+
+target_include_directories(
+    dots_rollback_presentation
+    PUBLIC
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+)
+
+target_link_libraries(
+    dots_rollback_presentation
+    PUBLIC
+        Dots::Prediction
+        Dots::Presentation
+        MyCore::Rollback
+)
+mycore_configure_target(dots_rollback_presentation)

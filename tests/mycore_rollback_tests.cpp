@@ -696,7 +696,17 @@ TEST_CASE("Consequence policies deliver, revise, cancel, confirm, and suppress b
 
     const auto& predicted = require_commit(
         timeline.advance(sequence(1), ToyStimulus{.delta = 1, .pulse_key = ToyEventKey{1}}));
-    REQUIRE(router.consume(predicted).failures.empty());
+    const auto predicted_report = router.consume(predicted);
+    REQUIRE(predicted_report.failures.empty());
+    REQUIRE(predicted_report.handlers.size() == 3);
+    CHECK(predicted_report.handlers[0].handler_index == 0);
+    CHECK(predicted_report.handlers[0].policy == mycore::rollback::ConsequencePolicy::PredictOnce);
+    CHECK(predicted_report.handlers[0].statistics.delivered_count == 1);
+    CHECK(predicted_report.handlers[1].policy ==
+          mycore::rollback::ConsequencePolicy::PredictCancelable);
+    CHECK(predicted_report.handlers[1].statistics.delivered_count == 1);
+    CHECK(predicted_report.handlers[2].policy == mycore::rollback::ConsequencePolicy::ConfirmOnce);
+    CHECK(predicted_report.handlers[2].statistics.suppressed_count == 1);
     REQUIRE(once_log.first.size() == 1);
     REQUIRE(cancelable_log.predicted.size() == 1);
     REQUIRE(confirmed_log.confirmed.empty());
@@ -722,6 +732,16 @@ TEST_CASE("Consequence policies deliver, revise, cancel, confirm, and suppress b
     REQUIRE(cancelable_log.confirmed.size() == 1);
     REQUIRE(confirmed_log.confirmed.size() == 1);
     REQUIRE(repeated_report.statistics.suppressed_count == 3);
+    REQUIRE(repeated_report.handlers.size() == 3);
+    CHECK(repeated_report.handlers[0].statistics.suppressed_count == 1);
+    CHECK(repeated_report.handlers[1].statistics.suppressed_count == 1);
+    CHECK(repeated_report.handlers[2].statistics.suppressed_count == 1);
+    const auto cumulative_handlers = router.handler_statistics();
+    REQUIRE(cumulative_handlers.size() == 3);
+    CHECK(cumulative_handlers[0].statistics.delivered_count == 1);
+    CHECK(cumulative_handlers[1].statistics.revised_count == 1);
+    CHECK(cumulative_handlers[1].statistics.confirmed_count == 1);
+    CHECK(cumulative_handlers[2].statistics.confirmed_count == 1);
 
     const auto authority_only_event = ToyEvent{PulseEvent{.key = ToyEventKey{4}, .payload = 12}};
     const auto& authority_only = require_commit(timeline.reconcile(
