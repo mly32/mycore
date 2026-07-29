@@ -493,6 +493,13 @@ Presentation retains a pending-elimination camera/control proxy and continues ca
 Rollback restores the piece and cancels the proxy. Only confirmed authority enters Spectating,
 selects a follow target, enables respawn eligibility, or exposes other durable session results.
 
+Retained owned commands are conditional on that owner existing at their replay tick. If refreshed
+authority or an earlier replayed interaction speculatively removes the owner, later retained
+commands remain immutable in timeline history but execute as deterministic no-ops while the owner
+is absent. A later authority restore can therefore replay the same commands normally. New commands
+are still retained outside the temporarily deferred timeline while no predicted owner exists.
+Absence is not malformed input and must not turn a valid correction into `ModelStepFailed`.
+
 Respawn placement remains server-only. Scoring, achievements, and a general kill-feed system are
 outside Feature 14, but future handlers for them must use `ConfirmOnce`.
 

@@ -158,6 +158,20 @@ void write_rules(DigestWriter& writer, const simulation::WorldRules& rules) noex
     return mycore::math::length(current - previous);
 }
 
+[[nodiscard]] bool valid_owned_command_shape(const simulation::TickCommand& command) noexcept {
+    switch (command.type) {
+    case simulation::TickCommandType::ApplyInput:
+        return command.input_id.is_valid() && std::isfinite(command.movement.x) &&
+               std::isfinite(command.movement.y);
+    case simulation::TickCommandType::StopMovement:
+        return !command.input_id.is_valid() && command.movement == mycore::math::Vector2{} &&
+               !command.split_requested;
+    case simulation::TickCommandType::AssumeMovement:
+    default:
+        return false;
+    }
+}
+
 template <class Value, class Id, class GetId, class AddDifference>
 void collect_differences(const std::vector<Value>& previous,
                          const std::vector<Value>& current,
@@ -281,17 +295,34 @@ WorldModel::step(State& state, const Stimulus& stimulus, const Scope& scope) con
         return make_error(PredictionErrorCode::InvalidScope);
     }
 
+    const auto checkpoint = state.checkpoint();
     std::vector<simulation::TickCommand> commands;
     commands.reserve(stimulus.commands.size() + stimulus.remote_movement_assumptions.size());
-    for (const auto& command : stimulus.commands) {
+    for (auto index = std::size_t{}; index < stimulus.commands.size(); ++index) {
+        const auto& command = stimulus.commands[index];
         if (!contains(scope.owned_owner_ids, command.owner_id) ||
-            command.type == simulation::TickCommandType::AssumeMovement) {
+            !valid_owned_command_shape(command) ||
+            std::any_of(stimulus.commands.begin(),
+                        stimulus.commands.begin() + static_cast<std::ptrdiff_t>(index),
+                        [&command](const simulation::TickCommand& previous) {
+                            return previous.owner_id == command.owner_id;
+                        })) {
             return make_error(PredictionErrorCode::InvalidStimulus);
         }
-        commands.push_back(command);
+        const auto live_owner = std::lower_bound(
+            checkpoint.owners.begin(),
+            checkpoint.owners.end(),
+            command.owner_id,
+            [](const simulation::OwnerCheckpoint& owner, simulation::PlayerOwnerId owner_id) {
+                return owner.owner_id < owner_id;
+            });
+        // Replay keeps the sampled command immutable, but an earlier speculative interaction may
+        // have removed its owner. It becomes applicable again if later authority restores them.
+        if (live_owner != checkpoint.owners.end() && live_owner->owner_id == command.owner_id) {
+            commands.push_back(command);
+        }
     }
 
-    const auto checkpoint = state.checkpoint();
     std::vector<simulation::PlayerOwnerId> live_remote_owners;
     for (const auto& owner : checkpoint.owners) {
         if (!contains(scope.owned_owner_ids, owner.owner_id)) {

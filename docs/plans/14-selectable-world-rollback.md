@@ -263,7 +263,10 @@ incorrect partial state.
 When speculative local elimination leaves no owner to step, Dots continues retaining and sending
 input outside the temporarily deferred timeline. A session-validated ACK through that retained
 range selects hard resync, then the client replays the remaining unacknowledged suffix. The
-operation is permitted only when the exact ACK is still covered by the outer ring.
+operation is permitted only when the exact ACK is still covered by the outer ring. If an owner
+exists at the replay base but an earlier retained interaction removes it, later immutable owned
+commands remain in history and execute as no-ops until authority restores that owner; this is an
+expected speculative topology transition, not a model-step failure.
 
 The [Feature 14 prediction-stutter postmortem](../feature14_prediction_stutter_postmortem.md)
 records why the storage bound, causal horizon, immutable input, and refreshable assumption must

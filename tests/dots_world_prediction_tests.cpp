@@ -372,6 +372,90 @@ TEST_CASE("Dots prediction applies closure events but publishes only subscribed-
     CHECK(owned_state.owners.size() == 2);
 }
 
+TEST_CASE("Dots replay preserves owned input while its speculative owner is absent",
+          "[dots][prediction][reconciliation][elimination]") {
+    constexpr auto owned_owner = PlayerOwnerId{0};
+    constexpr auto remote_owner = PlayerOwnerId{1};
+    World initial;
+    const auto owned_player = initial.spawn_player(owned_owner, {});
+    const auto remote_player = initial.spawn_player(remote_owner, {100.0F, 0.0F});
+    REQUIRE(owned_player.has_value());
+    REQUIRE(remote_player.has_value());
+    auto initial_checkpoint = initial.checkpoint();
+    auto remote_checkpoint =
+        std::find_if(initial_checkpoint.players.begin(),
+                     initial_checkpoint.players.end(),
+                     [remote_owner](const dots::simulation::PlayerCheckpoint& player) {
+                         return player.owner_id == remote_owner;
+                     });
+    REQUIRE(remote_checkpoint != initial_checkpoint.players.end());
+    remote_checkpoint->mass = 32.0F;
+
+    const auto scope = require_scope(initial_checkpoint,
+                                     PredictionProfile::FullReplicated,
+                                     dots::prediction::kCurrentPredictionMechanics,
+                                     {owned_owner},
+                                     mycore::time::TickDelta{3});
+    auto timeline = initialized_timeline(initial_checkpoint, scope);
+    const auto stimulus = [&initial_checkpoint, owned_owner, remote_owner](std::uint32_t input_id) {
+        return TickStimulus{
+            .commands = {input(owned_owner, input_id, {1.0F, 0.0F}, input_id == 2)},
+            .remote_movement_assumptions =
+                {
+                    remote(remote_owner, initial_checkpoint.tick),
+                },
+        };
+    };
+    for (auto input_id = std::uint32_t{}; input_id < 3; ++input_id) {
+        static_cast<void>(require_commit(
+            timeline.advance(mycore::rollback::CommandSequence{input_id}, stimulus(input_id))));
+    }
+    REQUIRE(timeline.state()->contains(*owned_player));
+
+    auto eliminating_authority = initial_checkpoint;
+    eliminating_authority.tick = mycore::time::Tick{1};
+    auto authority_owned =
+        std::find_if(eliminating_authority.owners.begin(),
+                     eliminating_authority.owners.end(),
+                     [owned_owner](const dots::simulation::OwnerCheckpoint& owner) {
+                         return owner.owner_id == owned_owner;
+                     });
+    REQUIRE(authority_owned != eliminating_authority.owners.end());
+    authority_owned->last_input_id = InputCommandId{0};
+    auto authority_remote_player =
+        std::find_if(eliminating_authority.players.begin(),
+                     eliminating_authority.players.end(),
+                     [remote_owner](const dots::simulation::PlayerCheckpoint& player) {
+                         return player.owner_id == remote_owner;
+                     });
+    REQUIRE(authority_remote_player != eliminating_authority.players.end());
+    authority_remote_player->position = {};
+
+    static_cast<void>(
+        require_commit(timeline.reconcile(authority_frame(eliminating_authority, scope, 0))));
+    CHECK_FALSE(timeline.state()->contains(*owned_player));
+    REQUIRE(timeline.history().size() == 2);
+    REQUIRE(timeline.history().back().stimulus.commands.size() == 1);
+    CHECK(timeline.history().back().stimulus.commands.front().input_id == InputCommandId{2});
+
+    auto surviving_authority = initial_checkpoint;
+    surviving_authority.tick = mycore::time::Tick{2};
+    authority_owned = std::find_if(surviving_authority.owners.begin(),
+                                   surviving_authority.owners.end(),
+                                   [owned_owner](const dots::simulation::OwnerCheckpoint& owner) {
+                                       return owner.owner_id == owned_owner;
+                                   });
+    REQUIRE(authority_owned != surviving_authority.owners.end());
+    authority_owned->last_input_id = InputCommandId{1};
+
+    static_cast<void>(
+        require_commit(timeline.reconcile(authority_frame(surviving_authority, scope, 1))));
+    REQUIRE(timeline.state()->contains(*owned_player));
+    const auto recovered_checkpoint = timeline.state()->checkpoint();
+    REQUIRE(recovered_checkpoint.owners.front().player_ids.size() == 2);
+    CHECK(recovered_checkpoint.owners.front().last_input_id == InputCommandId{2});
+}
+
 TEST_CASE("Dots scope projection rejects incompatible or out-of-scope authority",
           "[dots][prediction][scope]") {
     World world;

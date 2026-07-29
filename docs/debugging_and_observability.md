@@ -580,6 +580,11 @@ includes the authority tick and scope epoch. A split or merge immediately before
 that owner's new topology; the runtime should rebase to a completely projectable scope, never
 install partial owner state.
 
+A valid retained owned command whose owner was removed by an earlier replayed interaction is an
+expected conditional no-op and must not produce `model_step_failed: ... invalid command`. That
+message after an absorption indicates a replay-applicability regression rather than corrupt
+network input.
+
 ### Remote cursor repeatedly holds
 
 The buffer lacks a newer endpoint. Compare buffer coverage, current delay, jitter, late samples,
