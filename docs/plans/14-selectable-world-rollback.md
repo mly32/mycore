@@ -427,7 +427,9 @@ Keep commits focused and reviewable, but do not add approval gates between these
    extrapolation, interpolation fallback, and every consequence-matrix example.
 8. Add adaptive command timing, complete Rollback diagnostics/faults, impairment scenarios,
    entity-scale workloads, documentation updates, and the measured same-frame/multi-frame
-   decision.
+   decision. Measure cross-tick predicted-closure corrections as part of that work; if they need
+   a residual beyond fixed-tick interpolation, carry an explicit correction generation rather
+   than inferring one from source revision.
 
 Steps 1 through 7 are implemented on `feature/14`; step 8 is next.
 `MyCore::Rollback` now provides the generic
@@ -535,6 +537,10 @@ by entity ID otherwise. The selected source order while Playing is predicted clo
 snapshot extrapolation, then delayed interpolation fallback. Predicted fixed-tick samples use the
 client accumulator alpha. Same-tick correction, predicted/remote source handoff, and structural
 replacement preserve the prior visual pose and decay only their presentation offset over 100 ms.
+Already-smoothed local `State` and delayed `Interpolated` samples pass through; a newer
+`Extrapolated` revision still smooths because it replaces a guessed remote future. The
+[persistent presentation audit](../feature14_persistent_presentation_audit.md) records the
+double-smoothing finding and complete source-policy matrix.
 
 Outside the prediction closure, presentation advances only known owner movement and per-entity
 launch velocity from the newest accepted snapshot. It executes the same Dots kinematic step for

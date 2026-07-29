@@ -158,7 +158,12 @@ Presentation keeps semantic tracks by predicted spawn key when available and ent
 otherwise. Predicted fixed-tick poses interpolate with the client accumulator. Reconciliation,
 prediction-to-remote source changes, and authoritative child-ID remaps preserve the old visual
 pose and decay only the presentation residual over 100 ms. Removed circles fade for 100 ms, and
-the followed piece leaves an eight-sample/300 ms motion trail.
+the followed piece leaves an eight-sample/300 ms motion trail. The already-smoothed local primary
+and Feature 12 delayed-interpolation samples pass through the persistent adapter without another
+low-pass. A newer extrapolation snapshot can replace a guessed remote future, so that
+presentation-only residual still smooths over 100 ms. See the
+[persistent presentation audit](feature14_persistent_presentation_audit.md) for the complete
+source-policy matrix.
 
 Rollback-generated event journals drive Dots-owned consequence handlers only after an atomic
 timeline commit:

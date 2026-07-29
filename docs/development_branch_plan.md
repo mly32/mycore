@@ -525,7 +525,9 @@ Exit criterion:
 
 Implementation status: steps 1 through 7 are complete. Adaptive command timing, expanded
 fault/diagnostic coverage, measured scale workloads, router-ledger pruning, and the conditional
-multi-frame replay decision remain in step 8.
+multi-frame replay decision remain in step 8. Step 8 also measures cross-tick predicted-closure
+corrections and adds an explicit presentation correction generation only if fixed-tick
+interpolation is insufficient; source revisions must not be reused as discontinuity signals.
 
 Implement Feature 14 incrementally, beginning with the game-neutral rollback kernel. Keep commits
 small enough to review independently; the roadmap does not require separate branches or approval

@@ -190,8 +190,10 @@ struct PersistentPresentationStatistics {
     float maximum_smoothed_distance{};
 };
 
-// Stabilizes the presentation identity and pose selected by the Dots frame extractor. Only
-// Player/Food gameplay circles become tracks; diagnostic and consequence circles pass through.
+// Stabilizes the presentation identity and pose selected by the Dots frame extractor. State and
+// delayed-interpolated poses pass through, predicted revisions use fixed-tick interpolation, and
+// new extrapolation authority may leave a short correction residual. Only Player/Food gameplay
+// circles become tracks; diagnostic and consequence circles pass through.
 class PersistentWorldPresentation {
 public:
     [[nodiscard]] FrameData compose(const FrameData& desired,

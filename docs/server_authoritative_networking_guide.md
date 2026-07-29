@@ -929,7 +929,10 @@ movement and launch velocity for at most six ticks/200 ms, then hold. This path 
 movement/launch integrator and launch decay but never runs cohesion, collision, food consumption,
 absorption, split, merge, or checkpoint logic. New authority and closure entry smooth only the
 visible presentation residual. Delayed interpolation remains the spectator, selectable fallback,
-and comparison path.
+and comparison path. The persistent adapter passes delayed interpolation and the already-smoothed
+local primary through directly; only actual extrapolation replacement, source/identity handoff,
+or predicted correction creates another residual. See the
+[persistent presentation audit](feature14_persistent_presentation_audit.md).
 
 ### What “latency compensation” means here
 

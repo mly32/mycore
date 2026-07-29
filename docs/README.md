@@ -28,6 +28,9 @@
 - [Feature 14 rollback and prediction audit](feature14_rollback_prediction_audit.md): assessment
   of mechanic closure, event subscriptions, receipt lifecycle, client commit delivery, and the
   step 6.5 remediation criteria.
+- [Feature 14 persistent presentation audit](feature14_persistent_presentation_audit.md): source
+  sampling contracts, the double-smoothing correction, remote prediction/extrapolation modes,
+  and prevention rules.
 - [SDL_GPU rendering](sdl_gpu_rendering_guide.md): shaders, resources, draw flow, and platform
   backends.
 

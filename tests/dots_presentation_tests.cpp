@@ -66,6 +66,106 @@ TEST_CASE("Persistent presentation interpolates predicted fixed-tick state",
     CHECK(presentation.statistics().smoothed_correction_count == 0);
 }
 
+TEST_CASE("Persistent presentation passes through an already presented local state",
+          "[dots][presentation][persistent]") {
+    dots::presentation::PersistentWorldPresentation presentation;
+    static_cast<void>(
+        presentation.compose(player_frame(0.0F, 1, dots::presentation::PresentationSource::State),
+                             0.0F,
+                             0,
+                             {},
+                             clock_time(0ms)));
+
+    const auto advanced =
+        presentation.compose(player_frame(8.0F, 2, dots::presentation::PresentationSource::State),
+                             0.25F,
+                             0,
+                             {},
+                             clock_time(10ms));
+    REQUIRE(advanced.circles.size() == 1);
+    CHECK(advanced.circles.front().position.x == Catch::Approx(8.0F));
+    CHECK(presentation.statistics().smoothed_correction_count == 0);
+}
+
+TEST_CASE("Persistent presentation does not smooth delayed interpolation bracket changes",
+          "[dots][presentation][persistent]") {
+    dots::presentation::PersistentWorldPresentation presentation;
+    static_cast<void>(presentation.compose(
+        player_frame(0.0F, 1, dots::presentation::PresentationSource::Interpolated),
+        0.0F,
+        0,
+        {},
+        clock_time(0ms)));
+
+    const auto within_bracket = presentation.compose(
+        player_frame(2.0F, 1, dots::presentation::PresentationSource::Interpolated),
+        0.0F,
+        0,
+        {},
+        clock_time(10ms));
+    REQUIRE(within_bracket.circles.size() == 1);
+    CHECK(within_bracket.circles.front().position.x == Catch::Approx(2.0F));
+
+    const auto next_bracket = presentation.compose(
+        player_frame(4.0F, 2, dots::presentation::PresentationSource::Interpolated),
+        0.0F,
+        0,
+        {},
+        clock_time(20ms));
+    REQUIRE(next_bracket.circles.size() == 1);
+    CHECK(next_bracket.circles.front().position.x == Catch::Approx(4.0F));
+    CHECK(presentation.statistics().smoothed_correction_count == 0);
+}
+
+TEST_CASE("Persistent presentation smooths new extrapolation authority",
+          "[dots][presentation][persistent]") {
+    dots::presentation::PersistentWorldPresentation presentation;
+    static_cast<void>(presentation.compose(
+        player_frame(0.0F, 1, dots::presentation::PresentationSource::Extrapolated),
+        0.0F,
+        0,
+        {},
+        clock_time(0ms)));
+
+    const auto advanced_guess = presentation.compose(
+        player_frame(4.0F, 1, dots::presentation::PresentationSource::Extrapolated),
+        0.0F,
+        0,
+        {},
+        clock_time(10ms));
+    REQUIRE(advanced_guess.circles.size() == 1);
+    CHECK(advanced_guess.circles.front().position.x == Catch::Approx(4.0F));
+    CHECK(presentation.statistics().smoothed_correction_count == 0);
+
+    const auto corrected = presentation.compose(
+        player_frame(2.0F, 2, dots::presentation::PresentationSource::Extrapolated),
+        0.0F,
+        0,
+        {},
+        clock_time(20ms));
+    REQUIRE(corrected.circles.size() == 1);
+    CHECK(corrected.circles.front().position.x == Catch::Approx(4.0F));
+    CHECK(presentation.statistics().smoothed_correction_count == 1);
+
+    const auto halfway = presentation.compose(
+        player_frame(3.0F, 2, dots::presentation::PresentationSource::Extrapolated),
+        0.0F,
+        0,
+        {},
+        clock_time(70ms));
+    REQUIRE(halfway.circles.size() == 1);
+    CHECK(halfway.circles.front().position.x == Catch::Approx(4.0F));
+
+    const auto settled = presentation.compose(
+        player_frame(4.0F, 2, dots::presentation::PresentationSource::Extrapolated),
+        0.0F,
+        0,
+        {},
+        clock_time(120ms));
+    REQUIRE(settled.circles.size() == 1);
+    CHECK(settled.circles.front().position.x == Catch::Approx(4.0F));
+}
+
 TEST_CASE("Persistent presentation preserves PredictionKey identity across authority handoff",
           "[dots][presentation][persistent]") {
     const auto prediction_key = dots::protocol::PredictionKey{

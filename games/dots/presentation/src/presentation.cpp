@@ -45,6 +45,14 @@ lerp(mycore::render::Color from, mycore::render::Color to, float amount) noexcep
     return std::isfinite(value.x) && std::isfinite(value.y);
 }
 
+// A source revision only identifies a new sample; it does not universally mean that the sampled
+// pose jumped. Delayed interpolation and locally smoothed State poses are already continuous.
+// Extrapolation replaces a guessed future with newer authority, so that replacement may need a
+// short presentation-only correction.
+[[nodiscard]] bool revision_replacement_requires_smoothing(PresentationSource source) noexcept {
+    return source == PresentationSource::Extrapolated;
+}
+
 void append_outline(mycore::render_2d::DrawList& draw_list,
                     const CircleInstance& circle,
                     mycore::render::Color color,
@@ -412,7 +420,7 @@ FrameData PersistentWorldPresentation::compose(const FrameData& desired,
             (track.current.position != circle.position || track.current.radius != circle.radius);
         const auto smooth_change =
             source_changed || identity_remapped ||
-            (circle.source != PresentationSource::Predicted && revision_changed) ||
+            (revision_changed && revision_replacement_requires_smoothing(circle.source)) ||
             same_revision_prediction_changed;
 
         if (circle.source == PresentationSource::Predicted && revision_changed && !source_changed) {

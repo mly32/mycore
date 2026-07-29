@@ -356,6 +356,10 @@ capacity from 1 through 64 and defaults to 8. This changes diagnostics only.
 | Magenta outline | An entity position immediately before a recent nonzero correction. This includes the local primary and comparable remote players. New entries are opaque and older entries fade without changing hue. |
 | Purple markers | Results of replayed unacknowledged inputs after the rollback base. |
 
+The filled primary normally overlaps the white outline. Separation is expected only while a real
+100 ms local reconciliation residual is active. The persistent World adapter does not smooth the
+already-presented local `State` pose a second time.
+
 Each magenta entry remains for at most two seconds and the combined history retains only the
 configured last N entries. Remote entries are recorded only when authority rebuilds the same
 predicted head tick; movement from an older head tick to a newer one is forward simulation, not a
@@ -435,10 +439,13 @@ movement plus each player's launch velocity with the shared Dots kinematic helpe
 launch decay, for at most six ticks/200 ms. Food is static and cohesion, collision, consumption,
 absorption, split, merge, and closure logic never run in this layer. `interpolated` selects the
 Feature 12 delayed frame. `comparison` draws extrapolation normally and adds an outline at the
-delayed interpolated position. New authority, prediction-closure entry, and predicted-child
-entity-ID remaps hand off through persistent semantic tracks; visible pose/radius residuals decay
-over 100 ms. Movement trails retain at most eight samples for 300 ms, and removed gameplay
-circles use a 100 ms structural fade.
+delayed interpolated position. A delayed interpolation sample passes through the persistent
+adapter because its cursor is already continuous. New extrapolation authority,
+prediction-closure entry, and predicted-child entity-ID remaps hand off through persistent
+semantic tracks; actual visible pose/radius residuals decay over 100 ms. Movement trails retain
+at most eight samples for 300 ms, and removed gameplay circles use a 100 ms structural fade.
+The [persistent presentation audit](feature14_persistent_presentation_audit.md) records the
+per-source policy.
 
 Feature 12 presentation-clock correction and future local input-clock synchronization solve
 different problems. Feature 12 keeps a delayed remote cursor centered in known snapshots. A
@@ -536,6 +543,18 @@ provenance, and floating-point divergence. Use same-head reconciliation logs plu
 magenta, white, and replay markers to identify where states first disagree. Repeated same-head
 remote corrections after one direction change match the failure pattern in the
 [Feature 14 prediction-stutter postmortem](feature14_prediction_stutter_postmortem.md).
+
+### Remote corrects when changing direction
+
+First check the prediction profile and configured remote presentation mode. A remote inside the
+interaction closure runs complete rollback-World prediction from its newest authoritative held
+movement. A remote outside the closure defaults to movement/launch-only extrapolation for at most
+six ticks/200 ms. Neither path can know a remote direction edge before authority arrives, so a
+turn can correct away from the held direction. Loss can enlarge the correction before the
+extrapolation cap holds. Select `interpolated` to compare against the six-tick delayed,
+known-endpoint tradeoff. The
+[persistent presentation audit](feature14_persistent_presentation_audit.md) distinguishes this
+unavoidable unknown-input correction from the corrected local double-smoothing bug.
 
 ### Smoothing offset never settles
 
