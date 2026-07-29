@@ -379,7 +379,9 @@ The **Tools** tab in the right-hand **Diagnostics** pane owns these controls:
   movement. Retaining the last direction makes the control usable while ImGui temporarily
   captures mouse steering.
 - Drop the next three input packets while continuing local prediction.
-- Show/hide state layers and replay markers.
+- Show/hide state layers. **Show corrected roll-forward path** defaults off and draws purple
+  primary-position samples from the last nonzero correction's replayed input suffix for two
+  seconds. It does not show remote paths, topology, or replayed events.
 - Clear retained correction visuals.
 
 The layer and replay toggles default on. During an injected-drop burst, the **Prediction** tab in

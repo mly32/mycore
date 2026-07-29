@@ -148,7 +148,7 @@ constexpr auto kFaultCompletionReceiptDuration = std::chrono::seconds{2};
 
 struct PredictionDebugControls {
     bool show_prediction_layers{true};
-    bool show_replay_path{true};
+    bool show_replay_path{};
     bool show_remote_endpoint_layers{true};
     std::optional<Vector2> requested_prediction_error;
     bool drop_input_packets_requested{};
@@ -811,7 +811,7 @@ void draw_prediction_tools_tab(const DebugWorldStats& world,
         ImGui::Separator();
         ImGui::TextUnformatted("Visual layers");
         ImGui::Checkbox("Show prediction layers", &prediction_controls->show_prediction_layers);
-        ImGui::Checkbox("Show correction replay", &prediction_controls->show_replay_path);
+        ImGui::Checkbox("Show corrected roll-forward path", &prediction_controls->show_replay_path);
         ImGui::Checkbox("Show remote endpoint outlines",
                         &prediction_controls->show_remote_endpoint_layers);
         if (ImGui::Button("Clear correction ghosts")) {
