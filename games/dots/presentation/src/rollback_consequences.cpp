@@ -544,6 +544,7 @@ public:
         auto report = router_.consume(batch);
         ++statistics_.consumed_batch_count;
         statistics_.dispatch = router_.statistics();
+        statistics_.ledger = router_.ledger_statistics();
         statistics_.handlers.assign(router_.handler_statistics().begin(),
                                     router_.handler_statistics().end());
         statistics_.handler_failure_count += report.failures.size();

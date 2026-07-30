@@ -103,9 +103,15 @@ public:
 
         for (const auto& change : batch.changes) {
             process_change(change, report, std::index_sequence_for<Handlers...>{});
+            try_prune(change.key, std::index_sequence_for<Handlers...>{});
         }
         for (const auto& key : batch.retired_keys) {
-            retire(key, std::index_sequence_for<Handlers...>{});
+            replay_retirement_evidence_.insert(key);
+            try_prune(key, std::index_sequence_for<Handlers...>{});
+        }
+        for (const auto& key : batch.externally_retired_keys) {
+            external_retirement_evidence_.insert(key);
+            try_prune(key, std::index_sequence_for<Handlers...>{});
         }
 
         add_statistics(statistics_, report.statistics);
@@ -131,6 +137,20 @@ public:
     [[nodiscard]] std::span<const ConsequenceHandlerDispatchStatistics>
     handler_statistics() const noexcept {
         return handler_statistics_;
+    }
+
+    [[nodiscard]] ConsequenceLedgerStatistics ledger_statistics() const noexcept {
+        ConsequenceLedgerStatistics result{
+            .replay_retirement_evidence_count = replay_retirement_evidence_.size(),
+            .external_retirement_evidence_count = external_retirement_evidence_.size(),
+            .predict_once_key_count = 0,
+            .confirm_once_key_count = 0,
+            .cancelable_active_key_count = 0,
+            .cancelable_inactive_key_count = 0,
+            .pruned_occurrence_count = pruned_occurrence_count_,
+        };
+        accumulate_ledger_statistics(result, std::index_sequence_for<Handlers...>{});
+        return result;
     }
 
 private:
@@ -391,22 +411,74 @@ private:
     }
 
     template <std::size_t... Indices>
-    void retire(const typename Model::EventKey& key, std::index_sequence<Indices...>) {
-        (retire_handler<Indices>(key), ...);
+    void try_prune(const typename Model::EventKey& key, std::index_sequence<Indices...>) {
+        if (!replay_retirement_evidence_.contains(key) ||
+            !external_retirement_evidence_.contains(key) ||
+            !(can_prune_handler<Indices>(key) && ...)) {
+            return;
+        }
+        (prune_handler<Indices>(key), ...);
+        replay_retirement_evidence_.erase(key);
+        external_retirement_evidence_.erase(key);
+        ++pruned_occurrence_count_;
     }
 
-    template <std::size_t Index> void retire_handler(const typename Model::EventKey& /*key*/) {
+    template <std::size_t Index>
+    [[nodiscard]] bool can_prune_handler(const typename Model::EventKey& key) const {
         using Handler = std::tuple_element_t<Index, std::tuple<Handlers...>>;
         static_assert(Handler::policy == ConsequencePolicy::PredictOnce ||
                       Handler::policy == ConsequencePolicy::PredictCancelable ||
                       Handler::policy == ConsequencePolicy::ConfirmOnce);
-        // Keep tombstones for the session until the game adapter can prove its authority receipt
-        // watermark has retired the key. Retracted cancelable entries are erased when canceled,
-        // which intentionally permits a real later reactivation.
+        if constexpr (Handler::policy == ConsequencePolicy::PredictCancelable) {
+            const auto& active = std::get<Index>(storage_).active;
+            const auto found = active.find(key);
+            return found == active.end() || !found->second.has_value();
+        }
+        return true;
+    }
+
+    template <std::size_t Index> void prune_handler(const typename Model::EventKey& key) {
+        using Handler = std::tuple_element_t<Index, std::tuple<Handlers...>>;
+        if constexpr (Handler::policy == ConsequencePolicy::PredictCancelable) {
+            std::get<Index>(storage_).active.erase(key);
+        } else {
+            std::get<Index>(storage_).delivered.erase(key);
+        }
+    }
+
+    template <std::size_t... Indices>
+    void accumulate_ledger_statistics(ConsequenceLedgerStatistics& result,
+                                      std::index_sequence<Indices...>) const noexcept {
+        (accumulate_handler_ledger_statistics<Indices>(result), ...);
+    }
+
+    template <std::size_t Index>
+    void accumulate_handler_ledger_statistics(ConsequenceLedgerStatistics& result) const noexcept {
+        using Handler = std::tuple_element_t<Index, std::tuple<Handlers...>>;
+        if constexpr (Handler::policy == ConsequencePolicy::PredictOnce) {
+            result.predict_once_key_count += std::get<Index>(storage_).delivered.size();
+        } else if constexpr (Handler::policy == ConsequencePolicy::ConfirmOnce) {
+            result.confirm_once_key_count += std::get<Index>(storage_).delivered.size();
+        } else {
+            static_assert(Handler::policy == ConsequencePolicy::PredictCancelable);
+            for (const auto& [key, token] : std::get<Index>(storage_).active) {
+                static_cast<void>(key);
+                if (token.has_value()) {
+                    ++result.cancelable_active_key_count;
+                } else {
+                    ++result.cancelable_inactive_key_count;
+                }
+            }
+        }
     }
 
     std::tuple<Handlers...> handlers_;
     std::tuple<detail::ConsequenceStorage<Model, Handlers>...> storage_;
+    std::unordered_set<typename Model::EventKey, typename Model::EventKeyHash>
+        replay_retirement_evidence_;
+    std::unordered_set<typename Model::EventKey, typename Model::EventKeyHash>
+        external_retirement_evidence_;
+    std::uint64_t pruned_occurrence_count_{};
     ConsequenceDispatchStatistics statistics_;
     std::array<ConsequenceHandlerDispatchStatistics, sizeof...(Handlers)> handler_statistics_;
 };

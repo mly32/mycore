@@ -125,6 +125,7 @@ template <RollbackModel Model> struct EventBatch {
     CommitKind kind{CommitKind::Advance};
     std::vector<EventChange<Model>> changes;
     std::vector<typename Model::EventKey> retired_keys;
+    std::vector<typename Model::EventKey> externally_retired_keys;
 };
 
 template <RollbackModel Model>
@@ -133,6 +134,7 @@ template <RollbackModel Model>
         .kind = commit.kind,
         .changes = commit.event_changes,
         .retired_keys = commit.retired_event_keys,
+        .externally_retired_keys = {},
     };
 }
 
@@ -142,6 +144,7 @@ template <RollbackModel Model>
         .kind = commit.kind,
         .changes = std::move(commit.event_changes),
         .retired_keys = std::move(commit.retired_event_keys),
+        .externally_retired_keys = {},
     };
 }
 
@@ -163,6 +166,7 @@ resolve_authority_only_events(const Model& model,
         .kind = CommitKind::AuthorityOnly,
         .changes = {},
         .retired_keys = {},
+        .externally_retired_keys = {},
     };
     result.changes.reserve(authority_events.size());
     result.retired_keys.reserve(authority_events.size());

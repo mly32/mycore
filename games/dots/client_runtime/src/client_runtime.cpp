@@ -39,14 +39,16 @@ constexpr auto kPredictionScopeHorizonFloor = mycore::time::TickDelta{5};
 template <class Container>
 void append_observable_event_batch(Container& destination, prediction::Commit&& commit) {
     auto batch = mycore::rollback::event_batch_from_commit(std::move(commit));
-    if (!batch.changes.empty() || !batch.retired_keys.empty()) {
+    if (!batch.changes.empty() || !batch.retired_keys.empty() ||
+        !batch.externally_retired_keys.empty()) {
         destination.push_back(std::move(batch));
     }
 }
 
 template <class Container>
 void append_observable_event_batch(Container& destination, PredictionEventBatch&& batch) {
-    if (!batch.changes.empty() || !batch.retired_keys.empty()) {
+    if (!batch.changes.empty() || !batch.retired_keys.empty() ||
+        !batch.externally_retired_keys.empty()) {
         destination.push_back(std::move(batch));
     }
 }
@@ -1008,8 +1010,10 @@ private:
         if (apply_result == replication::SnapshotApplyResult::Stale) {
             return {};
         }
-        if (!std::holds_alternative<replication::AuthorityReceiptDelta>(
-                candidate_receipts.apply(snapshot))) {
+        auto receipt_apply_result = candidate_receipts.apply(snapshot);
+        const auto* receipt_delta =
+            std::get_if<replication::AuthorityReceiptDelta>(&receipt_apply_result);
+        if (receipt_delta == nullptr) {
             return {.error = RuntimeError::InvalidSnapshot};
         }
         if (!valid_acknowledgement(candidate_world.last_processed_input_id())) {
@@ -1022,8 +1026,13 @@ private:
         const auto previous_recipient = world_.recipient();
 
         if (world_rules_) {
-            if (const auto error =
-                    install_authority(snapshot, candidate_world, candidate_receipts, now)) {
+            if (const auto error = install_authority(snapshot,
+                                                     candidate_world,
+                                                     candidate_receipts,
+                                                     now,
+                                                     0,
+                                                     AuthorityInstallReason::NewAuthority,
+                                                     receipt_delta)) {
                 return {.error = error};
             }
         }
@@ -1285,13 +1294,97 @@ private:
         return RuntimeError::PredictionScopeFailed;
     }
 
+    [[nodiscard]] static mycore::time::Tick
+    simulation_event_tick(const simulation::SimulationEvent& event) {
+        return std::visit(
+            [](const auto& value) {
+                return value.tick;
+            },
+            event);
+    }
+
+    static void remember_replay_retirements(
+        std::map<simulation::SimulationEventKey, mycore::time::Tick>& pending_retirements,
+        std::span<const PredictionEventBatch> batches) {
+        for (const auto& batch : batches) {
+            for (const auto& key : batch.retired_keys) {
+                const auto change = std::find_if(
+                    batch.changes.begin(), batch.changes.end(), [&key](const auto& candidate) {
+                        return candidate.key == key;
+                    });
+                if (change == batch.changes.end()) {
+                    continue;
+                }
+                const auto* event = change->current
+                                        ? &*change->current
+                                        : (change->previous ? &*change->previous : nullptr);
+                if (event != nullptr) {
+                    pending_retirements.insert_or_assign(key, simulation_event_tick(*event));
+                }
+            }
+        }
+    }
+
+    static void append_unique_event_key(std::vector<simulation::SimulationEventKey>& destination,
+                                        const simulation::SimulationEventKey& key) {
+        if (std::find(destination.begin(), destination.end(), key) == destination.end()) {
+            destination.push_back(key);
+        }
+    }
+
+    static void attach_external_retirement_evidence(
+        const replication::AuthorityReceiptInbox& candidate_receipts,
+        const replication::AuthorityReceiptDelta* receipt_delta,
+        std::map<simulation::SimulationEventKey, mycore::time::Tick>& pending_retirements,
+        std::vector<PredictionEventBatch>& batches) {
+        remember_replay_retirements(pending_retirements, batches);
+
+        std::vector<simulation::SimulationEventKey> externally_retired;
+        if (receipt_delta != nullptr) {
+            externally_retired.reserve(receipt_delta->externally_retired_keys.size());
+            for (const auto& key : receipt_delta->externally_retired_keys) {
+                append_unique_event_key(externally_retired, key);
+            }
+        }
+        if (receipt_delta != nullptr && receipt_delta->complete_coverage_through_server_tick) {
+            const auto coverage_tick =
+                mycore::time::Tick{*receipt_delta->complete_coverage_through_server_tick};
+            for (const auto& [key, occurrence_tick] : pending_retirements) {
+                if (occurrence_tick <= coverage_tick &&
+                    !candidate_receipts.contains_event_key(key)) {
+                    append_unique_event_key(externally_retired, key);
+                }
+            }
+        }
+        if (externally_retired.empty()) {
+            return;
+        }
+        for (const auto& key : externally_retired) {
+            pending_retirements.erase(key);
+        }
+        if (batches.empty()) {
+            batches.push_back({
+                .kind = mycore::rollback::CommitKind::AuthorityOnly,
+                .changes = {},
+                .retired_keys = {},
+                .externally_retired_keys = std::move(externally_retired),
+            });
+            return;
+        }
+        auto& destination = batches.back().externally_retired_keys;
+        for (const auto& key : externally_retired) {
+            append_unique_event_key(destination, key);
+        }
+    }
+
     [[nodiscard]] std::optional<RuntimeError>
     install_authority(const protocol::FullSnapshot& snapshot,
                       const replication::ReplicatedWorld& candidate_world,
                       replication::AuthorityReceiptInbox& candidate_receipts,
                       std::chrono::steady_clock::time_point now,
                       std::size_t minimum_replay_input_count = 0,
-                      AuthorityInstallReason reason = AuthorityInstallReason::NewAuthority) {
+                      AuthorityInstallReason reason = AuthorityInstallReason::NewAuthority,
+                      const replication::AuthorityReceiptDelta* receipt_delta = nullptr) {
         MYCORE_PROFILE_ZONE("Dots prediction reconciliation");
         const auto replay_start = std::chrono::steady_clock::now();
         if (!world_rules_) {
@@ -1353,6 +1446,9 @@ private:
                 }
                 append_observable_event_batch(committed_batches, std::move(*batch));
             }
+            auto scratch_retirements = pending_consequence_retirements_;
+            attach_external_retirement_evidence(
+                candidate_receipts, receipt_delta, scratch_retirements, committed_batches);
             if (prediction_event_batches_.size() + committed_batches.size() >
                 kPredictionEventBatchCapacity) {
                 return RuntimeError::PredictionEventQueueFull;
@@ -1371,6 +1467,7 @@ private:
             for (auto& batch : committed_batches) {
                 prediction_event_batches_.push_back(std::move(batch));
             }
+            pending_consequence_retirements_ = std::move(scratch_retirements);
             return std::nullopt;
         }
         const auto owner = confirmed_owner(candidate_world);
@@ -1625,6 +1722,9 @@ private:
                                  return lhs.distance < rhs.distance;
                              });
 
+        auto scratch_retirements = pending_consequence_retirements_;
+        attach_external_retirement_evidence(
+            candidate_receipts, receipt_delta, scratch_retirements, committed_batches);
         if (prediction_event_batches_.size() + committed_batches.size() >
             kPredictionEventBatchCapacity) {
             return RuntimeError::PredictionEventQueueFull;
@@ -1643,6 +1743,7 @@ private:
         for (auto& batch : committed_batches) {
             prediction_event_batches_.push_back(std::move(batch));
         }
+        pending_consequence_retirements_ = std::move(scratch_retirements);
         latest_authority_checkpoint_ = *authority;
         input_history_ = scratch_history;
         confirmed_owner_id_ = *owner;
@@ -2086,6 +2187,7 @@ private:
     PredictionHistory input_history_;
     std::optional<prediction::Timeline> timeline_;
     std::deque<PredictionEventBatch> prediction_event_batches_;
+    std::map<simulation::SimulationEventKey, mycore::time::Tick> pending_consequence_retirements_;
     std::optional<simulation::WorldCheckpoint> latest_authority_checkpoint_;
     simulation::PlayerOwnerId confirmed_owner_id_;
     protocol::EntityId predicted_primary_entity_id_;

@@ -155,6 +155,8 @@ TEST_CASE("Authority receipt inbox accepts, publishes, and retires a bounded con
         std::get_if<dots::replication::AuthorityReceiptDelta>(&first_receipts);
     REQUIRE(first_delta != nullptr);
     REQUIRE(first_delta->receipts.size() == 1);
+    CHECK(first_delta->externally_retired_keys.empty());
+    CHECK(first_delta->complete_coverage_through_server_tick == 0);
     CHECK(receipts.accepted_through() == dots::protocol::AuthorityReceiptSequenceId{0});
     CHECK_FALSE(receipts.published_through().is_valid());
     CHECK(receipts.pending_publication_count() == 1);
@@ -183,6 +185,29 @@ TEST_CASE("Authority receipt inbox accepts, publishes, and retires a bounded con
     REQUIRE(second_delta->receipts.size() == 1);
     CHECK(receipts.accepted_through() == dots::protocol::AuthorityReceiptSequenceId{1});
     CHECK(receipts.pending_publication_count() == 2);
+
+    auto saturated = second;
+    saturated.snapshot_id = dots::protocol::SnapshotId{3};
+    saturated.authority_receipts.clear();
+    for (auto index = std::uint32_t{}; index < dots::protocol::kMaximumAuthorityReceiptsPerSnapshot;
+         ++index) {
+        saturated.authority_receipts.push_back({
+            .sequence_id = dots::protocol::AuthorityReceiptSequenceId{index + 2U},
+            .event =
+                dots::protocol::FoodConsumed{
+                    .food_entity_id = dots::protocol::EntityId{100U + index},
+                    .consumer_entity_id = dots::replication::to_protocol(*player),
+                    .consumer_owner_id = dots::protocol::PlayerOwnerId{0},
+                    .transferred_mass = 1.0F,
+                },
+        });
+    }
+    auto saturated_inbox = receipts;
+    const auto saturated_result = saturated_inbox.apply(saturated);
+    const auto* saturated_delta =
+        std::get_if<dots::replication::AuthorityReceiptDelta>(&saturated_result);
+    REQUIRE(saturated_delta != nullptr);
+    CHECK_FALSE(saturated_delta->complete_coverage_through_server_tick.has_value());
 
     auto conflict = second;
     conflict.snapshot_id = dots::protocol::SnapshotId{3};
@@ -215,9 +240,24 @@ TEST_CASE("Authority receipt inbox accepts, publishes, and retires a bounded con
     retired.snapshot_id = dots::protocol::SnapshotId{3};
     retired.authority_receipts_retired_through = dots::protocol::AuthorityReceiptSequenceId{1};
     retired.authority_receipts.clear();
-    REQUIRE(
-        std::holds_alternative<dots::replication::AuthorityReceiptDelta>(receipts.apply(retired)));
+    const auto retired_result = receipts.apply(retired);
+    const auto* retired_delta =
+        std::get_if<dots::replication::AuthorityReceiptDelta>(&retired_result);
+    REQUIRE(retired_delta != nullptr);
+    CHECK(retired_delta->externally_retired_keys.size() == 2);
+    CHECK(retired_delta->externally_retired_keys[0] ==
+          dots::simulation::SimulationEventKey{
+              dots::simulation::FoodConsumedKey{.food_entity_id = dots::simulation::EntityId{20}}});
+    CHECK(retired_delta->externally_retired_keys[1] ==
+          dots::simulation::SimulationEventKey{dots::simulation::PlayerSplitKey{
+              .owner_id = dots::simulation::PlayerOwnerId{0},
+              .input_id = dots::simulation::InputCommandId{4},
+              .child_ordinal = 0,
+          }});
+    CHECK(retired_delta->complete_coverage_through_server_tick == retired.server_tick);
     CHECK(receipts.server_retired_through() == dots::protocol::AuthorityReceiptSequenceId{1});
+    CHECK_FALSE(receipts.contains_event_key(
+        dots::simulation::FoodConsumedKey{.food_entity_id = dots::simulation::EntityId{20}}));
     CHECK(receipts.retained_count() == 0);
     CHECK(receipts.pending_publication_count() == 0);
 }

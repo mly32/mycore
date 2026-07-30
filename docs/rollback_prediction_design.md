@@ -425,11 +425,17 @@ than pretending to provide external exactly-once delivery.
 
 The timeline reports when an event key is no longer reachable from retained replay stimuli.
 That replay-retirement hint alone is not enough to discard an at-most-once tombstone: a repeated
-authority receipt could otherwise expose the key again. The initial engine-kernel increment
-therefore retains router tombstones for the connected session. Protocol v4 now supplies the
-monotonic authority-receipt watermark needed to pair receipt retirement with replay retirement;
-timeline/router integration and bounded pruning remain later Feature 14 work. Stable game keys
-must never be reused.
+authority receipt could otherwise expose the key again. `EventBatch::externally_retired_keys`
+carries a separate game-integration proof that external delivery is also closed. The router
+accepts the two proofs in either order and prunes all handler records only when both exist and no
+cancelable token remains live.
+
+Dots derives external proof in two ways. A server retirement watermark closes confirmed receipt
+keys that the client retained. For rejected predicted occurrences, a snapshot containing fewer
+than the protocol maximum receipt count proves complete receipt coverage through that server
+tick; an absent key whose occurrence tick is covered is externally retired. A maximum-sized
+receipt batch is saturated and proves no absence, so pruning waits for a later complete batch.
+Stable game keys must never be reused after external retirement.
 
 The router does not claim persistent exactly-once behavior across a process crash, and it cannot
 erase audio, haptics, or pixels the player already perceived. Cancelable handlers stop or fade

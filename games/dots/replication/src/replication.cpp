@@ -454,6 +454,14 @@ AuthorityReceiptApplyResult AuthorityReceiptInbox::apply(const protocol::FullSna
     auto next_event_keys = event_keys_;
     auto next_accepted = accepted_through_;
     auto next_retired = server_retired_through_;
+    AuthorityReceiptDelta delta{
+        .receipts = {},
+        .externally_retired_keys = {},
+        .complete_coverage_through_server_tick =
+            snapshot.authority_receipts.size() < protocol::kMaximumAuthorityReceiptsPerSnapshot
+                ? std::optional<std::uint32_t>{snapshot.server_tick}
+                : std::nullopt,
+    };
     const auto retired = snapshot.authority_receipts_retired_through;
     if ((next_retired.is_valid() && (!retired.is_valid() || retired < next_retired)) ||
         (retired.is_valid() && (!published_through_.is_valid() || retired > published_through_))) {
@@ -461,14 +469,15 @@ AuthorityReceiptApplyResult AuthorityReceiptInbox::apply(const protocol::FullSna
     }
     if (retired.is_valid()) {
         while (!next_retained.empty() && next_retained.front().sequence_id <= retired) {
-            next_event_keys.erase(
-                simulation::simulation_event_key(to_simulation(next_retained.front().event)));
+            const auto key =
+                simulation::simulation_event_key(to_simulation(next_retained.front().event));
+            next_event_keys.erase(key);
+            delta.externally_retired_keys.push_back(key);
             next_retained.pop_front();
         }
         next_retired = retired;
     }
 
-    AuthorityReceiptDelta delta;
     delta.receipts.reserve(snapshot.authority_receipts.size());
     for (const auto& receipt : snapshot.authority_receipts) {
         if (next_accepted.is_valid() && receipt.sequence_id <= next_accepted) {
@@ -538,6 +547,11 @@ protocol::AuthorityReceiptSequenceId AuthorityReceiptInbox::published_through() 
 protocol::AuthorityReceiptSequenceId
 AuthorityReceiptInbox::server_retired_through() const noexcept {
     return server_retired_through_;
+}
+
+bool AuthorityReceiptInbox::contains_event_key(
+    const simulation::SimulationEventKey& key) const noexcept {
+    return event_keys_.contains(key);
 }
 
 std::size_t AuthorityReceiptInbox::retained_count() const noexcept {

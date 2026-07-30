@@ -307,7 +307,7 @@ The **Prediction** tab rows are:
 
 | Field | Current meaning and lifetime |
 |---|---|
-| Authority receipts | Highest contiguous sequence semantically accepted, published into a queued post-commit event batch, and echoed as retired by the server; retained/pending-publication payload counts; and queued observable event-batch count. These fields remain available while Spectating. |
+| Authority receipts | Highest contiguous sequence semantically accepted, published into a queued post-commit event batch, and echoed as retired by the server; retained/pending-publication payload counts; queued observable event-batch count; replay/external consequence-retirement evidence; per-policy retained-key counts; and cumulative pruning. These fields remain available while Spectating. |
 | Redundancy | Whether outgoing packets repeat up to two retained unacknowledged samples. |
 | Last sent input | Newest successfully sent and recorded input sequence, or invalid before the first send. |
 | Last acknowledged input | Newest sequence the latest accepted snapshot says the server processed, or invalid before the first ACK. |
@@ -498,7 +498,7 @@ fields below remain planned for step 8.
 | Structural divergence | Entity create/remove, ownership, component-set, split, merge, and elimination corrections. |
 | Predicted spawns | Pending, matched, rejected, authority-only, and ambiguous prediction-key counts. Ambiguity causes hard resync. |
 | Event lifecycle detail | Selected stable event key and per-event history beyond the current aggregate transition and per-handler consequence counters. |
-| Authority receipts | Per-event transition/key detail plus duplicate, conflict, invalid-retirement, queue-overflow, and receipt-capacity failure counts beyond the current accepted/published/server-retired frontiers and depth counters. |
+| Authority receipts | Per-event transition/key detail plus duplicate, conflict, invalid-retirement, queue-overflow, and receipt-capacity failure counts beyond the current accepted/published/server-retired frontiers, depth counters, and consequence-ledger proof/pruning counters. |
 | Command buffer | Target/latest/EWMA server queue depth, cadence scale, low/high events, and accumulated phase correction. |
 | Remote assumption | Source snapshot and tick range over which last-known remote movement was held; remote edge actions remain zero. |
 | Outside-closure presentation detail | Closure-entry transition history and longer-term fallback/hold distributions beyond the current age, cap, mode, and entity counters. |

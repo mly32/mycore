@@ -389,6 +389,49 @@ TEST_CASE("Network client predicts split topology before authoritative confirmat
     CHECK(client.predicted_owned_entity_ids().size() == 2);
 }
 
+TEST_CASE("Complete authority receipt coverage retires rejected predicted consequences",
+          "[dots][session][rollback][receipts]") {
+    ManualEndpoint endpoint;
+    dots::client_runtime::Runtime client{endpoint};
+    const mycore::net_transport::ConnectionHandle connection{28};
+    complete_manual_handshake(endpoint, client, connection);
+
+    REQUIRE(client.send_input(0, {1.0F, 0.0F}, dots::protocol::kSplitActionBit) ==
+            dots::client_runtime::InputSendResult::Sent);
+    const auto predicted_batches = client.take_prediction_event_batches();
+    REQUIRE(predicted_batches.size() == 1);
+    REQUIRE(predicted_batches.front().changes.size() == 1);
+    CHECK(predicted_batches.front().changes.front().transition ==
+          mycore::rollback::EventTransition::FirstPredicted);
+
+    endpoint.events.push_back(mycore::net_transport::PayloadReceived{
+        .connection = connection,
+        .delivery = mycore::net_transport::DeliveryMode::Unreliable,
+        .payload = encode_bytes(dots::protocol::FullSnapshot{
+            .snapshot_id = dots::protocol::SnapshotId{1},
+            .server_tick = 1,
+            .last_processed_input_id = dots::protocol::InputSequenceId{0},
+            .recipient = playing_session(),
+            .owners = {{
+                .owner_id = dots::protocol::PlayerOwnerId{3},
+                .movement_x = 1.0F,
+                .last_non_zero_movement_x = 1.0F,
+                .last_input_id = dots::protocol::InputSequenceId{0},
+            }},
+            .entities = {player_state()},
+        }),
+    });
+    REQUIRE_FALSE(client.process_events().has_value());
+    const auto rejected_batches = client.take_prediction_event_batches();
+    REQUIRE(rejected_batches.size() == 1);
+    REQUIRE(rejected_batches.front().changes.size() == 1);
+    CHECK(rejected_batches.front().changes.front().transition ==
+          mycore::rollback::EventTransition::Retracted);
+    REQUIRE(rejected_batches.front().retired_keys.size() == 1);
+    CHECK(rejected_batches.front().externally_retired_keys ==
+          rejected_batches.front().retired_keys);
+}
+
 TEST_CASE("Protocol version 4 split receipts repeat until the client acknowledges them",
           "[dots][session][rollback][receipts]") {
     mycore::net_transport::InMemoryNetwork network;
@@ -485,6 +528,29 @@ TEST_CASE("Client input acknowledges the highest contiguous authority receipt",
     const auto* input = std::get_if<dots::protocol::InputPacket>(&message);
     REQUIRE(input != nullptr);
     CHECK(input->last_received_authority_receipt_sequence ==
+          dots::protocol::AuthorityReceiptSequenceId{0});
+
+    endpoint.events.push_back(mycore::net_transport::PayloadReceived{
+        .connection = connection,
+        .delivery = mycore::net_transport::DeliveryMode::Unreliable,
+        .payload = encode_bytes(dots::protocol::FullSnapshot{
+            .snapshot_id = dots::protocol::SnapshotId{2},
+            .recipient = playing_session(),
+            .entities = {player_state()},
+            .authority_receipts_retired_through = dots::protocol::AuthorityReceiptSequenceId{0},
+        }),
+    });
+    REQUIRE_FALSE(client.process_events().has_value());
+    const auto retirement_batches = client.take_prediction_event_batches();
+    REQUIRE(retirement_batches.size() == 1);
+    CHECK(retirement_batches.front().changes.empty());
+    CHECK(retirement_batches.front().retired_keys.empty());
+    REQUIRE(retirement_batches.front().externally_retired_keys.size() == 1);
+    CHECK(retirement_batches.front().externally_retired_keys.front() ==
+          dots::simulation::SimulationEventKey{dots::simulation::FoodConsumedKey{
+              .food_entity_id = dots::simulation::EntityId{30},
+          }});
+    CHECK(client.prediction_statistics().authority_receipts_server_retired_through ==
           dots::protocol::AuthorityReceiptSequenceId{0});
 }
 

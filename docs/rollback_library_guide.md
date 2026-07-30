@@ -394,16 +394,20 @@ const auto report = router.consume(commit);
 
 Handler calls return success. The router reports failures but deliberately does not retry the
 same occurrence: retrying an external side effect could duplicate it. Router ledger state is
-non-rewindable. Current `PredictOnce` and `ConfirmOnce` tombstones live for the router session;
-`retired_event_keys` alone does not prove they are safe to erase. A canceled
-`PredictCancelable` entry is erased and may be activated again if that semantic key legitimately
-returns.
+non-rewindable. `retired_event_keys` proves that retained replay can no longer reproduce an
+occurrence, but it does not prove that an external receipt cannot redeliver it. Add independently
+derived keys to `EventBatch::externally_retired_keys`; the router prunes a key only after both
+proofs arrive, in either order, and after any cancelable token is inactive. A canceled
+`PredictCancelable` entry is erased during cancellation. Stable keys must not be reused after
+external retirement because a later occurrence with that key violates the proof contract.
 
 `ConsequenceDispatchReport::handlers` gives the per-batch delta for every statically registered
 handler, including its tuple index and declared policy. `router.handler_statistics()` exposes
 the corresponding session-cumulative totals. Use these values to identify a specific handler;
 aggregate `report.statistics` alone cannot distinguish two handlers that subscribe to the same
-event type with different policies. Dots' production adapter in
+event type with different policies. `router.ledger_statistics()` reports both outstanding proof
+sets, per-policy retained-key counts, live/inactive cancelable counts, and cumulative pruning.
+Dots' production adapter in
 `games/dots/presentation/` is the concrete example: state-derived movement/merge visuals remain
 outside the router, while split, food, absorption, and confirmed HUD feedback use the three
 policies.

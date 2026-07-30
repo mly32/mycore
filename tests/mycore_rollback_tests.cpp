@@ -832,3 +832,125 @@ TEST_CASE("Authority-only events use the same consequence batch contract",
     CHECK(rejected_batch->changes.empty());
     CHECK(rejected_batch->retired_keys == std::vector{ToyEventKey{13}});
 }
+
+TEST_CASE("Consequence ledgers require replay and external retirement evidence",
+          "[rollback][consequences][retirement]") {
+    HandlerLog once_log;
+    HandlerLog cancelable_log;
+    HandlerLog confirmed_log;
+    mycore::rollback::StaticConsequenceRouter<ToyModel,
+                                              PredictOncePulseHandler,
+                                              CancelablePulseHandler,
+                                              ConfirmOncePulseHandler>
+        router{PredictOncePulseHandler{.log = &once_log},
+               CancelablePulseHandler{.log = &cancelable_log},
+               ConfirmOncePulseHandler{.log = &confirmed_log}};
+    const auto key = ToyEventKey{21};
+    const auto event = ToyEvent{PulseEvent{.key = key, .payload = 7}};
+
+    const mycore::rollback::EventBatch<ToyModel> predicted{
+        .kind = mycore::rollback::CommitKind::Advance,
+        .changes = {{
+            .transition = mycore::rollback::EventTransition::FirstPredicted,
+            .key = key,
+            .previous = std::nullopt,
+            .current = event,
+        }},
+        .retired_keys = {},
+        .externally_retired_keys = {},
+    };
+    REQUIRE(router.consume(predicted).failures.empty());
+    CHECK(router.ledger_statistics().predict_once_key_count == 1);
+    CHECK(router.ledger_statistics().cancelable_active_key_count == 1);
+
+    const mycore::rollback::EventBatch<ToyModel> replay_retired{
+        .kind = mycore::rollback::CommitKind::Reconcile,
+        .changes = {},
+        .retired_keys = {key},
+        .externally_retired_keys = {},
+    };
+    REQUIRE(router.consume(replay_retired).failures.empty());
+    CHECK(router.ledger_statistics().replay_retirement_evidence_count == 1);
+    CHECK(router.ledger_statistics().predict_once_key_count == 1);
+
+    const mycore::rollback::EventBatch<ToyModel> externally_retired{
+        .kind = mycore::rollback::CommitKind::AuthorityOnly,
+        .changes = {},
+        .retired_keys = {},
+        .externally_retired_keys = {key},
+    };
+    REQUIRE(router.consume(externally_retired).failures.empty());
+    CHECK(router.ledger_statistics().external_retirement_evidence_count == 1);
+    CHECK(router.ledger_statistics().pruned_occurrence_count == 0);
+
+    const mycore::rollback::EventBatch<ToyModel> confirmed_batch{
+        .kind = mycore::rollback::CommitKind::Reconcile,
+        .changes = {{
+            .transition = mycore::rollback::EventTransition::Confirmed,
+            .key = key,
+            .previous = event,
+            .current = event,
+        }},
+        .retired_keys = {},
+        .externally_retired_keys = {},
+    };
+    REQUIRE(router.consume(confirmed_batch).failures.empty());
+    const auto ledger = router.ledger_statistics();
+    CHECK(ledger.replay_retirement_evidence_count == 0);
+    CHECK(ledger.external_retirement_evidence_count == 0);
+    CHECK(ledger.predict_once_key_count == 0);
+    CHECK(ledger.confirm_once_key_count == 0);
+    CHECK(ledger.cancelable_active_key_count == 0);
+    CHECK(ledger.cancelable_inactive_key_count == 0);
+    CHECK(ledger.pruned_occurrence_count == 1);
+    CHECK(once_log.first.size() == 1);
+    CHECK(cancelable_log.predicted.size() == 1);
+    CHECK(cancelable_log.confirmed.size() == 1);
+    CHECK(confirmed_log.confirmed.size() == 1);
+}
+
+TEST_CASE("Consequence retirement remains bounded across many confirmed occurrences",
+          "[rollback][consequences][retirement]") {
+    HandlerLog once_log;
+    HandlerLog cancelable_log;
+    HandlerLog confirmed_log;
+    mycore::rollback::StaticConsequenceRouter<ToyModel,
+                                              PredictOncePulseHandler,
+                                              CancelablePulseHandler,
+                                              ConfirmOncePulseHandler>
+        router{PredictOncePulseHandler{.log = &once_log},
+               CancelablePulseHandler{.log = &cancelable_log},
+               ConfirmOncePulseHandler{.log = &confirmed_log}};
+
+    constexpr auto kOccurrenceCount = std::uint32_t{4096};
+    for (auto value = std::uint32_t{1}; value <= kOccurrenceCount; ++value) {
+        const auto key = ToyEventKey{value};
+        const auto event =
+            ToyEvent{PulseEvent{.key = key, .payload = static_cast<std::int32_t>(value)}};
+        const mycore::rollback::EventBatch<ToyModel> batch{
+            .kind = mycore::rollback::CommitKind::Reconcile,
+            .changes = {{
+                .transition = mycore::rollback::EventTransition::Confirmed,
+                .key = key,
+                .previous = std::nullopt,
+                .current = event,
+            }},
+            .retired_keys = {key},
+            .externally_retired_keys = {key},
+        };
+        REQUIRE(router.consume(batch).failures.empty());
+    }
+
+    const auto ledger = router.ledger_statistics();
+    CHECK(ledger.replay_retirement_evidence_count == 0);
+    CHECK(ledger.external_retirement_evidence_count == 0);
+    CHECK(ledger.predict_once_key_count == 0);
+    CHECK(ledger.confirm_once_key_count == 0);
+    CHECK(ledger.cancelable_active_key_count == 0);
+    CHECK(ledger.cancelable_inactive_key_count == 0);
+    CHECK(ledger.pruned_occurrence_count == static_cast<std::uint64_t>(kOccurrenceCount));
+    CHECK(once_log.first.size() == static_cast<std::size_t>(kOccurrenceCount));
+    CHECK(cancelable_log.predicted.size() == static_cast<std::size_t>(kOccurrenceCount));
+    CHECK(cancelable_log.confirmed.size() == static_cast<std::size_t>(kOccurrenceCount));
+    CHECK(confirmed_log.confirmed.size() == static_cast<std::size_t>(kOccurrenceCount));
+}

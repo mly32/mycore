@@ -42,6 +42,7 @@ struct ConfirmedNotice {
 
 struct ConsequencePresentationStatistics {
     mycore::rollback::ConsequenceDispatchStatistics dispatch;
+    mycore::rollback::ConsequenceLedgerStatistics ledger;
     std::vector<mycore::rollback::ConsequenceHandlerDispatchStatistics> handlers;
     std::array<std::uint64_t, 5> transition_counts{};
     std::size_t visible_cue_count{};

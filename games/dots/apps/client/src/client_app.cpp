@@ -547,6 +547,16 @@ void draw_prediction_debug_tab(const DebugWorldStats& world) {
                 static_cast<unsigned long long>(consequences.transition_counts[2]),
                 static_cast<unsigned long long>(consequences.transition_counts[3]),
                 static_cast<unsigned long long>(consequences.transition_counts[4]));
+    const auto& ledger = consequences.ledger;
+    ImGui::Text("Ledger replay/external proof: %zu / %zu; pruned: %llu",
+                ledger.replay_retirement_evidence_count,
+                ledger.external_retirement_evidence_count,
+                static_cast<unsigned long long>(ledger.pruned_occurrence_count));
+    ImGui::Text("Ledger once/confirmed/cancel active/inactive: %zu / %zu / %zu / %zu",
+                ledger.predict_once_key_count,
+                ledger.confirm_once_key_count,
+                ledger.cancelable_active_key_count,
+                ledger.cancelable_inactive_key_count);
     for (const auto& handler : consequences.handlers) {
         const auto policy = consequence_policy_name(handler.policy);
         const auto& values = handler.statistics;

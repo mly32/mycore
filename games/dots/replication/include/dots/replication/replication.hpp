@@ -59,6 +59,8 @@ enum class AuthorityReceiptApplyError : std::uint8_t {
 
 struct AuthorityReceiptDelta {
     std::vector<protocol::AuthorityReceipt> receipts;
+    std::vector<simulation::SimulationEventKey> externally_retired_keys;
+    std::optional<std::uint32_t> complete_coverage_through_server_tick;
 };
 
 using AuthorityReceiptApplyResult = std::variant<AuthorityReceiptDelta, AuthorityReceiptApplyError>;
@@ -117,6 +119,7 @@ public:
     [[nodiscard]] protocol::AuthorityReceiptSequenceId accepted_through() const noexcept;
     [[nodiscard]] protocol::AuthorityReceiptSequenceId published_through() const noexcept;
     [[nodiscard]] protocol::AuthorityReceiptSequenceId server_retired_through() const noexcept;
+    [[nodiscard]] bool contains_event_key(const simulation::SimulationEventKey& key) const noexcept;
     [[nodiscard]] std::size_t retained_count() const noexcept;
     [[nodiscard]] std::size_t pending_publication_count() const noexcept;
 

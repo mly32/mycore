@@ -599,6 +599,12 @@ and skip disabled debug artifacts, but it may not weaken interaction closure, at
 event order, or authority validation. The bounded soak support does not replace Feature 17's
 load orchestration and operational reporting.
 
+The first two increments are implemented. `EventBatch::externally_retired_keys` is the generic
+external-proof boundary; the router exposes bounded-ledger statistics and refuses to prune a live
+cancelable token. Dots remembers replay-retired keys with occurrence ticks, consumes explicit
+server-retired receipt keys, and treats only a receipt batch smaller than the per-snapshot maximum
+as complete negative evidence. Saturated batches intentionally defer pruning.
+
 ## Test Plan
 
 Engine tests with a small deterministic model cover:

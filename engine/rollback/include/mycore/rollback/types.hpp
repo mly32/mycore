@@ -104,6 +104,18 @@ struct ConsequenceHandlerDispatchStatistics {
     bool operator==(const ConsequenceHandlerDispatchStatistics&) const = default;
 };
 
+struct ConsequenceLedgerStatistics {
+    std::size_t replay_retirement_evidence_count{};
+    std::size_t external_retirement_evidence_count{};
+    std::size_t predict_once_key_count{};
+    std::size_t confirm_once_key_count{};
+    std::size_t cancelable_active_key_count{};
+    std::size_t cancelable_inactive_key_count{};
+    std::uint64_t pruned_occurrence_count{};
+
+    bool operator==(const ConsequenceLedgerStatistics&) const = default;
+};
+
 [[nodiscard]] std::string_view library_name() noexcept;
 [[nodiscard]] std::string_view timeline_error_name(TimelineErrorCode error) noexcept;
 
