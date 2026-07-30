@@ -1,4 +1,5 @@
 #include "dots/client_runtime/client_runtime.hpp"
+#include "dots/client_runtime/command_timing.hpp"
 #include "dots/prediction/model.hpp"
 #include "dots/protocol/codec.hpp"
 #include "mycore/net_transport/net_transport.hpp"
@@ -244,6 +245,61 @@ void check_position(std::optional<mycore::math::Vector2> position, float x, floa
 }
 
 } // namespace
+
+TEST_CASE("Adaptive command timing filters queue depth and bounds cadence",
+          "[dots][prediction][timing]") {
+    dots::client_runtime::CommandTimingController timing;
+
+    CHECK(timing.initial_prefill_count() == 2);
+    CHECK(timing.statistics().smoothed_depth == Catch::Approx(2.0));
+    CHECK(timing.statistics().rate_scale == Catch::Approx(1.0));
+
+    timing.observe_server_queue_depth(0);
+    CHECK(timing.statistics().smoothed_depth == Catch::Approx(1.75));
+    CHECK(timing.statistics().rate_scale == Catch::Approx(1.0));
+    timing.observe_server_queue_depth(0);
+    timing.observe_server_queue_depth(0);
+    CHECK(timing.statistics().smoothed_depth == Catch::Approx(1.33984375));
+    CHECK(timing.statistics().rate_scale == Catch::Approx(1.01650390625));
+
+    for (auto count = 0; count < 100; ++count) {
+        timing.observe_server_queue_depth(0);
+    }
+    CHECK(timing.statistics().rate_scale == Catch::Approx(1.05));
+    CHECK(timing.statistics().low_depth_observation_count == 103);
+
+    for (auto count = 0; count < 100; ++count) {
+        timing.observe_server_queue_depth(64);
+    }
+    CHECK(timing.statistics().rate_scale == Catch::Approx(0.95));
+    CHECK(timing.statistics().high_depth_observation_count > 0);
+}
+
+TEST_CASE("Adaptive command timing scales clocks and reports bounded phase work",
+          "[dots][prediction][timing]") {
+    using namespace std::chrono_literals;
+
+    dots::client_runtime::CommandTimingController timing{{
+        .ewma_alpha = 1.0,
+    }};
+    timing.observe_server_queue_depth(0);
+    CHECK(timing.scale_accumulator_elapsed(100ms) == 105ms);
+    const auto period = timing.next_period(100ms);
+    CHECK(period == 95'238'095ns);
+    timing.record_prefill_inputs(2);
+    timing.record_discarded_backlog();
+
+    const auto& statistics = timing.statistics();
+    CHECK(statistics.prefill_input_count == 2);
+    CHECK(statistics.discarded_backlog_count == 1);
+    CHECK(statistics.accumulated_phase_correction == 9'761'905ns);
+
+    CHECK_THROWS_AS(timing.scale_accumulator_elapsed(-1ns), std::invalid_argument);
+    CHECK_THROWS_AS(timing.next_period(0ns), std::invalid_argument);
+    CHECK_THROWS_AS((dots::client_runtime::CommandTimingController{
+                        {.deadband_minimum = 3.0, .deadband_maximum = 4.0}}),
+                    std::invalid_argument);
+}
 
 TEST_CASE("Client prediction advances only successfully sent input", "[dots][prediction][send]") {
     ManualEndpoint endpoint;

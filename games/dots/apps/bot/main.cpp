@@ -1,5 +1,6 @@
 #include "dots/app_cli/app_cli.hpp"
 #include "dots/client_runtime/client_runtime.hpp"
+#include "dots/client_runtime/command_timing.hpp"
 #include "dots/simulation/movement.hpp"
 #include "mycore/debug/log.hpp"
 #include "mycore/net_transport/net_transport.hpp"
@@ -32,7 +33,7 @@ Options:
   --connect <address>          Numeric IPv4 or bracketed IPv6 server address.
   --fake-lag-ms <milliseconds> Add outgoing one-way packet delay.
   --fake-loss-percent <value>  Drop this percentage of outgoing packets (0..100).
-  --ticks <count>              Send exactly this many 30 Hz movement inputs, then exit.
+  --ticks <count>              Send this many movement inputs after the two-input prefill.
   --help                       Show this help and exit.
 
 The bot is headless and cycles right, down, left, and up every four seconds.
@@ -108,8 +109,12 @@ int main(int argc, char** argv) {
         mycore::net_transport::GameNetworkingSocketsNetwork network{options.impairment};
         auto& endpoint = network.connect(server_address);
         dots::client_runtime::Runtime client{endpoint};
-        const auto process_events = [&client] {
+        dots::client_runtime::CommandTimingController command_timing;
+        const auto process_events = [&client, &command_timing] {
             const auto result = client.process_events();
+            for (const auto& accepted : result.accepted_snapshots) {
+                command_timing.observe_server_queue_depth(accepted.snapshot.pending_input_count);
+            }
             // Bots have no presentation side effects, but every runtime composition root must
             // retire the bounded stream of post-commit prediction event batches.
             static_cast<void>(client.take_prediction_event_batches());
@@ -131,31 +136,45 @@ int main(int argc, char** argv) {
 
         std::signal(SIGINT, request_stop);
         std::signal(SIGTERM, request_stop);
-        std::uint64_t sent_ticks{};
+        std::uint64_t next_client_tick{};
+        for (std::size_t index = 0; index < command_timing.initial_prefill_count(); ++index) {
+            if (client.send_input(static_cast<std::uint32_t>(next_client_tick), {}) !=
+                dots::client_runtime::InputSendResult::Sent) {
+                throw std::runtime_error{"The bot could not prefill input"};
+            }
+            ++next_client_tick;
+            command_timing.record_prefill_inputs(1);
+        }
+        std::uint64_t movement_ticks{};
         auto next_tick = std::chrono::steady_clock::now();
         mycore::debug::log_info("dots.bot",
                                 "Connected as client {} controlling entity {}",
                                 client.client_id().value(),
                                 client.controlled_entity_id().value());
-        while (stop_requested == 0 && (!options.ticks || sent_ticks < *options.ticks)) {
+        while (stop_requested == 0 && (!options.ticks || movement_ticks < *options.ticks)) {
             if (const auto error = process_events()) {
                 throw std::runtime_error{
                     "The bot session failed: " +
                     std::string{dots::client_runtime::runtime_error_name(*error)}};
             }
-            if (sent_ticks > std::numeric_limits<std::uint32_t>::max()) {
+            if (next_client_tick > std::numeric_limits<std::uint32_t>::max()) {
                 throw std::runtime_error{"Bot input ticks are exhausted"};
             }
-            if (client.send_input(static_cast<std::uint32_t>(sent_ticks),
-                                  movement_for_tick(sent_ticks)) !=
+            if (client.send_input(static_cast<std::uint32_t>(next_client_tick),
+                                  movement_for_tick(movement_ticks)) !=
                 dots::client_runtime::InputSendResult::Sent) {
                 throw std::runtime_error{"The bot could not send input"};
             }
-            ++sent_ticks;
-            next_tick = mycore::time::advance_periodic_deadline(next_tick,
-                                                                dots::simulation::kTickDuration,
-                                                                std::chrono::steady_clock::now())
-                            .time;
+            ++next_client_tick;
+            ++movement_ticks;
+            const auto deadline = mycore::time::advance_periodic_deadline(
+                next_tick,
+                command_timing.next_period(dots::simulation::kTickDuration),
+                std::chrono::steady_clock::now());
+            next_tick = deadline.time;
+            if (deadline.discarded_backlog) {
+                command_timing.record_discarded_backlog();
+            }
             std::this_thread::sleep_until(next_tick);
         }
         static_cast<void>(client.disconnect());

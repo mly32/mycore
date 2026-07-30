@@ -554,7 +554,7 @@ hidden input-prediction or smoothing clock, and it never decides respawn eligibi
 | Remote presentation | Current, Feature 12 | Fractional cursor in historical server-tick coordinates, targeting six ticks behind the newest known snapshot; holds on underrun. | No. |
 | Outside-closure extrapolation | Current, Feature 14 step 7 | Local steady-clock age of the newest snapshot converted to at most six shared movement/launch ticks; holds after the cap. | No. |
 | Interaction-closed World rollback | Current, Feature 14 step 7 | Authoritative checkpoint plus retained immutable local commands and transactionally refreshed remote assumptions, replayed through the previous prediction head. | No. |
-| Adaptive command buffer | Planned, Feature 14 | Reported server input-queue depth controls a bounded client command cadence. | No. |
+| Adaptive command buffer | Current, Feature 14 | Reported server input-queue depth controls a bounded client command cadence. | No. |
 | Feature 13 respawn countdown | Current | Latest replicated server tick plus local steady time since snapshot receipt; unfiltered and presentation-only. | It is a limited estimate, never authority. |
 | Filtered smooth world-time UI | Deferred | A filtered mapping from local steady time to estimated server tick. | Potentially. |
 | Server-side rewind/lag compensation | Deferred | Server history plus a validated, bounded mapping of client action time into server ticks. | It would need a clock-mapping policy, but never trust the client's claim directly. |
@@ -675,8 +675,8 @@ authoritative controlled-player sample and replays the remaining unacknowledged 
 |---|---:|---:|---|
 | Client loop/render frame | Variable; commonly limited by vsync | 16.67 ms on a 60 Hz display | Poll input, run zero or more due fixed steps, extract presentation, submit rendering. |
 | Authoritative simulation tick | Fixed 30 Hz | 33.33 ms | Apply current movement, move entities, resolve food collisions, increment server tick. |
-| Client input packet | At each due client fixed step | 33.33 ms | Encode and send the newest sampled movement, plus configured redundancy, with a new sequence ID. |
-| Headless bot input packet | Fixed 30 Hz while work fits its budget | 33.33 ms | Send one current intent. After an overrun, discard missed producer deadlines and resume one period later; never emit a catch-up burst. |
+| Client input packet | Bounded around each client fixed step | About 31.75–35.09 ms | Encode and send the newest sampled movement, plus configured redundancy, with a new sequence ID. Accepted server queue depth adjusts cadence by at most five percent. |
+| Headless bot input packet | Same bounded cadence while work fits its budget | About 31.75–35.09 ms | Send one current intent. After an overrun, discard missed producer deadlines and resume one scaled period later; never emit a catch-up burst. |
 | Full snapshot | Every two server ticks, fixed 15 Hz | 66.67 ms | Send the latest authoritative entity state and input acknowledgement. |
 | Transport poll | Once or more at explicit loop points | Render-loop or server-tick dependent | Deliver queued connection and payload events to a runtime. |
 | Display refresh | Monitor-dependent | 16.67 ms at 60 Hz | Make a completed GPU image physically visible. |

@@ -2,6 +2,7 @@
 
 #include "dots/client/controls.hpp"
 #include "dots/client_runtime/client_runtime.hpp"
+#include "dots/client_runtime/command_timing.hpp"
 #include "dots/prediction/prediction.hpp"
 #include "dots/presentation/presentation.hpp"
 #include "dots/presentation/rollback_consequences.hpp"
@@ -109,6 +110,7 @@ struct DebugWorldStats {
         std::uint32_t server_tick{};
         std::uint32_t local_input_tick{};
         dots::client_runtime::PredictionStatistics prediction;
+        dots::client_runtime::CommandTimingStatistics command_timing;
         dots::presentation::RemotePresentationStatistics remote_presentation;
         dots::presentation::RemoteExtrapolationStatistics remote_extrapolation;
         dots::presentation::ConsequencePresentationStatistics consequences;
@@ -598,6 +600,27 @@ void draw_prediction_debug_tab(const DebugWorldStats& world) {
     ImGui::Text("Server pending: %u, high %u",
                 static_cast<unsigned int>(prediction.latest_server_pending_input_count),
                 static_cast<unsigned int>(prediction.server_pending_input_high_water_mark));
+    const auto& command_timing = session.command_timing;
+    if (command_timing.latest_depth) {
+        ImGui::Text("Command buffer target / latest / EWMA: %.1f / %u / %.3f",
+                    command_timing.target_depth,
+                    static_cast<unsigned int>(*command_timing.latest_depth),
+                    command_timing.smoothed_depth);
+    } else {
+        ImGui::Text("Command buffer target / latest / EWMA: %.1f / unavailable / %.3f",
+                    command_timing.target_depth,
+                    command_timing.smoothed_depth);
+    }
+    const auto phase_milliseconds =
+        std::chrono::duration<double, std::milli>{command_timing.accumulated_phase_correction};
+    ImGui::Text("Cadence scale / phase: %.4f / %.3f ms",
+                command_timing.rate_scale,
+                phase_milliseconds.count());
+    ImGui::Text("Depth low / high / prefill / overrun: %llu / %llu / %zu / %llu",
+                static_cast<unsigned long long>(command_timing.low_depth_observation_count),
+                static_cast<unsigned long long>(command_timing.high_depth_observation_count),
+                command_timing.prefill_input_count,
+                static_cast<unsigned long long>(command_timing.discarded_backlog_count));
     draw_snapshot_sequence("Rollback snapshot", prediction.rollback_snapshot_id);
     ImGui::Text("Rollback server tick: %u", prediction.rollback_server_tick);
     draw_input_sequence("Rollback input ACK", prediction.rollback_input_acknowledgement);
@@ -1057,6 +1080,7 @@ int run_networked_game(
                 config.debug.prediction_log_level == PredictionLogLevel::Debug,
         },
     };
+    dots::client_runtime::CommandTimingController command_timing;
     dots::presentation::RemoteSnapshotBuffer remote_snapshot_buffer;
     dots::presentation::RemoteExtrapolationBuffer remote_extrapolation_buffer;
     dots::presentation::RollbackConsequencePresentation consequence_presentation;
@@ -1078,6 +1102,7 @@ int run_networked_game(
     const auto process_client_events = [&](std::chrono::steady_clock::time_point now) {
         auto result = client.process_events(now);
         for (auto& accepted : result.accepted_snapshots) {
+            command_timing.observe_server_queue_depth(accepted.snapshot.pending_input_count);
             auto interpolation_entities = accepted.snapshot.entities;
             remote_snapshot_buffer.insert({
                 .snapshot_id = accepted.snapshot.snapshot_id,
@@ -1144,9 +1169,20 @@ int run_networked_game(
     consequence_delivery_ready = true;
     drain_consequence_batches(std::chrono::steady_clock::now());
 
+    std::uint32_t client_tick{};
+    for (std::size_t index = 0; index < command_timing.initial_prefill_count(); ++index) {
+        if (client.send_input(client_tick++, {}) != dots::client_runtime::InputSendResult::Sent) {
+            throw StartupError{"Could not prefill the authoritative input queue"};
+        }
+        command_timing.record_prefill_inputs(1);
+    }
+    if (embedded_server != nullptr && embedded_server->process_events()) {
+        throw StartupError{"The embedded authoritative server rejected input prefill"};
+    }
+    drain_consequence_batches(std::chrono::steady_clock::now());
+
     mycore::time::FixedStepAccumulator accumulator{dots::simulation::kTickDuration};
     auto previous_time = std::chrono::steady_clock::now();
-    std::uint32_t client_tick{};
     const auto maximum_frame_delta = std::chrono::duration_cast<mycore::time::Duration>(
         std::chrono::milliseconds{config.simulation.max_frame_delta_ms});
     mycore::debug::FrameMetrics frame_metrics;
@@ -1221,14 +1257,18 @@ int run_networked_game(
         const auto frame_duration =
             std::chrono::duration_cast<mycore::time::Duration>(now - previous_time);
         frame_metrics.add_sample(frame_duration);
-        const auto elapsed = std::min(frame_duration, maximum_frame_delta);
-        const auto discarded_frame_time = frame_duration - elapsed;
+        const auto bounded_elapsed = std::min(frame_duration, maximum_frame_delta);
+        const auto discarded_frame_time = frame_duration - bounded_elapsed;
+        const auto elapsed = command_timing.scale_accumulator_elapsed(bounded_elapsed);
         previous_time = now;
         const auto step_result =
             accumulator.advance(elapsed, config.simulation.max_steps_per_frame);
         const auto discarded_backlog = step_result.step_limit_reached
                                            ? accumulator.discard_pending_steps()
                                            : mycore::time::Duration::zero();
+        if (step_result.step_limit_reached) {
+            command_timing.record_discarded_backlog();
+        }
 
         const auto playing_before_steps =
             client.session_mode() == dots::protocol::SessionMode::Playing;
@@ -1479,6 +1519,7 @@ int run_networked_game(
                             .server_tick = client.world().server_tick(),
                             .local_input_tick = client_tick,
                             .prediction = prediction_statistics,
+                            .command_timing = command_timing.statistics(),
                             .remote_presentation = remote_presentation_statistics,
                             .remote_extrapolation = remote_extrapolation_statistics,
                             .consequences = consequence_presentation.statistics(),

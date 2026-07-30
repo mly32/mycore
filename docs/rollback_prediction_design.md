@@ -527,7 +527,7 @@ source-handoff, and remap offsets over 100 ms.
 
 The server remains fixed at 30 Hz and consumes at most one ordered command per client each tick.
 Feature 14 targets two queued commands and prefills two neutral commands when prediction becomes
-ready.
+ready. The graphical and bot composition roots share the Dots-owned timing controller.
 
 Accepted snapshots update a queue-depth EWMA with `alpha = 1/8`. Depth 1.5 through 2.5 is a
 deadband. Outside it:

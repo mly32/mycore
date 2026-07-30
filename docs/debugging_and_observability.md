@@ -20,8 +20,8 @@ This document uses three status labels:
   rollback-aware presentation, consequence handlers, and bounded outside-closure extrapolation
   are implemented. Feature 12 delayed interpolation remains the spectator/fallback/comparison
   path, and Feature 13's authoritative lifecycle and spectator presentation remain implemented.
-- **Feature 14 remaining:** adaptive command cadence, expanded fault controls and Rollback
-  diagnostics, measured workload evidence, router tombstone pruning, and the same-frame versus
+- **Feature 14 remaining:** expanded fault controls and Rollback diagnostics, measured workload
+  evidence, router tombstone pruning, and the same-frame versus
   multi-frame replay decision specified in
   [`plans/14-selectable-world-rollback.md`](plans/14-selectable-world-rollback.md) and
   [`rollback_prediction_design.md`](rollback_prediction_design.md).
@@ -98,7 +98,7 @@ uses server ticks and targets `newest received tick - 6`. It advances at 100% sp
 observations, not inputs to an adaptive delay policy in Feature 12. When no newer bracket exists,
 the cursor freezes at rate `0.0` until a newer endpoint arrives.
 
-Feature 14's planned adaptive command buffer is also not a live-server-time estimator. It targets
+Feature 14's adaptive command buffer is also not a live-server-time estimator. It targets
 two queued server commands, filters reported queue depth with EWMA `alpha = 1/8`, leaves a
 `1.5..2.5` deadband, and applies only this bounded client cadence correction:
 
@@ -317,6 +317,7 @@ The **Prediction** tab rows are:
 | History use/high-water | Current and runtime-maximum occupancy of the fixed 256-entry replay ring. Capacity is a correctness bound, not an adaptive target. |
 | Scope | Current epoch, certified replay horizon, causal owner/player/food counts, separately subscribed event-owner count, and lifetime rebase count. A smaller newly required closure may retain a safe existing superset to prevent presentation ownership from oscillating as ACK depth changes. |
 | Server pending input | Current and runtime-high-water depth of this client's authoritative 64-entry server input queue, as reported by snapshots. |
+| Command buffer | Fixed target, latest and EWMA server depth, bounded cadence scale, accumulated phase correction, low/high observations, two-input prefill count, and discarded producer-overrun count. |
 | Rollback base | Snapshot ID, server tick, and ACK used for the latest successful reconciliation. |
 | Replay count | Latest, lifetime-total, and runtime-maximum numbers of inputs replayed after installing an authoritative base. |
 | Replay duration | Latest, last-120-reconciliation average, and runtime maximum scratch-replay/commit CPU duration in milliseconds. |
@@ -535,8 +536,9 @@ decode/rejection logs, and server health. Transport state alone does not prove r
 ### Command lead and server input queue grow together
 
 The client is producing input faster than the server consumes it, the server is overloaded, or
-clock drift is accumulating. The current fixed command cadence observes this trend but does not
-speed or slow local simulation; adaptive cadence remains Feature 14 step 8 work.
+clock drift is accumulating. The adaptive controller moves command production by at most five
+percent around the fixed gameplay rate; persistent clamping means the underlying pressure still
+needs investigation.
 Headless bots additionally discard missed producer deadlines after a replay or polling overrun.
 If a bot build predating that guard tries to repay the delay with back-to-back sends, the
 server's bounded input queue can reject it even though packet-loss reconciliation itself is

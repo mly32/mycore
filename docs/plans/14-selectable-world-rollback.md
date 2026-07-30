@@ -566,6 +566,39 @@ roots, including a noninteractive confirmed-only HUD banner and a monotonic futu
 Adaptive command timing, complete fault controls, workload measurement, router tombstone pruning,
 and any multi-frame replay scheduler remain step 8.
 
+### Step 8 Decision Record
+
+Step 8 closes Feature 14 with four bounded increments:
+
+1. Add a Dots-owned adaptive command-timing controller shared by graphical and bot composition
+   roots. It starts with two neutral prefill commands, targets two queued server commands, filters
+   accepted snapshot depths with EWMA `alpha = 1/8`, uses a `1.5..2.5` deadband, and clamps
+   command cadence to `0.95..1.05`. It changes neither the authoritative 30 Hz tick nor fixed
+   gameplay durations. Existing producer-overrun guards continue discarding scheduling debt.
+2. Bound consequence storage through two independent proofs. Timeline retirement proves an event
+   is no longer reachable from retained replay; game integration separately proves no external
+   receipt can redeliver it. The generic router prunes only after both proofs, in either order.
+   Dots uses server-retired confirmed receipts and complete unsaturated receipt batches for this
+   external proof. Offline Dots has no external receipt source and may pair replay retirement
+   immediately.
+3. Complete the Rollback diagnostics and fault contract. Report prediction/scope coordinates,
+   typed divergence, replay distributions, command-buffer state, event/ledger state, receipt
+   rejection categories, remote-assumption provenance, and explicit correction generations.
+   Faults have typed, bounded `Armed`, `Triggered`, and `Completed` receipts and remain separate
+   from transport measurements. Hostile receipt checks run through scratch candidate validation
+   rather than corrupting a live session.
+4. Add deterministic recorded replay workloads and bounded native impairment soaks. Release
+   measurements cover 10, 100, 500, and 1,000 entities at RTT-equivalent replay depths for 100,
+   200, and 400 ms. Same-frame replay remains the sole production path. Only an optimized
+   200 ms workload exceeding 4 ms at p99 or causing rollback-attributable frame overruns in more
+   than 1% of reconciliations creates the separately reviewed multi-frame spike plan.
+
+The adaptive formula is a fixed networking contract rather than a TOML tuning surface. Step 8
+may eliminate redundant checkpoint/digest/difference passes, reserve or reuse scratch storage,
+and skip disabled debug artifacts, but it may not weaken interaction closure, atomic commit,
+event order, or authority validation. The bounded soak support does not replace Feature 17's
+load orchestration and operational reporting.
+
 ## Test Plan
 
 Engine tests with a small deterministic model cover:
