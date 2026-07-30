@@ -34,6 +34,11 @@ sudo apt-get install --yes \
 vcpkg manifest mode installs the libraries declared in `vcpkg.json`. Unix ports may still use
 the host tools and system development packages listed above.
 
+CI runs static analysis with `clang-tidy` 22 from the
+[official LLVM Debian/Ubuntu packages](https://apt.llvm.org/). Use the same major version when
+reproducing a Linux diagnostic locally; analyzer results can differ between LLVM releases. The
+CI command is `run-clang-tidy-22 -p build/linux-clang-debug -warnings-as-errors='*' -quiet`.
+
 ## Configure, build, and test
 
 List the configure presets available on the current host:

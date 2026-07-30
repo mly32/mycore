@@ -114,7 +114,13 @@ jobs:
 
       - name: Install Linux dependency tools
         if: runner.os == 'Linux'
+        shell: bash
         run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
+          source /etc/os-release
+          echo "deb http://apt.llvm.org/${VERSION_CODENAME}/ llvm-toolchain-${VERSION_CODENAME}-22 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm-22.list
           sudo apt-get update
           sudo apt-get install --yes \
             autoconf autoconf-archive automake libtool libltdl-dev \
@@ -123,7 +129,7 @@ jobs:
             libxss-dev libxtst-dev \
             libwayland-dev libxkbcommon-dev libegl1-mesa-dev \
             libibus-1.0-dev \
-            clang-tidy
+            clang-tidy-22
 
       - name: Install macOS dependency tools
         if: runner.os == 'macOS'
@@ -142,7 +148,8 @@ jobs:
         if: matrix.platform == 'Linux'
         shell: bash
         run: |
-          run-clang-tidy \
+          clang-tidy-22 --version
+          run-clang-tidy-22 \
             -p build/${{ matrix.preset }} \
             -warnings-as-errors='*' \
             -quiet
