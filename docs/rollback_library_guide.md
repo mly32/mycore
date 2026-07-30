@@ -77,6 +77,34 @@ Include the umbrella header:
 Keep the model adapter in game code. `engine/rollback` must not know game entities, mechanics,
 protocol fields, or presentation types.
 
+## Runtime ownership and call discipline
+
+`Timeline`, its model value, and `StaticConsequenceRouter` are caller-owned synchronous objects.
+They do not create worker threads and do not provide internal synchronization. A composition root
+must give each instance one mutation owner, normally the fixed-step simulation thread. Concurrent
+reads during a mutation are a data race unless the caller supplies an external synchronization
+boundary.
+
+Treat one timeline call as an indivisible transaction:
+
+- Do not re-enter that timeline from `Model::restore`, `step`, `capture`, `digest`, `diff`,
+  `event_key`, or a stimulus-refresh callback.
+- Model and refresh operations must not call presentation, audio, analytics, transport, input
+  devices, wall clocks, or other externally visible services.
+- Consequence handlers run synchronously inside `StaticConsequenceRouter::consume`. Do not
+  recursively consume another batch through the same router or mutate the timeline from a
+  handler.
+- `timeline.state()` and `timeline.scope()` return borrowed pointers. Do not retain them across a
+  non-const timeline operation, move of the timeline, or transfer to another thread. Copy the
+  game-defined value needed by an asynchronous consumer.
+- `Commit` and `EventBatch` are owning value outputs. Move those values across composition
+  boundaries instead of sharing references into the timeline.
+
+The timeline makes its own replay atomic. It cannot make a larger transaction involving a
+protocol inbox, replicated-world cache, outer command ring, presentation queue, or session state
+atomic. The composition root owns that boundary, as shown in
+[Compose an authoritative update transaction](#compose-an-authoritative-update-transaction).
+
 ## Implement a rollback model
 
 A model is a copyable policy value with the following associated types:
@@ -161,6 +189,75 @@ The operations have stronger semantic requirements than the C++ concept can expr
 The engine cannot inspect an opaque checkpoint. The game adapter must validate that an
 `AuthorityFrame::tick` agrees with the checkpoint's logical tick, that rules/schema are
 compatible, and that every required entity and external cause is present.
+
+## Describe mechanics and prove causal closure
+
+Prediction membership is a gameplay proof, not a distance setting. Before implementing a scope
+builder, write down what each predicted mechanic reads, writes, receives from outside the
+checkpoint, and can create or remove. A useful worksheet is:
+
+| Mechanic | Reads | Writes | External causes | Required prediction closure | Events |
+|---|---|---|---|---|---|
+| Movement | Owner command, position, movement rules | Position, last movement | Sampled local command or recorded remote assumption | Controlled owner and every moved piece | Usually none |
+| Consumption | Positions, radii, mass, consumable existence | Mass and entity existence | Recorded remote movement assumptions | Every entity and consumable that can interact during the replay horizon | Consumed/absorbed |
+| Split | Mass, cooldown, piece count, allocator | Topology, mass, launch velocity, cooldown | Sampled split edge | Complete owner-local state plus every predicted child and its conservative reach | Split |
+| Merge | Piece topology, positions, mass, merge deadlines | Topology, position, mass | None beyond retained movement causes | All pieces of the owner and entities that can affect them before merge | Merged |
+| Global timer or rule | Rule version, phase, deadline | Enabled mechanics or outcome state | Validated authority fact when not derivable locally | Required global/non-spatial domain, even when no nearby entity represents it | Game-defined |
+
+For each enabled mechanic:
+
+1. Seed the scope from locally controlled state.
+2. Add every entity, owner-local field, allocator, rule, timer, and authority fact the mechanic
+   may read over the replay horizon.
+3. Add state whose writes can affect any of those reads, including collision chains and
+   topology changes.
+4. Add predicted children by stable causal spawn identity and include their conservative future
+   reach.
+5. Repeat until membership reaches a fixed point.
+6. If required state is unavailable, disable the affected mechanic, choose a documented safe
+   fallback profile, or reject the authority frame.
+
+Event subscription is separate from state closure. A simulation may need an entity in the
+predicted state to preserve deterministic gameplay without publishing that entity's presentation
+events to this client. Conversely, subscribing to an event does not provide the checkpoint state
+required to predict its mechanic.
+
+Test the worksheet as executable invariants. Removing any declared dependency should make scope
+construction fail or select the safe fallback, while a full-replicated oracle should produce the
+same scoped result for interactions wholly inside the proven closure.
+
+## Determinism and portability
+
+`MyCore::Rollback` guarantees transactional replay mechanics; it does not make arbitrary game
+code deterministic. Define the compatibility envelope in which a checkpoint and stimulus stream
+must replay identically. At minimum:
+
+- Use one fixed tick duration and one documented mechanic order.
+- Give unordered command input, spatial candidates, collisions, and simultaneous events stable
+  sorting and tie-breaking before they mutate state.
+- Store gameplay RNG state and allocation cursors in the checkpoint before randomness or entity
+  identity depends on them. Never draw gameplay randomness from a process-global generator.
+- Keep wall time, frame delta, input-device state, network arrival order, pointer values, and
+  container hash order out of `step`.
+- Version checkpoint schema, immutable rules, and any algorithm change that makes old authority
+  incompatible. Reject an incompatible frame; a hard resync cannot make two different rulesets
+  deterministic.
+- Define canonical digest encoding explicitly: field order, integer width and byte order,
+  optional/variant tags, floating-point representation, and sorted collection order. Never hash
+  object padding or native container layout.
+
+IEEE floating-point types alone do not guarantee bit-identical results across every compiler,
+optimization mode, instruction set, or math-library implementation. If cross-platform
+bit-identical replay is required, constrain the supported toolchain and operations, quantize
+authoritative state, or use an appropriate fixed-point representation. Otherwise, treat normal
+authority correction as the convergence mechanism and use replay digests to measure how often
+platform differences occur. A digest is diagnostic evidence, not proof of semantic equality or
+a security boundary.
+
+Keep recorded replay fixtures that run in Debug and optimized builds on every supported platform.
+They should compare canonical checkpoints, ordered event journals, and typed differences—not only
+the final digest. A new platform or compiler is supported for prediction only after those
+fixtures pass.
 
 ## Drive the timeline
 
@@ -318,6 +415,94 @@ state exists, validate and convert them with `resolve_authority_only_events(mode
 Both paths produce the same `EventBatch<Model>` contract consumed by
 `StaticConsequenceRouter`.
 
+## Compose an authoritative update transaction
+
+The timeline validates and commits its own state atomically, but a networked client normally has
+several other fallible objects that must agree with the same packet. Use candidate copies or
+equivalent scratch builders so a late failure cannot install only half of an authoritative
+update.
+
+The complete ordering is:
+
+```text
+decode packet
+  -> validate framing, schema, IDs, rules, snapshot order, ACK, and receipt syntax
+  -> hydrate a candidate authoritative checkpoint/world
+  -> apply receipts to a candidate receipt inbox
+  -> build and validate the candidate prediction scope
+  -> choose reconcile/refresh/rebase/hard-resync
+  -> prove every bounded queue has capacity and advance candidate publication frontiers
+  -> run the timeline's atomic replay after every outer failure point is cleared
+  -> install world + inbox + durable session fields through non-failing moves
+  -> enqueue the committed EventBatch
+  -> route consequences and update presentation from committed state only
+```
+
+A simplified composition-root shape is:
+
+```cpp
+auto decoded = decode_and_validate(packet);
+if (!decoded) {
+    reject_packet(decoded.error());
+    return;
+}
+
+auto candidate_world = replicated_world;
+auto candidate_receipts = receipt_inbox;
+auto candidate_batches = pending_event_batches;
+
+auto authority = hydrate_authority(*decoded, candidate_world, candidate_receipts);
+if (!authority) {
+    reject_packet(authority.error());
+    return;
+}
+
+auto scope = build_prediction_scope(authority->checkpoint, retained_commands);
+if (!scope) {
+    reject_packet(scope.error());
+    return;
+}
+
+if (!candidate_receipts.mark_ready_for_publication(authority->events) ||
+    !candidate_batches.can_push(1)) {
+    reject_packet(capacity_or_receipt_error());
+    return;
+}
+
+// This is the first live mutation. Everything after a successful replay is a
+// prevalidated, non-failing move/install or bounded push.
+auto result = apply_authority(timeline, *authority, *scope);
+auto* commit = std::get_if<Commit>(&result);
+if (commit == nullptr) {
+    reject_packet(timeline_error(result));
+    return;
+}
+
+candidate_batches.push_prevalidated(event_batch_from_commit(std::move(*commit)));
+replicated_world = std::move(candidate_world);
+receipt_inbox = std::move(candidate_receipts);
+pending_event_batches = std::move(candidate_batches);
+```
+
+The names above are illustrative game/protocol adapters, not additional rollback-library APIs.
+The important property is that all fallible outer validation and capacity work finishes before
+the timeline call, the timeline itself commits atomically, and all remaining related installs
+are non-failing. A game that cannot provide non-failing moves/installs must instead construct an
+equivalent candidate timeline and swap the complete aggregate; that requires a copyable model or
+a game-owned reconstruction path beyond the minimum `RollbackModel` concept.
+
+After installation, every successful timeline mutation has exactly one event-publication path.
+An empty batch may be discarded deliberately; a nonempty batch must not be silently lost. A
+consequence-handler failure is reported after gameplay commit and is not a reason to rewind the
+accepted authoritative state or retry an irreversible effect.
+
+Local predicted ticks need a corresponding transaction boundary. Sample device input once,
+assign its stable command sequence, retain the immutable command in the outer recovery buffer,
+send it according to the game's transport policy, and call `advance` only under a documented
+send-failure policy. Never resample the device during replay. The outer buffer, timeline
+submission frontier, server acknowledgement, receipt publication frontier, and presentation
+consumption frontier are distinct coordinates even when their numeric values happen to match.
+
 ## Simulation events and presentation consequences
 
 Simulation events are rewindable outputs. External effects are not. Keep these paths separate:
@@ -439,25 +624,31 @@ must remain visible until scratch catches the moving prediction head.
 
 Before a new game enables prediction:
 
-1. Checkpoint round-trip is exact and rebuilds all derived indexes.
-2. Replaying the same checkpoint and stimuli produces identical checkpoints and event journals.
-3. Every external cause is checkpoint state or a stimulus field; sampled player intent is
+1. One thread or externally synchronized executor owns timeline and consequence-router mutation;
+   callbacks are non-reentrant and borrowed state does not escape its lifetime.
+2. Checkpoint round-trip is exact and rebuilds all derived indexes.
+3. Replaying the same checkpoint and stimuli produces identical checkpoints and event journals
+   in Debug and optimized builds on every supported prediction platform.
+4. Every external cause is checkpoint state or a stimulus field; sampled player intent is
    immutable and every refreshable authority-derived field is explicitly identified and tested.
-4. Every enabled mechanic has a causally closed scope or an explicit safe fallback. Before
+5. Every enabled mechanic has a causally closed scope or an explicit safe fallback. Before
    retaining an older superset scope, prove that the newest authority checkpoint still projects
    completely into it; owner membership can change even after that owner leaves the newly
    required closure.
-5. Authority hydration validates schema, tick, rules, IDs, scope, acknowledgement, and receipts
-   before calling the timeline.
-6. Receipt streams distinguish semantic acceptance, event-batch publication, consequence
+6. Authority hydration validates schema, tick, rules, IDs, scope, acknowledgement, and receipts
+   before calling the timeline, and the outer composition transaction cannot partially install
+   related live objects.
+7. Receipt streams distinguish semantic acceptance, event-batch publication, consequence
    delivery, network acknowledgement, and server-confirmed retirement.
-7. Event keys survive rollback and never identify two semantic occurrences.
-8. Continuous presentation comes from committed state; one-shot consequences use an explicit
+8. Event keys survive rollback and never identify two semantic occurrences.
+9. Continuous presentation comes from committed state; one-shot consequences use an explicit
    policy.
-9. Every failure path preserves the last committed state and chooses a documented recovery.
-10. History capacity covers the intended replay window at an acceptable checkpoint memory cost.
-11. Tests cover multi-frame correction, structural restoration, event revision/retraction,
+10. Every failure path preserves the last committed state and chooses a documented recovery.
+11. History capacity covers the intended replay window at an acceptable checkpoint memory cost.
+12. Tests cover multi-frame correction, structural restoration, event revision/retraction,
     acknowledgement trimming, scope rebase, capacity exhaustion, and hard resync.
+13. Canonical checkpoint and event fixtures cover ordering, RNG/allocator state, schema/rule
+    compatibility, and the intended cross-platform floating-point contract.
 
 The complete minimal model and consequence examples are in
 [`tests/mycore_rollback_tests.cpp`](../tests/mycore_rollback_tests.cpp). The first production
