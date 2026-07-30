@@ -56,7 +56,22 @@ The launcher waits for server readiness, prefixes child output, propagates failu
 up every process. Once every graphical client exits, the launcher terminates the remaining bots
 and server; a client or bot failure ends the session immediately. Add `--fake-lag-ms` or
 `--fake-loss-percent` to a native executable or the launcher to exercise impaired connections.
-Run an executable with `--help` for its complete CLI.
+For a bounded headless stability soak, set `--clients 0`, provide at least one bot, and use
+`--duration-seconds`; the deadline is successful only if every process remains healthy:
+
+```bash
+python3 games/dots/tools/dots_session.py \
+    --build-dir build/macos-clang-debug \
+    --clients 0 \
+    --bots 5 \
+    --fake-lag-ms 100 \
+    --fake-loss-percent 5 \
+    --duration-seconds 30
+```
+
+Run an executable with `--help` for its complete CLI. The
+[Feature 14 workload results](../../docs/feature14_rollback_workload_results.md) record the
+current optimized replay matrix and native soak evidence.
 
 | Executable | Purpose |
 |---|---|

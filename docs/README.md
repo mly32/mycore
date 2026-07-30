@@ -31,6 +31,9 @@
 - [Feature 14 persistent presentation audit](feature14_persistent_presentation_audit.md): source
   sampling contracts, the double-smoothing correction, remote prediction/extrapolation modes,
   and prevention rules.
+- [Feature 14 rollback workload results](feature14_rollback_workload_results.md): optimized
+  entity/replay measurements, bounded native impairment soaks, and the same-frame replay
+  decision.
 - [SDL_GPU rendering](sdl_gpu_rendering_guide.md): shaders, resources, draw flow, and platform
   backends.
 

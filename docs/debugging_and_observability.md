@@ -19,13 +19,10 @@ This document uses three status labels:
 - **Current:** Feature 14 complete-World prediction/reconciliation, persistent rollback-aware
   presentation, consequence handlers, bounded outside-closure extrapolation, adaptive command
   timing, bounded consequence retirement, Rollback diagnostics, explicit correction generations,
-  and typed receipts for interactive position/loss faults are implemented. Feature 12 delayed
-  interpolation remains the spectator/fallback/comparison path, and Feature 13's authoritative
-  lifecycle and spectator presentation remain implemented.
-- **Feature 14 remaining:** deterministic workload/soak evidence and the measured same-frame
-  versus multi-frame replay decision specified in
-  [`plans/14-selectable-world-rollback.md`](plans/14-selectable-world-rollback.md) and
-  [`rollback_prediction_design.md`](rollback_prediction_design.md).
+  typed receipts for interactive position/loss faults, deterministic scale workloads, bounded
+  native impairment soaks, and the measured same-frame replay decision are implemented. Feature
+  12 delayed interpolation remains the spectator/fallback/comparison path, and Feature 13's
+  authoritative lifecycle and spectator presentation remain implemented.
 
 When a feature phase is approved, change its entries to **Current** as part of that phase's
 documentation update.
@@ -520,11 +517,13 @@ Mass/split/identity/remote-assumption/event-key and hostile receipt cases remain
 test fixtures; invalid receipt candidates are applied to scratch inbox/world copies and leave the
 last accepted live state unchanged.
 
-Same-frame replay is the current atomic production path. The remaining workload increment records
-entity count, replay ticks,
-checkpoint bytes, topology changes, RTT/jitter/loss grouping, client-frame impact, and replay
-duration. Multi-frame resimulation is not shown as an available mode unless a separate reviewed
-implementation exists; the decision thresholds and atomic-commit invariants live in
+Same-frame replay is the atomic production path. The deterministic workload records entity count,
+replay ticks, checkpoint bytes, topology events, replay distributions, and rollback-only 30 Hz
+frame overruns. Bounded native soaks group RTT and loss separately. The optimized target 200 ms,
+1,000-entity case measured 0.738 ms p99 and 0% rollback-only frame overruns, so Feature 14 did not
+activate the conditional multi-frame spike. The complete matrix and method are in the
+[Feature 14 workload results](feature14_rollback_workload_results.md); the decision thresholds
+and atomic-commit invariants live in
 [`rollback_prediction_design.md`](rollback_prediction_design.md#same-frame-replay-and-deferred-multi-frame-work).
 
 ## Troubleshooting Patterns
@@ -642,11 +641,12 @@ Compare latest and EWMA server queue depth with packet loss, input ACK progress,
 events. A persistent clamp may reveal clock drift or delivery pressure; it does not mean client
 session time or the server tick rate changed.
 
-### Same-frame replay exceeds its budget — Feature 14 planned
+### Same-frame replay exceeds its measured budget
 
 Correlate replay duration with replay ticks, predicted entity count, checkpoint bytes, and
-structural changes. A 2 ms warning does not permit partial state. Use the documented p99 and
-frame-overrun research thresholds before proposing a multi-frame scheduler.
+structural changes. A 2 ms warning does not permit partial state. Re-run the release workload and
+compare it with the recorded p99 and frame-overrun research thresholds before proposing a
+multi-frame scheduler.
 
 ## Impairment Testing
 
@@ -662,8 +662,8 @@ Use impairment to answer a specific question:
 - Remote interpolation: vary loss/jitter schedules and inspect known endpoints, buffer coverage,
   cursor rate, and holds.
 - Complete rollback: exercise split and contested interactions and inspect replay/correction
-  output under identical impairment. Profile comparison, structural metrics, and command-buffer
-  output arrive with the remaining Rollback diagnostics.
+  output under identical impairment. Use a bot-only `--duration-seconds` session when the pass
+  condition is process health through a fixed deadline.
 
 Random transport loss is useful for play testing. Deterministic tests should use controlled
 arrival schedules so correction and buffer metrics have exact expected values.

@@ -70,6 +70,18 @@ Build a focused target during iteration:
 cmake --build --preset macos-clang-debug --target dots_client
 ```
 
+Build and run the deterministic optimized rollback workload with:
+
+```bash
+cmake --preset macos-clang-release
+cmake --build --preset macos-clang-release --target dots_rollback_workload
+./build/macos-clang-release/bin/dots_rollback_workload --iterations 1000
+```
+
+The workload prints CSV measurements but makes no timing assertion in CTest. The
+[Feature 14 workload record](feature14_rollback_workload_results.md) defines its scenario,
+current baseline, and replay-scheduler decision threshold.
+
 Use a fresh cache after changing compilers, architectures, or vcpkg triplets:
 
 ```bash

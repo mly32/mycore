@@ -292,6 +292,9 @@ The local `dots_session.py` launcher treats an unexpected nonzero client exit or
 as failure of the development session and terminates the remaining child processes. That cleanup
 may be abrupt, so terminating the launcher is not a good test of every client's graceful-leave
 log path. Close one client window while leaving the launcher running to observe that path.
+For automation, the launcher accepts a bot-only session with `--clients 0` and a positive
+`--duration-seconds`. Reaching that deadline with every process healthy returns success and then
+cleans up the children; any earlier failure still returns failure.
 
 ## Reasoning about simulated lag and packet loss
 
@@ -981,8 +984,11 @@ these policies. Production Dots presentation uses `PredictOnce` split/consume fl
 `PredictCancelable` split-launch, food-pop, and consume-collapse tokens, and a `ConfirmOnce`
 kill/defeat banner plus monotonic future-audio hook.
 
-The timeline completes replay in the frame that accepts the snapshot unless measured workloads
-justify the separately planned conditional multi-frame spike.
+The timeline completes replay in the frame that accepts the snapshot. Feature 14's optimized
+target 200 ms workload measured 0.738 ms p99 at 1,000 full-replicated entities and no
+rollback-only 30 Hz frame overruns, so it did not activate the conditional multi-frame spike.
+See the [workload record](feature14_rollback_workload_results.md) for the full matrix, method,
+and native impairment soaks.
 
 The canonical checkpoint, replay, predicted-entity, event/consequence, adaptive-buffer, and
 recovery contracts are in [`rollback_prediction_design.md`](rollback_prediction_design.md). The

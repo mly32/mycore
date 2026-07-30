@@ -436,9 +436,12 @@ Keep commits focused and reviewable, but do not add approval gates between these
    backlog after a replay overrun so it cannot turn local scheduling debt into a server input
    flood; adaptive queue-depth convergence remains part of this step.
 
-Steps 1 through 7 and the command-timing, consequence-ledger, and diagnostics/fault increments of
-step 8 are implemented on `feature/14`; deterministic workloads and the measured replay decision
-remain.
+Steps 1 through 8 are implemented on `feature/14`. The optimized workload and native soak
+evidence are recorded in
+[`../feature14_rollback_workload_results.md`](../feature14_rollback_workload_results.md).
+The target 200 ms, 1,000-entity result remains below both research thresholds, so atomic
+same-frame replay stays the sole production path and the conditional multi-frame spike is not
+activated.
 `MyCore::Rollback` now provides the generic
 timeline and consequence machinery. Dots Simulation now provides immutable `WorldRules`, sorted
 complete checkpoints, atomic restore, one owner-scoped command batch per tick, typed food and
@@ -564,11 +567,11 @@ font or audio backend. The ImGui frame may therefore render the HUD even when de
 disabled, but the banner never captures input. Its monotonic stinger sequence is the future audio
 hook; Feature 14 does not add audio or a general text renderer.
 
-Step 7 also adds game-neutral per-handler/policy dispatch statistics to the consequence report.
+Step 7 added game-neutral per-handler/policy dispatch statistics to the consequence report.
 The production Dots adapter exercises every row above in both offline and networked composition
 roots, including a noninteractive confirmed-only HUD banner and a monotonic future-audio hook.
-Adaptive command timing, complete fault controls, workload measurement, router tombstone pruning,
-and any multi-frame replay scheduler remain step 8.
+Step 8 added adaptive command timing, complete fault controls, workload measurement, and router
+tombstone pruning. Its evidence did not justify adding a multi-frame replay scheduler.
 
 ### Step 8 Decision Record
 
@@ -603,14 +606,18 @@ and skip disabled debug artifacts, but it may not weaken interaction closure, at
 event order, or authority validation. The bounded soak support does not replace Feature 17's
 load orchestration and operational reporting.
 
-The first three increments are implemented. `EventBatch::externally_retired_keys` is the generic
+All four increments are implemented. `EventBatch::externally_retired_keys` is the generic
 external-proof boundary; the router exposes bounded-ledger statistics and refuses to prune a live
 cancelable token. Dots remembers replay-retired keys with occurrence ticks, consumes explicit
 server-retired receipt keys, and treats only a receipt batch smaller than the per-snapshot maximum
 as complete negative evidence. Saturated batches intentionally defer pruning. The Rollback tab
 now exposes profile/scope/digest/replay/difference/spawn/receipt/assumption state, current
 interactive faults produce bounded typed receipts, hostile receipt candidates validate against
-scratch state, and predicted compositor corrections require explicit generations.
+scratch state, and predicted compositor corrections require explicit generations. The workload
+target verifies deterministic split replay across the full entity/RTT-equivalent matrix without
+flaky timing assertions in CTest. Timed headless native sessions provide bounded impairment
+soaks. Release measurements at the target 200 ms case reached 0.738 ms p99 at 1,000 entities and
+0% rollback-only 30 Hz frame overruns, so the multi-frame trigger was not crossed.
 
 ## Test Plan
 

@@ -523,11 +523,12 @@ Exit criterion:
 - Complete interaction-closed Dots gameplay converges atomically to server truth, Dots exercises
   every generic consequence policy, and `MyCore::Rollback` contains no game or protocol policy.
 
-Implementation status: steps 1 through 7 are complete. Adaptive command timing, expanded
-fault/diagnostic coverage, measured scale workloads, router-ledger pruning, and the conditional
-multi-frame replay decision remain in step 8. Step 8 also measures cross-tick predicted-closure
-corrections and adds an explicit presentation correction generation only if fixed-tick
-interpolation is insufficient; source revisions must not be reused as discontinuity signals.
+Implementation status: steps 1 through 8 are complete on `feature/14`. Adaptive command timing,
+expanded fault/diagnostic coverage, bounded router-ledger pruning, explicit correction
+generations, measured scale workloads, and bounded native soaks are implemented. The optimized
+target 200 ms, 1,000-entity workload measured 0.738 ms p99 with 0% rollback-only 30 Hz frame
+overruns, so the conditional multi-frame spike was not activated. The evidence is recorded in
+[`feature14_rollback_workload_results.md`](feature14_rollback_workload_results.md).
 
 Implement Feature 14 incrementally, beginning with the game-neutral rollback kernel. Keep commits
 small enough to review independently; the roadmap does not require separate branches or approval
@@ -546,6 +547,8 @@ Do not create this branch from anticipated scale alone. The spike must use the r
 14 workloads, keep presenting immutable committed state, accept commands while catching up,
 supersede work for newer authority, atomically swap only after reaching its moving target, and
 hard-resync before history exhaustion.
+
+Status: not activated by Feature 14. The recorded target workload remained below both thresholds.
 
 Exit criterion:
 

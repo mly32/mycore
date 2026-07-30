@@ -574,15 +574,19 @@ not covered by either timeline submission or the outer ring.
 Replay has a 2 ms warning, not a cutoff. Duration alone never publishes incorrect partial state.
 First evaluate simulation optimization, closure size, and reconciliation frequency.
 
-Record replay ticks, predicted entities, checkpoint bytes, structural changes, p50/p95/p99/max
-duration, client-frame impact, correction/event transitions, and impairment grouping at 10, 100,
-500, and 1,000 entities and 100, 200, and 400 ms RTT.
+The Feature 14 release workload records replay ticks, predicted entities, checkpoint bytes, a
+split topology event, p50/p95/p99/max duration, and rollback-only 30 Hz frame overruns at 10, 100,
+500, and 1,000 entities and 100, 200, and 400 ms RTT-equivalent replay depths. Bounded native
+soaks separately cover transport RTT/loss and session stability. At the target 200 ms scenario,
+the 1,000-entity workload measured 0.738 ms p99 and 0% rollback-only frame overruns. This remains
+below both the 4 ms and 1% triggers, so Feature 14 retains atomic same-frame replay and does not
+activate `spike/multi-frame-resimulation`. See the
+[workload record](feature14_rollback_workload_results.md).
 
-Create the separate `spike/multi-frame-resimulation` plan only if replay exceeds 4 ms at p99 or
-causes rollback-attributable frame overruns in more than 1% of reconciliations in the target
-200 ms scenario after cheaper mitigations. A future scheduler must preserve an immutable
-baseline, accept new commands, supersede work for newer authority, atomically swap only after
-catch-up, and hard-resync before history exhaustion.
+If a future material checkpoint, closure, or simulation-cost change crosses either threshold
+after cheaper mitigations, create a separately reviewed multi-frame plan. Any future scheduler
+must preserve an immutable baseline, accept new commands, supersede work for newer authority,
+atomically swap only after catch-up, and hard-resync before history exhaustion.
 
 ## Debug and Metrics Contract
 
