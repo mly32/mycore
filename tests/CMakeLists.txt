@@ -158,6 +158,15 @@ target_link_libraries(
 mycore_configure_test_executable(dots_world_prediction_tests)
 catch_discover_tests(dots_world_prediction_tests)
 
+add_executable(dots_rollback_workload dots_rollback_workload.cpp)
+target_link_libraries(
+    dots_rollback_workload
+    PRIVATE
+        Dots::Prediction
+)
+mycore_configure_test_executable(dots_rollback_workload)
+add_test(NAME dots_rollback_workload_verify COMMAND dots_rollback_workload --iterations 1)
+
 add_executable(dots_presentation_tests dots_presentation_tests.cpp)
 target_link_libraries(
     dots_presentation_tests

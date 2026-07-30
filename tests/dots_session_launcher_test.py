@@ -108,6 +108,17 @@ class DotsSessionLauncherTests(unittest.TestCase):
         )
         self.assertEqual(result, 1)
 
+    def test_bounded_headless_session_stops_healthy_processes(self) -> None:
+        marker = Path(self.directory.name) / "bot-stopped.txt"
+        result = dots_session.run_session(
+            self.command("server"),
+            [],
+            [self.command("bot", str(marker))],
+            duration_seconds=0.1,
+        )
+        self.assertEqual(result, 0)
+        self.assertEqual(marker.read_text(encoding="utf-8"), "stopped")
+
     def test_client_config_is_resolved_and_passed_to_every_client(self) -> None:
         build_directory = Path(self.directory.name) / "build"
         binary_directory = build_directory / "bin"
@@ -161,6 +172,7 @@ class DotsSessionLauncherTests(unittest.TestCase):
         self.assertEqual(launched_server, server_command)
         self.assertEqual(launched_clients, [client_command] * 3)
         self.assertEqual(launched_bots, [bot_command] * 2)
+        self.assertIsNone(run_session.call_args.kwargs["duration_seconds"])
 
     def test_missing_client_config_is_rejected(self) -> None:
         with self.assertRaises(SystemExit):
@@ -177,6 +189,46 @@ class DotsSessionLauncherTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             dots_session._parse_arguments(
                 ["--build-dir", self.directory.name, "--bots", "-1"]
+            )
+
+    def test_headless_bounded_arguments_are_supported(self) -> None:
+        build_directory = Path(self.directory.name) / "build"
+        binary_directory = build_directory / "bin"
+        binary_directory.mkdir(parents=True)
+        executable_suffix = ".exe" if os.name == "nt" else ""
+        (binary_directory / f"dots_server{executable_suffix}").touch()
+        (binary_directory / f"dots_bot{executable_suffix}").touch()
+
+        arguments = dots_session._parse_arguments(
+            [
+                "--build-dir",
+                str(build_directory),
+                "--clients",
+                "0",
+                "--bots",
+                "5",
+                "--duration-seconds",
+                "30",
+            ]
+        )
+        _, client_command, bot_command = dots_session._session_commands(arguments)
+        self.assertEqual(client_command, [])
+        self.assertEqual(arguments.duration_seconds, 30.0)
+        self.assertEqual(Path(bot_command[0]).name, f"dots_bot{executable_suffix}")
+
+    def test_empty_or_nonpositive_bounded_session_is_rejected(self) -> None:
+        with self.assertRaises(SystemExit):
+            dots_session._parse_arguments(
+                ["--build-dir", self.directory.name, "--clients", "0"]
+            )
+        with self.assertRaises(SystemExit):
+            dots_session._parse_arguments(
+                [
+                    "--build-dir",
+                    self.directory.name,
+                    "--duration-seconds",
+                    "0",
+                ]
             )
 
 

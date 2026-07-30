@@ -50,6 +50,7 @@ def run_session(
     client_commands: Sequence[Sequence[str]],
     bot_commands: Sequence[Sequence[str]] = (),
     readiness_timeout: float = 10.0,
+    duration_seconds: float | None = None,
 ) -> int:
     messages: queue.Queue[tuple[str, str]] = queue.Queue()
     processes: list[subprocess.Popen[str]] = []
@@ -101,6 +102,9 @@ def run_session(
         for index, command in enumerate(bot_commands, start=1):
             bots.append(start(f"bot {index}", command))
 
+        session_deadline = (
+            None if duration_seconds is None else time.monotonic() + duration_seconds
+        )
         while True:
             try:
                 label, line = messages.get(timeout=0.05)
@@ -131,6 +135,12 @@ def run_session(
                         file=sys.stderr,
                     )
                     return bot.returncode or 1
+            if session_deadline is not None and time.monotonic() >= session_deadline:
+                print(
+                    f"dots_session: completed {duration_seconds:g}-second bounded session",
+                    file=sys.stderr,
+                )
+                return 0
     except KeyboardInterrupt:
         print("dots_session: interrupted by user", file=sys.stderr)
         return 130
@@ -161,15 +171,24 @@ def _parse_arguments(arguments: Sequence[str] | None = None) -> argparse.Namespa
     parser.add_argument("--server-address", default="127.0.0.1:27020")
     parser.add_argument("--fake-lag-ms", type=int, default=0)
     parser.add_argument("--fake-loss-percent", type=float, default=0.0)
+    parser.add_argument(
+        "--duration-seconds",
+        type=float,
+        help="stop successfully after this many seconds if every process remains healthy",
+    )
     parsed = parser.parse_args(arguments)
-    if parsed.clients <= 0:
-        parser.error("--clients must be positive")
+    if parsed.clients < 0:
+        parser.error("--clients must be non-negative")
     if parsed.bots < 0:
         parser.error("--bots must be non-negative")
+    if parsed.clients == 0 and parsed.bots == 0:
+        parser.error("at least one client or bot is required")
     if parsed.fake_lag_ms < 0:
         parser.error("--fake-lag-ms must be non-negative")
     if not 0.0 <= parsed.fake_loss_percent <= 100.0:
         parser.error("--fake-loss-percent must be in the range 0..100")
+    if parsed.duration_seconds is not None and parsed.duration_seconds <= 0.0:
+        parser.error("--duration-seconds must be positive")
     if parsed.client_config is not None:
         parsed.client_config = parsed.client_config.resolve()
         if not parsed.client_config.is_file():
@@ -180,8 +199,10 @@ def _parse_arguments(arguments: Sequence[str] | None = None) -> argparse.Namespa
 def _session_commands(arguments: argparse.Namespace) -> tuple[list[str], list[str], list[str]]:
     build_directory = arguments.build_dir.resolve()
     server = _executable(build_directory, "dots_server")
-    client = _executable(build_directory, "dots_client")
-    bot = _executable(build_directory, "dots_bot")
+    client = (
+        _executable(build_directory, "dots_client") if arguments.clients > 0 else None
+    )
+    bot = _executable(build_directory, "dots_bot") if arguments.bots > 0 else None
     impairment: list[str] = [
         "--fake-lag-ms",
         str(arguments.fake_lag_ms),
@@ -199,19 +220,27 @@ def _session_commands(arguments: argparse.Namespace) -> tuple[list[str], list[st
         if arguments.client_config is None
         else ["--config", str(arguments.client_config)]
     )
-    client_command: list[str] = [
-        str(client),
-        *client_configuration,
-        "--connect",
-        arguments.server_address,
-        *impairment,
-    ]
-    bot_command: list[str] = [
-        str(bot),
-        "--connect",
-        arguments.server_address,
-        *impairment,
-    ]
+    client_command: list[str] = (
+        []
+        if client is None
+        else [
+            str(client),
+            *client_configuration,
+            "--connect",
+            arguments.server_address,
+            *impairment,
+        ]
+    )
+    bot_command: list[str] = (
+        []
+        if bot is None
+        else [
+            str(bot),
+            "--connect",
+            arguments.server_address,
+            *impairment,
+        ]
+    )
     return server_command, client_command, bot_command
 
 
@@ -222,6 +251,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         server_command,
         [client_command for _ in range(arguments.clients)],
         [bot_command for _ in range(arguments.bots)],
+        duration_seconds=arguments.duration_seconds,
     )
 
 
