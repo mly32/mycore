@@ -527,7 +527,9 @@ Playing clients default to this extrapolated source; configuration can select de
 interpolation or an A/B mode that draws extrapolation plus an interpolated outline. Spectators
 always use delayed interpolation. Persistent semantic tracks use `PredictionKey` when present
 and entity ID otherwise, interpolate consecutive predicted fixed ticks, and decay correction,
-source-handoff, and remap offsets over 100 ms.
+source-handoff, and remap offsets over 100 ms. Predicted correction residuals are keyed by an
+explicit per-entity correction generation and displacement supplied by reconciliation. A source
+revision selects fixed-tick interpolation but cannot by itself create a correction residual.
 
 ## Adaptive Command Buffer
 

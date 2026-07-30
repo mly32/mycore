@@ -436,7 +436,9 @@ Keep commits focused and reviewable, but do not add approval gates between these
    backlog after a replay overrun so it cannot turn local scheduling debt into a server input
    flood; adaptive queue-depth convergence remains part of this step.
 
-Steps 1 through 7 are implemented on `feature/14`; step 8 is next.
+Steps 1 through 7 and the command-timing, consequence-ledger, and diagnostics/fault increments of
+step 8 are implemented on `feature/14`; deterministic workloads and the measured replay decision
+remain.
 `MyCore::Rollback` now provides the generic
 timeline and consequence machinery. Dots Simulation now provides immutable `WorldRules`, sorted
 complete checkpoints, atomic restore, one owner-scoped command batch per tick, typed food and
@@ -483,9 +485,11 @@ input capture; only the confirmed replicated session can do that. The client con
 authority receipts into confirmed timeline events and ACKs their contiguous published sequence.
 Remote interpolation endpoint ghosts remain visible for in-scope players when enabled so the
 predicted and authoritative presentation layers can still be compared. Local and comparable
-same-head remote corrections emit entity-specific runtime records into a configurable bounded
+common-tick remote corrections emit entity-specific runtime records into a configurable bounded
 presentation history. The history keeps the magenta pre-correction hue stable, fades opacity
-over two seconds, and excludes ordinary movement between different predicted head ticks.
+over two seconds, and excludes ordinary forward movement when no retained common checkpoint
+exists. Predicted presentation residuals carry an explicit correction generation and
+displacement instead of inferring correction from source revision.
 
 The step 6.5 audit remediation makes the fallback transition-closed as `OwnedGameplay`, separates
 causal state membership from owner-participant event subscriptions, and routes every observable
@@ -599,11 +603,14 @@ and skip disabled debug artifacts, but it may not weaken interaction closure, at
 event order, or authority validation. The bounded soak support does not replace Feature 17's
 load orchestration and operational reporting.
 
-The first two increments are implemented. `EventBatch::externally_retired_keys` is the generic
+The first three increments are implemented. `EventBatch::externally_retired_keys` is the generic
 external-proof boundary; the router exposes bounded-ledger statistics and refuses to prune a live
 cancelable token. Dots remembers replay-retired keys with occurrence ticks, consumes explicit
 server-retired receipt keys, and treats only a receipt batch smaller than the per-snapshot maximum
-as complete negative evidence. Saturated batches intentionally defer pruning.
+as complete negative evidence. Saturated batches intentionally defer pruning. The Rollback tab
+now exposes profile/scope/digest/replay/difference/spawn/receipt/assumption state, current
+interactive faults produce bounded typed receipts, hostile receipt candidates validate against
+scratch state, and predicted compositor corrections require explicit generations.
 
 ## Test Plan
 

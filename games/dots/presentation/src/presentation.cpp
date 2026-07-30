@@ -387,7 +387,7 @@ FrameData PersistentWorldPresentation::compose(const FrameData& desired,
         }
         if (!circle.entity_id.is_valid() || !finite(circle.position) ||
             !std::isfinite(circle.mass) || circle.mass <= 0.0F || !std::isfinite(circle.radius) ||
-            circle.radius <= 0.0F) {
+            circle.radius <= 0.0F || !finite(circle.correction_displacement)) {
             throw std::runtime_error{"Dots persistent presentation encountered invalid entity"};
         }
         const auto key = key_for(circle);
@@ -414,14 +414,18 @@ FrameData PersistentWorldPresentation::compose(const FrameData& desired,
         const auto previous_visual = evaluate(track, fixed_tick_alpha, now);
         const auto source_changed = track.current.source != circle.source;
         const auto revision_changed = track.current.source_revision != circle.source_revision;
+        const auto correction_generation_changed =
+            track.current.correction_generation != circle.correction_generation;
         const auto identity_remapped = track.last_entity_id != circle.entity_id;
+        const auto predicted_correction =
+            circle.source == PresentationSource::Predicted && correction_generation_changed;
         const auto same_revision_prediction_changed =
             circle.source == PresentationSource::Predicted && !revision_changed &&
             (track.current.position != circle.position || track.current.radius != circle.radius);
         const auto smooth_change =
             source_changed || identity_remapped ||
             (revision_changed && revision_replacement_requires_smoothing(circle.source)) ||
-            same_revision_prediction_changed;
+            predicted_correction;
 
         if (circle.source == PresentationSource::Predicted && revision_changed && !source_changed) {
             track.previous = track.current;
@@ -432,8 +436,13 @@ FrameData PersistentWorldPresentation::compose(const FrameData& desired,
             track.current = circle;
         }
         if (smooth_change) {
-            track.correction_offset = previous_visual.position - circle.position;
-            track.radius_correction = previous_visual.radius - circle.radius;
+            if (predicted_correction && !source_changed && !identity_remapped) {
+                track.correction_offset = circle.correction_displacement;
+                track.radius_correction = 0.0F;
+            } else {
+                track.correction_offset = previous_visual.position - circle.position;
+                track.radius_correction = previous_visual.radius - circle.radius;
+            }
             track.correction_started_at = now;
             track.correction_active = track.correction_offset != mycore::math::Vector2{} ||
                                       track.radius_correction != 0.0F;
@@ -819,6 +828,15 @@ FrameData extract_remote_interpolated_predicted_frame_impl(
             return std::ranges::find(predicted_scope_entity_ids, entity_id) !=
                    predicted_scope_entity_ids.end();
         };
+    const auto correction_residual = [&controlled_player](protocol::EntityId entity_id)
+        -> const PredictedReplicatedPlayer::EntityCorrectionResidual* {
+        const auto found = std::find_if(controlled_player.correction_residuals.rbegin(),
+                                        controlled_player.correction_residuals.rend(),
+                                        [entity_id](const auto& correction) {
+                                            return correction.entity_id == entity_id;
+                                        });
+        return found == controlled_player.correction_residuals.rend() ? nullptr : &*found;
+    };
     for (const auto& entity : remotes.entities) {
         if (!finite(entity.position) || !std::isfinite(entity.mass) || entity.mass <= 0.0F) {
             throw std::runtime_error{
@@ -863,6 +881,7 @@ FrameData extract_remote_interpolated_predicted_frame_impl(
         for (const auto& player : checkpoint.players) {
             const auto entity_id = protocol::EntityId{player.entity_id.value()};
             const auto controlled = entity_id == controlled_player.entity_id;
+            const auto* correction = correction_residual(entity_id);
             rendered_controlled = rendered_controlled || controlled;
             frame.circles.push_back({
                 .position = controlled ? controlled_player.presentation_position : player.position,
@@ -885,6 +904,9 @@ FrameData extract_remote_interpolated_predicted_frame_impl(
                         : std::nullopt,
                 .source = controlled ? PresentationSource::State : PresentationSource::Predicted,
                 .source_revision = checkpoint.tick.value(),
+                .correction_generation = correction != nullptr ? correction->generation : 0,
+                .correction_displacement =
+                    correction != nullptr ? correction->displacement : mycore::math::Vector2{},
             });
         }
     }

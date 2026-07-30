@@ -125,11 +125,11 @@ For deterministic prediction investigation, set `[input].mode = "keyboard"` and
 `[debug].prediction_log_level = "debug"` in a client config. The `info` level logs prediction
 scope changes and command-frontier defer/recovery transitions; `debug` also reports nonzero
 remote-player displacement across reconciliation.
-`[debug].correction_history_count` controls how many recent local and comparable same-head remote
-corrections are drawn; it defaults to 8 and accepts 1 through 64. Correction circles retain their
-magenta state-layer color and fade with age.
+`[debug].correction_history_count` controls how many recent local and comparable common-tick
+remote corrections are drawn; it defaults to 8 and accepts 1 through 64. Correction circles
+retain their magenta state-layer color and fade with age.
 The [Feature 14 prediction-stutter postmortem](../../docs/feature14_prediction_stutter_postmortem.md)
-explains the two-bot reproduction and how to interpret same-head corrections.
+explains the two-bot reproduction and how to interpret rollback corrections.
 
 Split, launch, cohesion, and merge are implemented in the shared deterministic simulation and
 rollback adapter. Protocol v4 carries the split edge, complete checkpoints, immutable rules,
@@ -168,17 +168,19 @@ because they are non-debug gameplay UI and never capture input.
 ## Runtime visibility
 
 When `[debug].enabled` is true, the in-game debug UI uses two panes: left **Dots session** has
-**Runtime**, **Network**, and **Gameplay** tabs; right **Dots diagnostics** has **Prediction**,
+**Runtime**, **Network**, and **Gameplay** tabs; right **Dots diagnostics** has **Rollback**,
 **Interpolation**, and **Tools** tabs. It reports
 server-assigned client/entity IDs, simulation and frame health, transport statistics, input ACK
-and history pressure, replay/correction metrics, consequence-handler delivery, persistent
-presentation handoffs, extrapolation age/cap/holds, authoritative/predicted/presentation state, and
-confirmed absorption, defeat, follow, respawn-deadline, and respawn-result state. The Gameplay
+and history pressure, replay percentiles and typed differences, scope/digest/receipt state,
+consequence-handler delivery, persistent presentation handoffs, extrapolation age/cap/holds,
+authoritative/predicted/presentation state, and confirmed absorption, defeat, follow,
+respawn-deadline, and respawn-result state. The Gameplay
 countdown projects the latest server tick using snapshot receipt age for presentation only; the
 server tick decides eligibility. The compact top-left game-state panel repeats an active respawn
 countdown so it remains visible without selecting the Gameplay tab.
 Tools can inject prediction errors or a three-packet drop burst without changing measured
-transport loss. Native connections expose RTT, loss, rates, and queues; unavailable in-memory
+transport loss. Both publish bounded `ARMED`, `TRIGGERED`, and `COMPLETED` fault receipts.
+Native connections expose RTT, loss, rates, and queues; unavailable in-memory
 measurements are labeled rather than displayed as zero. See the
 [debugging guide](../../docs/debugging_and_observability.md) for every field and visual layer.
 

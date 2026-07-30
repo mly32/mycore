@@ -31,7 +31,9 @@ player_frame(float position_x,
              dots::presentation::PresentationSource source =
                  dots::presentation::PresentationSource::Predicted,
              dots::protocol::EntityId entity_id = dots::protocol::EntityId{1},
-             std::optional<dots::protocol::PredictionKey> prediction_key = std::nullopt) {
+             std::optional<dots::protocol::PredictionKey> prediction_key = std::nullopt,
+             std::uint64_t correction_generation = 0,
+             mycore::math::Vector2 correction_displacement = {}) {
     return {
         .camera = {},
         .circles = {{
@@ -43,6 +45,8 @@ player_frame(float position_x,
             .prediction_key = prediction_key,
             .source = source,
             .source_revision = revision,
+            .correction_generation = correction_generation,
+            .correction_displacement = correction_displacement,
         }},
     };
 }
@@ -222,15 +226,47 @@ TEST_CASE("Persistent presentation smooths a same-head predicted correction",
     static_cast<void>(presentation.compose(player_frame(0.0F, 3), 1.0F, 0, {}, clock_time(0ms)));
 
     const auto corrected =
-        presentation.compose(player_frame(10.0F, 3), 1.0F, 0, {}, clock_time(10ms));
+        presentation.compose(player_frame(10.0F,
+                                          3,
+                                          dots::presentation::PresentationSource::Predicted,
+                                          dots::protocol::EntityId{1},
+                                          std::nullopt,
+                                          1,
+                                          {-10.0F, 0.0F}),
+                             1.0F,
+                             0,
+                             {},
+                             clock_time(10ms));
     REQUIRE(corrected.circles.size() == 1);
     CHECK(corrected.circles.front().position.x == Catch::Approx(0.0F));
 
     const auto halfway =
-        presentation.compose(player_frame(10.0F, 3), 1.0F, 0, {}, clock_time(60ms));
+        presentation.compose(player_frame(10.0F,
+                                          3,
+                                          dots::presentation::PresentationSource::Predicted,
+                                          dots::protocol::EntityId{1},
+                                          std::nullopt,
+                                          1,
+                                          {-10.0F, 0.0F}),
+                             1.0F,
+                             0,
+                             {},
+                             clock_time(60ms));
     REQUIRE(halfway.circles.size() == 1);
     CHECK(halfway.circles.front().position.x == Catch::Approx(5.0F));
     CHECK(presentation.statistics().smoothed_correction_count == 1);
+}
+
+TEST_CASE("Persistent presentation does not infer correction from a same-revision pose change",
+          "[dots][presentation][persistent]") {
+    dots::presentation::PersistentWorldPresentation presentation;
+    static_cast<void>(presentation.compose(player_frame(0.0F, 3), 1.0F, 0, {}, clock_time(0ms)));
+
+    const auto changed =
+        presentation.compose(player_frame(10.0F, 3), 1.0F, 0, {}, clock_time(10ms));
+    REQUIRE(changed.circles.size() == 1);
+    CHECK(changed.circles.front().position.x == Catch::Approx(10.0F));
+    CHECK(presentation.statistics().smoothed_correction_count == 0);
 }
 
 TEST_CASE("Persistent presentation bounds structural fades and motion trails",

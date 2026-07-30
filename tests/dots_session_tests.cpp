@@ -552,6 +552,20 @@ TEST_CASE("Client input acknowledges the highest contiguous authority receipt",
           }});
     CHECK(client.prediction_statistics().authority_receipts_server_retired_through ==
           dots::protocol::AuthorityReceiptSequenceId{0});
+
+    endpoint.events.push_back(mycore::net_transport::PayloadReceived{
+        .connection = connection,
+        .delivery = mycore::net_transport::DeliveryMode::Unreliable,
+        .payload = encode_bytes(dots::protocol::FullSnapshot{
+            .snapshot_id = dots::protocol::SnapshotId{3},
+            .recipient = playing_session(),
+            .entities = {player_state()},
+        }),
+    });
+    REQUIRE(client.process_events().error == dots::client_runtime::RuntimeError::InvalidSnapshot);
+    CHECK(client.world().snapshot_id() == dots::protocol::SnapshotId{2});
+    CHECK(client.prediction_statistics().authority_receipt_rejections.invalid_retirement_count ==
+          1);
 }
 
 TEST_CASE("Pre-welcome authority receipts publish after prediction initialization",

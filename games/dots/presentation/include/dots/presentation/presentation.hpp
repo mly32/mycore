@@ -60,6 +60,8 @@ struct CircleInstance {
     std::optional<protocol::PredictionKey> prediction_key;
     PresentationSource source{PresentationSource::State};
     std::uint64_t source_revision{};
+    std::uint64_t correction_generation{};
+    mycore::math::Vector2 correction_displacement{};
 
     auto operator<=>(const CircleInstance&) const = default;
 };
@@ -247,12 +249,19 @@ private:
 };
 
 struct PredictedReplicatedPlayer {
+    struct EntityCorrectionResidual {
+        protocol::EntityId entity_id;
+        std::uint64_t generation{};
+        mycore::math::Vector2 displacement;
+    };
+
     protocol::EntityId entity_id;
     mycore::math::Vector2 presentation_position;
     mycore::math::Vector2 predicted_position;
     std::optional<mycore::math::Vector2> pre_correction_position;
     std::span<const mycore::math::Vector2> correction_replay_path;
     std::span<const PredictionCorrectionGhost> correction_ghosts;
+    std::span<const EntityCorrectionResidual> correction_residuals;
     bool show_prediction_layers{true};
     bool show_replay_path{true};
 };

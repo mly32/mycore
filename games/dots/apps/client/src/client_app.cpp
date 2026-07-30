@@ -115,6 +115,7 @@ struct DebugWorldStats {
         dots::presentation::RemoteExtrapolationStatistics remote_extrapolation;
         dots::presentation::ConsequencePresentationStatistics consequences;
         dots::presentation::PersistentPresentationStatistics persistent_presentation;
+        std::span<const dots::client_runtime::DebugFaultReceipt> fault_receipts;
         RemotePresentationMode remote_presentation_mode{RemotePresentationMode::Extrapolated};
         std::optional<dots::protocol::EntityId> representative_remote_entity;
         dots::presentation::RemoteEntityEndpoints representative_remote_endpoints;
@@ -263,6 +264,58 @@ consequence_policy_name(mycore::rollback::ConsequencePolicy policy) noexcept {
         return "CANCELABLE";
     case ConsequencePolicy::ConfirmOnce:
         return "CONFIRM ONCE";
+    }
+    return "UNKNOWN";
+}
+
+[[nodiscard]] constexpr std::string_view
+prediction_profile_name(dots::prediction::PredictionProfile profile) noexcept {
+    using dots::prediction::PredictionProfile;
+    switch (profile) {
+    case PredictionProfile::InteractionClosure:
+        return "INTERACTION CLOSURE";
+    case PredictionProfile::FullReplicated:
+        return "FULL REPLICATED";
+    case PredictionProfile::OwnedGameplay:
+        return "OWNED GAMEPLAY";
+    }
+    return "UNKNOWN";
+}
+
+[[nodiscard]] constexpr std::string_view
+prediction_fallback_name(dots::prediction::PredictionFallbackReason reason) noexcept {
+    using dots::prediction::PredictionFallbackReason;
+    switch (reason) {
+    case PredictionFallbackReason::None:
+        return "NONE";
+    case PredictionFallbackReason::IncompleteClosure:
+        return "INCOMPLETE CLOSURE";
+    }
+    return "UNKNOWN";
+}
+
+[[nodiscard]] constexpr std::string_view
+debug_fault_kind_name(dots::client_runtime::DebugFaultKind kind) noexcept {
+    using dots::client_runtime::DebugFaultKind;
+    switch (kind) {
+    case DebugFaultKind::PositionDivergence:
+        return "POSITION";
+    case DebugFaultKind::InputPacketLoss:
+        return "INPUT LOSS";
+    }
+    return "UNKNOWN";
+}
+
+[[nodiscard]] constexpr std::string_view
+debug_fault_phase_name(dots::client_runtime::DebugFaultPhase phase) noexcept {
+    using dots::client_runtime::DebugFaultPhase;
+    switch (phase) {
+    case DebugFaultPhase::Armed:
+        return "ARMED";
+    case DebugFaultPhase::Triggered:
+        return "TRIGGERED";
+    case DebugFaultPhase::Completed:
+        return "COMPLETED";
     }
     return "UNKNOWN";
 }
@@ -522,6 +575,21 @@ void draw_prediction_debug_tab(const DebugWorldStats& world) {
 
     const auto& session = *world.network_session;
     const auto& prediction = session.prediction;
+    const auto requested_profile = prediction_profile_name(prediction.requested_profile);
+    const auto active_profile = prediction_profile_name(prediction.active_profile);
+    const auto fallback = prediction_fallback_name(prediction.fallback_reason);
+    ImGui::Text("Profile requested / active: %.*s / %.*s",
+                static_cast<int>(requested_profile.size()),
+                requested_profile.data(),
+                static_cast<int>(active_profile.size()),
+                active_profile.data());
+    ImGui::Text("Fallback / mechanics / domains / causes: %.*s / 0x%X / 0x%X / 0x%X",
+                static_cast<int>(fallback.size()),
+                fallback.data(),
+                prediction.mechanics,
+                prediction.required_domains,
+                prediction.required_causal_channels);
+    ImGui::Separator();
     ImGui::TextUnformatted("Authority receipt publication");
     draw_authority_receipt_sequence("Accepted through",
                                     prediction.authority_receipts_accepted_through);
@@ -533,6 +601,16 @@ void draw_prediction_debug_tab(const DebugWorldStats& world) {
                 prediction.authority_receipt_retained_count,
                 prediction.authority_receipt_pending_publication_count);
     ImGui::Text("Queued event batches: %zu", prediction.pending_prediction_event_batch_count);
+    const auto& receipt_rejections = prediction.authority_receipt_rejections;
+    ImGui::Text("Receipt reject retire/gap/conflict/duplicate/capacity: "
+                "%llu/%llu/%llu/%llu/%llu",
+                static_cast<unsigned long long>(receipt_rejections.invalid_retirement_count),
+                static_cast<unsigned long long>(receipt_rejections.sequence_gap_count),
+                static_cast<unsigned long long>(receipt_rejections.conflicting_receipt_count),
+                static_cast<unsigned long long>(receipt_rejections.duplicate_event_key_count),
+                static_cast<unsigned long long>(receipt_rejections.capacity_exceeded_count));
+    ImGui::Text("Event queue overflow: %llu",
+                static_cast<unsigned long long>(prediction.prediction_event_queue_overflow_count));
     const auto& consequences = session.consequences;
     ImGui::Separator();
     ImGui::TextUnformatted("Rollback consequences");
@@ -633,19 +711,62 @@ void draw_prediction_debug_tab(const DebugWorldStats& world) {
                 static_cast<unsigned long long>(command_timing.discarded_backlog_count));
     draw_snapshot_sequence("Rollback snapshot", prediction.rollback_snapshot_id);
     ImGui::Text("Rollback server tick: %u", prediction.rollback_server_tick);
+    ImGui::Text("Authority / predicted / lead ticks: %llu / %llu / %llu",
+                static_cast<unsigned long long>(prediction.authoritative_tick),
+                static_cast<unsigned long long>(prediction.predicted_tick),
+                static_cast<unsigned long long>(prediction.prediction_lead_ticks));
     draw_input_sequence("Rollback input ACK", prediction.rollback_input_acknowledgement);
+    draw_input_sequence("Replay first input", prediction.replay_first_input);
+    draw_input_sequence("Replay last input", prediction.replay_last_input);
+    ImGui::Text("Checkpoint schema / storage: %u / %zu bytes",
+                static_cast<unsigned int>(prediction.checkpoint_schema_id),
+                prediction.checkpoint_storage_bytes);
+    ImGui::Text("Digest replicated / authority / predicted: %016llX / %016llX / %016llX",
+                static_cast<unsigned long long>(prediction.replicated_checkpoint_digest),
+                static_cast<unsigned long long>(prediction.authoritative_prediction_digest),
+                static_cast<unsigned long long>(prediction.predicted_digest));
     ImGui::Text("Replay last / total / max: %zu / %llu / %zu",
                 prediction.latest_replay_count,
                 static_cast<unsigned long long>(prediction.total_replayed_input_count),
                 prediction.maximum_replay_count);
-    ImGui::Text("Replay ms last / avg / max: %.3f / %.3f / %.3f",
+    ImGui::Text("Replay ms last / avg / p50 / p95 / p99 / max: "
+                "%.3f / %.3f / %.3f / %.3f / %.3f / %.3f",
                 prediction.latest_replay_milliseconds,
                 prediction.average_replay_milliseconds,
+                prediction.replay_p50_milliseconds,
+                prediction.replay_p95_milliseconds,
+                prediction.replay_p99_milliseconds,
                 prediction.maximum_replay_milliseconds);
     ImGui::Text("Replay over budget / hard resync / ACK catch-up: %llu / %llu / %llu",
                 static_cast<unsigned long long>(prediction.replay_over_budget_count),
                 static_cast<unsigned long long>(prediction.hard_resync_count),
                 static_cast<unsigned long long>(prediction.acknowledgement_catch_up_count));
+    ImGui::Text("Diff rules/allocator/structural: %s / %s / %s",
+                prediction.latest_rules_changed ? "YES" : "NO",
+                prediction.latest_allocator_changed ? "YES" : "NO",
+                prediction.latest_structural_change ? "YES" : "NO");
+    ImGui::Text("Diff max position/mass: %.4f / %.4f; owner/player/food: %zu/%zu/%zu",
+                prediction.latest_maximum_position_delta,
+                prediction.latest_maximum_mass_delta,
+                prediction.latest_owner_difference_count,
+                prediction.latest_player_difference_count,
+                prediction.latest_food_difference_count);
+    ImGui::Text(
+        "Entity create/remove: %zu/%zu; spawns pending/matched/rejected/authority/ambiguous: "
+        "%zu/%llu/%llu/%llu/%llu",
+        prediction.latest_entity_creation_count,
+        prediction.latest_entity_removal_count,
+        prediction.pending_predicted_spawn_count,
+        static_cast<unsigned long long>(prediction.matched_predicted_spawn_count),
+        static_cast<unsigned long long>(prediction.rejected_predicted_spawn_count),
+        static_cast<unsigned long long>(prediction.authority_only_spawn_count),
+        static_cast<unsigned long long>(prediction.ambiguous_predicted_spawn_count));
+    ImGui::Text("Remote assumptions: %zu, source ticks %llu..%llu, applied %llu..%llu",
+                prediction.remote_assumption_count,
+                static_cast<unsigned long long>(prediction.remote_assumption_source_tick_min),
+                static_cast<unsigned long long>(prediction.remote_assumption_source_tick_max),
+                static_cast<unsigned long long>(prediction.remote_assumption_applied_tick_first),
+                static_cast<unsigned long long>(prediction.remote_assumption_applied_tick_last));
 
     ImGui::Separator();
     ImGui::TextUnformatted("Correction and presentation");
@@ -840,6 +961,24 @@ void draw_prediction_tools_tab(const DebugWorldStats& world,
             prediction_controls->drop_input_packets_requested = true;
         }
         ImGui::EndDisabled();
+        if (!session.fault_receipts.empty()) {
+            ImGui::TextUnformatted("Bounded fault receipts");
+            const auto first = session.fault_receipts.size() > 6 ? session.fault_receipts.size() - 6
+                                                                 : std::size_t{};
+            for (auto index = first; index < session.fault_receipts.size(); ++index) {
+                const auto& receipt = session.fault_receipts[index];
+                const auto kind = debug_fault_kind_name(receipt.kind);
+                const auto phase = debug_fault_phase_name(receipt.phase);
+                ImGui::Text("#%llu %.*s %.*s %zu/%zu",
+                            static_cast<unsigned long long>(receipt.id),
+                            static_cast<int>(kind.size()),
+                            kind.data(),
+                            static_cast<int>(phase.size()),
+                            phase.data(),
+                            receipt.observed_count,
+                            receipt.requested_count);
+            }
+        }
 
         ImGui::Separator();
         ImGui::TextUnformatted("Visual layers");
@@ -945,7 +1084,7 @@ void draw_debug_overlay(const ClientConfig& config,
     ImGui::SetNextWindowBgAlpha(0.82F);
     if (ImGui::Begin("Dots diagnostics", nullptr, kWindowFlags)) {
         if (ImGui::BeginTabBar("Dots diagnostics tabs")) {
-            if (ImGui::BeginTabItem("Prediction")) {
+            if (ImGui::BeginTabItem("Rollback")) {
                 draw_prediction_debug_tab(world);
                 ImGui::EndTabItem();
             }
@@ -1203,6 +1342,8 @@ int run_networked_game(
     dots::presentation::PredictionCorrectionHistory prediction_correction_history{
         config.debug.correction_history_count};
     std::vector<dots::presentation::PredictionCorrectionSample> prediction_correction_samples;
+    std::vector<dots::presentation::PredictedReplicatedPlayer::EntityCorrectionResidual>
+        prediction_correction_residuals;
     dots::presentation::SpectatorCamera spectator_camera{{
         .pan_speed_world_units_per_second = config.spectator.pan_speed_world_units_per_second,
         .minimum_pixels_per_world_unit = config.spectator.minimum_pixels_per_world_unit,
@@ -1434,6 +1575,8 @@ int run_networked_game(
                 now);
             prediction_correction_samples.clear();
             prediction_correction_samples.reserve(client.recent_prediction_corrections().size());
+            prediction_correction_residuals.clear();
+            prediction_correction_residuals.reserve(client.recent_prediction_corrections().size());
             for (const auto& correction : client.recent_prediction_corrections()) {
                 prediction_correction_samples.push_back({
                     .sequence = correction.sequence,
@@ -1443,6 +1586,14 @@ int run_networked_game(
                     .remote = correction.source ==
                               dots::client_runtime::PredictionCorrectionSource::Remote,
                 });
+                if (correction.source == dots::client_runtime::PredictionCorrectionSource::Remote) {
+                    prediction_correction_residuals.push_back({
+                        .entity_id = correction.entity_id,
+                        .generation = correction.sequence,
+                        .displacement =
+                            correction.pre_correction_position - correction.corrected_position,
+                    });
+                }
             }
             prediction_correction_history.update(
                 prediction_correction_samples, prediction_statistics.hard_resync_count, now);
@@ -1534,6 +1685,7 @@ int run_networked_game(
                             .remote_extrapolation = remote_extrapolation_statistics,
                             .consequences = consequence_presentation.statistics(),
                             .persistent_presentation = persistent_world_presentation.statistics(),
+                            .fault_receipts = client.debug_fault_receipts(),
                             .remote_presentation_mode = config.debug.remote_presentation_mode,
                             .representative_remote_entity = representative_remote_entity,
                             .representative_remote_endpoints = representative_remote_endpoints,
@@ -1638,6 +1790,7 @@ int run_networked_game(
                         ? local_prediction_presentation.retained_correction_replay_path()
                         : std::span<const Vector2>{},
                 .correction_ghosts = prediction_correction_history.ghosts(),
+                .correction_residuals = prediction_correction_residuals,
                 .show_prediction_layers =
                     config.debug.enabled && prediction_debug_controls.show_prediction_layers,
                 .show_replay_path =

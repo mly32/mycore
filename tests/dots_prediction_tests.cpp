@@ -903,6 +903,23 @@ TEST_CASE("Misprediction corrects simulation immediately and records its replay 
     CHECK(statistics.latest_correction_distance == Catch::Approx(1.0F));
     CHECK(statistics.maximum_correction_distance == Catch::Approx(1.0F));
     CHECK(statistics.corrections_per_minute == Catch::Approx(1.0F));
+    CHECK(statistics.requested_profile == dots::prediction::PredictionProfile::InteractionClosure);
+    CHECK(statistics.active_profile == dots::prediction::PredictionProfile::InteractionClosure);
+    CHECK(statistics.fallback_reason == dots::prediction::PredictionFallbackReason::None);
+    CHECK(statistics.authoritative_tick == 1);
+    CHECK(statistics.predicted_tick == 2);
+    CHECK(statistics.prediction_lead_ticks == 1);
+    CHECK(statistics.replay_first_input == dots::protocol::InputSequenceId{0});
+    CHECK(statistics.replay_last_input == dots::protocol::InputSequenceId{0});
+    CHECK(statistics.checkpoint_schema_id == dots::protocol::kCheckpointSchemaId);
+    CHECK(statistics.checkpoint_storage_bytes > 0);
+    CHECK(statistics.replicated_checkpoint_digest != 0);
+    CHECK(statistics.authoritative_prediction_digest != 0);
+    CHECK(statistics.predicted_digest != 0);
+    CHECK(statistics.latest_maximum_position_delta == Catch::Approx(1.0F));
+    CHECK(statistics.replay_p50_milliseconds >= 0.0);
+    CHECK(statistics.replay_p95_milliseconds >= statistics.replay_p50_milliseconds);
+    CHECK(statistics.replay_p99_milliseconds >= statistics.replay_p95_milliseconds);
 }
 
 TEST_CASE("Stale snapshots cannot roll prediction or metrics backward",
@@ -1132,6 +1149,12 @@ TEST_CASE("Injected input drops suppress transport while preserving prediction",
     CHECK_FALSE(client.debug_drop_next_input_packets(0));
     REQUIRE(client.debug_drop_next_input_packets(3));
     CHECK(client.prediction_statistics(clock_time(10s)).pending_injected_input_drop_count == 3);
+    REQUIRE(client.debug_fault_receipts().size() == 1);
+    CHECK(client.debug_fault_receipts().front().kind ==
+          dots::client_runtime::DebugFaultKind::InputPacketLoss);
+    CHECK(client.debug_fault_receipts().front().phase ==
+          dots::client_runtime::DebugFaultPhase::Armed);
+    CHECK_FALSE(client.debug_drop_next_input_packets(1));
 
     for (std::uint32_t tick = 0; tick < 3; ++tick) {
         REQUIRE(client.send_input(tick, {1.0F, 0.0F}) ==
@@ -1143,6 +1166,13 @@ TEST_CASE("Injected input drops suppress transport while preserving prediction",
     CHECK(statistics.history_count == 3);
     CHECK(statistics.pending_injected_input_drop_count == 0);
     CHECK(statistics.injected_input_drop_count == 3);
+    REQUIRE(client.debug_fault_receipts().size() == 3);
+    CHECK(client.debug_fault_receipts()[1].phase ==
+          dots::client_runtime::DebugFaultPhase::Triggered);
+    CHECK(client.debug_fault_receipts()[1].observed_count == 1);
+    CHECK(client.debug_fault_receipts()[2].phase ==
+          dots::client_runtime::DebugFaultPhase::Completed);
+    CHECK(client.debug_fault_receipts()[2].observed_count == 3);
 
     REQUIRE(client.send_input(3, {1.0F, 0.0F}) == dots::client_runtime::InputSendResult::Sent);
     REQUIRE(endpoint.sent_payloads.size() == 1);
@@ -1170,6 +1200,13 @@ TEST_CASE("Injected prediction error is corrected and exposed separately from pa
     auto statistics = client.prediction_statistics(clock_time(10s));
     CHECK(statistics.injected_prediction_error_count == 2);
     CHECK(statistics.injected_input_drop_count == 0);
+    REQUIRE(client.debug_fault_receipts().size() == 6);
+    CHECK(client.debug_fault_receipts()[0].phase == dots::client_runtime::DebugFaultPhase::Armed);
+    CHECK(client.debug_fault_receipts()[1].phase ==
+          dots::client_runtime::DebugFaultPhase::Triggered);
+    CHECK(client.debug_fault_receipts()[2].phase ==
+          dots::client_runtime::DebugFaultPhase::Completed);
+    CHECK(client.debug_fault_receipts()[3].id != client.debug_fault_receipts()[0].id);
 
     push_snapshot(
         endpoint, connection, snapshot(1, 1, dots::protocol::InputSequenceId{0}, {0.2F, 0.0F}));

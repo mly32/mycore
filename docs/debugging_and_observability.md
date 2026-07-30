@@ -16,13 +16,14 @@ but this guide must clearly distinguish implemented behavior from planned behavi
 
 This document uses three status labels:
 
-- **Current:** Feature 14 step 7 complete-World prediction/reconciliation, persistent
-  rollback-aware presentation, consequence handlers, and bounded outside-closure extrapolation
-  are implemented. Feature 12 delayed interpolation remains the spectator/fallback/comparison
-  path, and Feature 13's authoritative lifecycle and spectator presentation remain implemented.
-- **Feature 14 remaining:** expanded fault controls and Rollback diagnostics, measured workload
-  evidence, router tombstone pruning, and the same-frame versus
-  multi-frame replay decision specified in
+- **Current:** Feature 14 complete-World prediction/reconciliation, persistent rollback-aware
+  presentation, consequence handlers, bounded outside-closure extrapolation, adaptive command
+  timing, bounded consequence retirement, Rollback diagnostics, explicit correction generations,
+  and typed receipts for interactive position/loss faults are implemented. Feature 12 delayed
+  interpolation remains the spectator/fallback/comparison path, and Feature 13's authoritative
+  lifecycle and spectator presentation remain implemented.
+- **Feature 14 remaining:** deterministic workload/soak evidence and the measured same-frame
+  versus multi-frame replay decision specified in
   [`plans/14-selectable-world-rollback.md`](plans/14-selectable-world-rollback.md) and
   [`rollback_prediction_design.md`](rollback_prediction_design.md).
 
@@ -118,13 +119,13 @@ contains the formulas, network-change behavior, and the explicitly deferred live
 
 The Dots-owned Dear ImGui UI has a compact **Dots game state** panel fixed at the top left, a
 left lower **Dots session** pane with **Runtime**, **Network**, and **Gameplay** tabs, and a right
-lower **Dots diagnostics** pane with **Prediction**, **Interpolation**, and **Tools** tabs.
+lower **Dots diagnostics** pane with **Rollback**, **Interpolation**, and **Tools** tabs.
 `[debug].enabled` defaults to `true`; set it to `false` to hide these panes, suppress world-space
 diagnostic layers, and prevent the UI from receiving input. Disabling debug does not change
 simulation or gameplay presentation. A confirmed kill/defeat banner is non-debug gameplay UI:
 it still uses the shared ImGui rendering context when debug panes are disabled, never captures
 input, and fades after 1.5 seconds. Fault injection and visual-layer controls live under Tools
-rather than extending the Prediction metrics view. `MyCore::DebugUI` owns ImGui integration, but
+rather than extending the Rollback metrics view. `MyCore::DebugUI` owns ImGui integration, but
 the fields and their meanings remain Dots-owned. Subdued explanatory descriptions and
 visual-layer legends wrap to their pane's available width; disabled or unavailable values remain
 distinct interaction/state output.
@@ -161,7 +162,7 @@ RTT, interpolation delay, or server tick health.
 
 Protocol-v2 full snapshots carry `pending_input_count`, the number of distinct samples left in
 this client's bounded authoritative input queue after the snapshot tick. `ReplicatedWorld`
-stores the newest value, and the **Prediction** overlay shows its current and runtime high-water
+stores the newest value, and the **Rollback** overlay shows its current and runtime high-water
 values. This value is not transport queue depth, RTT, or total input across all clients.
 
 The queue capacity is 64 samples. The server consumes at most one sample per client before each
@@ -230,7 +231,7 @@ switches the camera to free mode at its last valid position; it never selects an
 replacement.
 
 While spectating, the **Network** and **Interpolation** tabs remain live. The controlled entity is
-shown as `none`, and **Prediction** reports that local prediction is unavailable instead of
+shown as `none`, and **Rollback** reports that local prediction is unavailable instead of
 displaying camera state as predicted gameplay. **Tools** shows only its active remote-presentation
 section, endpoint-outline toggle, and applicable legend; it omits local prediction faults,
 prediction/replay layers, and correction controls. The **Gameplay** tab reports the confirmed
@@ -303,7 +304,7 @@ The **Network** tab's Session section shows:
 The server and client tick values are shown separately. Until a future tick-synchronization
 feature defines their mapping, subtracting them does not produce a meaningful latency value.
 
-The **Prediction** tab rows are:
+The **Rollback** tab rows are:
 
 | Field | Current meaning and lifetime |
 |---|---|
@@ -323,9 +324,9 @@ The **Prediction** tab rows are:
 | Replay duration | Latest, last-120-reconciliation average, and runtime maximum scratch-replay/commit CPU duration in milliseconds. |
 | Reconciliation count | Newer accepted checkpoints reconciled after the complete timeline became ready. |
 | Correction count | Reconciliations whose final prediction moved by more than `0.0001` world units. |
-| Remote entity corrections | Latest and lifetime counts of common remote players whose rebuilt predicted positions moved by more than `0.0001` world units at the same predicted head tick. Ordinary forward progress between different head ticks is excluded. |
+| Remote entity corrections | Latest and lifetime counts of common remote players whose rebuilt predicted positions moved by more than `0.0001` world units at a reconstructable common tick. Same-head comparisons use the final predicted checkpoint; cross-head comparisons use a retained replay checkpoint at the prior head. Ordinary forward progress with no common checkpoint is excluded. |
 | Correction distance | Latest and runtime-maximum distance between prediction before reconciliation and the fully replayed result. |
-| Remote correction distance | Latest and runtime-maximum comparable same-head correction distance across remote predicted players. |
+| Remote correction distance | Latest and runtime-maximum comparable common-tick correction distance across remote predicted players. Each retained correction carries an explicit generation and displacement into presentation; source revision alone never creates a predicted correction residual. |
 | Corrections/min | Count of nonzero corrections in the trailing 60 seconds of the client steady clock. |
 | Correction ghosts | Active bounded history count/capacity, split into local and remote entries. |
 | Replay over budget | Lifetime count of reconciliations exceeding 2 ms; warnings are rate-limited to once per five seconds. |
@@ -385,11 +386,13 @@ The **Tools** tab in the right-hand **Diagnostics** pane owns these controls:
   seconds. It does not show remote paths, topology, or replayed events.
 - Clear retained correction visuals.
 
-The layer and replay toggles default on. During an injected-drop burst, the **Prediction** tab in
+The layer and replay toggles default on. During an injected-drop burst, the **Rollback** tab in
 the right-hand **Diagnostics** pane shows completed and remaining drop counts and disables
 starting an overlapping burst. Completion is
 retained as a green receipt for two seconds, even when catch-up consumes all three drops between
-rendered frames. Suppressed sends still record and predict their input exactly as deliberate
+rendered frames. The runtime also retains a bounded 32-transition ledger of typed `Armed`,
+`Triggered`, and `Completed` receipts for position-divergence and input-loss faults; Tools shows
+the newest six. Suppressed sends still record and predict their input exactly as deliberate
 network loss would. Injected drops have a separate counter and are never added to transport
 packet-loss measurements.
 
@@ -479,42 +482,46 @@ until both a deadline and snapshot-age anchor exist. The tab labels the estimate
 presentation-only because a local `eligible` display can precede the server receiving or accepting
 a request.
 
-## Complete Rollback Output — Remaining Feature 14 Step 8 Work
+## Complete Rollback Output — Feature 14 Step 8
 
-Feature 14 step 7 runs the complete rollback and presentation path while extending the existing
-**Prediction** and **Interpolation** diagnostics. A separate **Rollback** tab and the expanded
-fields below remain planned for step 8.
+The **Rollback** tab reports the profile and closure contract, authority/prediction coordinates,
+exact retained replay range, checkpoint schema/digests and approximate in-memory checkpoint
+storage, last-120 replay p50/p95/p99, typed state-difference summaries, predicted-spawn
+lifecycle, command-buffer health, consequence-ledger pruning, receipt rejection categories, and
+held-remote-assumption provenance.
 
 | Field | Meaning |
 |---|---|
-| Prediction profile | `InteractionClosure`, `FullReplicated`, or `OwnedGameplay`, plus predicted/interpolated/extrapolated/confirmed entity counts. |
-| Prediction scope | Scope epoch, included mechanics, entity/owner/global state domains, causal subscriptions, closure seed/count, replay horizon, and `IncompleteClosure` fallback reason. |
+| Prediction profile | Requested and active `InteractionClosure`, `FullReplicated`, or `OwnedGameplay`, plus `IncompleteClosure` fallback reason. |
+| Prediction scope | Scope epoch, mechanic/domain/causal-channel masks, causal owner/player/food counts, event-owner subscription count, and replay horizon. |
 | Replay coordinates | Authoritative snapshot/tick, predicted tick, input ACK, and exact replay sequence range. |
 | Prediction lead | Predicted tick minus its stated authoritative base tick. This replay extent is not RTT, snapshot age, or estimated live server time. |
-| History | Occupied frames out of 64, replay tick count, checkpoint bytes, and hard-resync reason. |
+| History | Occupied frames out of the 256-entry recovery bound, replay tick count, approximate checkpoint storage, and hard-resync/ACK-catch-up counts. |
 | State digest | Authority checkpoint schema/digest and corresponding predicted diagnostic digest. Typed differences, not hash equality, remain the correctness source. |
 | Replay duration | Latest, p50, p95, p99, and maximum same-frame replay time; 2 ms is a warning, not a partial-replay cutoff. |
-| Continuous divergence | Position, velocity, mass, radius, and deadline corrections that preserve topology. |
-| Structural divergence | Entity create/remove, ownership, component-set, split, merge, and elimination corrections. |
+| Continuous divergence | Maximum position and mass deltas plus owner/player/food difference counts for the latest authority installation. |
+| Structural divergence | Rules/allocator/structural flags and entity create/remove counts. |
 | Predicted spawns | Pending, matched, rejected, authority-only, and ambiguous prediction-key counts. Ambiguity causes hard resync. |
-| Event lifecycle detail | Selected stable event key and per-event history beyond the current aggregate transition and per-handler consequence counters. |
-| Authority receipts | Per-event transition/key detail plus duplicate, conflict, invalid-retirement, queue-overflow, and receipt-capacity failure counts beyond the current accepted/published/server-retired frontiers, depth counters, and consequence-ledger proof/pruning counters. |
+| Event lifecycle detail | Aggregate transition and per-handler consequence counters plus bounded ledger proof/pruning state. A selected-key history browser is not implemented. |
+| Authority receipts | Accepted/published/server-retired frontiers, depth counters, consequence-ledger proof/pruning counters, and duplicate, conflict, invalid-retirement, sequence-gap, queue-overflow, and receipt-capacity failure counts. |
 | Command buffer | Target/latest/EWMA server queue depth, cadence scale, low/high events, and accumulated phase correction. |
-| Remote assumption | Source snapshot and tick range over which last-known remote movement was held; remote edge actions remain zero. |
-| Outside-closure presentation detail | Closure-entry transition history and longer-term fallback/hold distributions beyond the current age, cap, mode, and entity counters. |
+| Remote assumption | Count, source-tick range, and replay-frame tick range over which last-known remote movement was held; remote edge actions remain zero. |
+| Outside-closure presentation detail | The Interpolation tab retains current extrapolated/held/static entity counts, authority age/cap, delayed-buffer coverage, and cursor holds. |
 
-The selected-entity world overlay draws independently labeled latest-known authoritative,
+The world overlay draws independently labeled latest-known authoritative,
 predicted, Feature 12 interpolated, bounded extrapolated, pre-correction, and smoothed
-presentation layers. Structural markers identify speculative spawns, removals, matches, and
-rejections. Event markers show stable key and transition. A layer is hidden or marked
-unavailable when its state source does not exist; zero is not used as a placeholder.
+presentation layers. A layer is hidden or marked unavailable when its state source does not
+exist; zero is not used as a placeholder. Structural/event detail remains aggregate rather than
+an interactive selected-entity/key browser.
 
-Fault tools cover position or mass divergence, forced split rejection, spawn-classification
-mismatch, action-packet suppression, remote held-input divergence, repeated rollback of one event
-key, and duplicate/conflicting authority receipts. Each fault has a durable
-armed/triggered/completed receipt and remains separate from measured transport loss.
+Interactive fault tools cover position divergence and action-packet suppression. Each has bounded
+typed armed/triggered/completed receipts and remains separate from measured transport loss.
+Mass/split/identity/remote-assumption/event-key and hostile receipt cases remain deterministic
+test fixtures; invalid receipt candidates are applied to scratch inbox/world copies and leave the
+last accepted live state unchanged.
 
-Same-frame replay is the planned baseline. Branch 14h records entity count, replay ticks,
+Same-frame replay is the current atomic production path. The remaining workload increment records
+entity count, replay ticks,
 checkpoint bytes, topology changes, RTT/jitter/loss grouping, client-frame impact, and replay
 duration. Multi-frame resimulation is not shown as an available mode unless a separate reviewed
 implementation exists; the decision thresholds and atomic-commit invariants live in
@@ -547,8 +554,8 @@ healthy.
 ### Frequent corrections with low loss
 
 Check shared tick order, ACK semantics, prediction-scope membership, remote-assumption authority
-provenance, and floating-point divergence. Use same-head reconciliation logs plus the orange,
-magenta, white, and replay markers to identify where states first disagree. Repeated same-head
+provenance, and floating-point divergence. Use common-tick reconciliation logs plus the orange,
+magenta, white, and replay markers to identify where states first disagree. Repeated comparable
 remote corrections after one direction change match the failure pattern in the
 [Feature 14 prediction-stutter postmortem](feature14_prediction_stutter_postmortem.md).
 
@@ -629,7 +636,7 @@ prediction key. Then compare snapshot age, ACK progress, history occupancy, and 
 validation. A hard resync is correct recovery, but a repeated reason is a defect or an undersized
 bound that needs evidence.
 
-### Command cadence stays clamped — Feature 14 planned
+### Command cadence stays clamped
 
 Compare latest and EWMA server queue depth with packet loss, input ACK progress, and empty/high
 events. A persistent clamp may reveal clock drift or delivery pressure; it does not mean client

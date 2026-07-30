@@ -468,6 +468,9 @@ std::string_view runtime_error_name(RuntimeError error) noexcept {
     return "UNKNOWN";
 }
 
+// Runtime fields stay grouped by protocol/prediction/diagnostic lifetime so transactional updates
+// remain auditable; byte-optimal reordering would interleave those ownership boundaries.
+// NOLINTNEXTLINE(clang-analyzer-optin.performance.Padding)
 class Runtime::Impl {
 public:
     Impl(mycore::net_transport::Endpoint& endpoint, Settings settings)
@@ -576,6 +579,7 @@ public:
             return InputSendResult::NotReady;
         }
         if (playing && prediction_event_batches_.size() >= kPredictionEventBatchCapacity) {
+            ++prediction_event_queue_overflow_count_;
             static_cast<void>(fail(RuntimeError::PredictionEventQueueFull));
             return InputSendResult::NotReady;
         }
@@ -622,6 +626,7 @@ public:
                 return InputSendResult::NotReady;
             }
             if (prediction_event_batches_.size() >= kPredictionEventBatchCapacity) {
+                ++prediction_event_queue_overflow_count_;
                 static_cast<void>(fail(RuntimeError::PredictionEventQueueFull));
                 return InputSendResult::NotReady;
             }
@@ -630,6 +635,30 @@ public:
         if (pending_injected_input_drop_count_ > 0) {
             --pending_injected_input_drop_count_;
             ++injected_input_drop_count_;
+            ++active_input_drop_observed_count_;
+            if (!active_input_drop_triggered_) {
+                append_debug_fault_receipt({
+                    .id = active_input_drop_fault_id_,
+                    .kind = DebugFaultKind::InputPacketLoss,
+                    .phase = DebugFaultPhase::Triggered,
+                    .requested_count = active_input_drop_requested_count_,
+                    .observed_count = active_input_drop_observed_count_,
+                });
+                active_input_drop_triggered_ = true;
+            }
+            if (pending_injected_input_drop_count_ == 0) {
+                append_debug_fault_receipt({
+                    .id = active_input_drop_fault_id_,
+                    .kind = DebugFaultKind::InputPacketLoss,
+                    .phase = DebugFaultPhase::Completed,
+                    .requested_count = active_input_drop_requested_count_,
+                    .observed_count = active_input_drop_observed_count_,
+                });
+                active_input_drop_fault_id_ = 0;
+                active_input_drop_requested_count_ = 0;
+                active_input_drop_observed_count_ = 0;
+                active_input_drop_triggered_ = false;
+            }
         } else if (endpoint_.send(connection_, *bytes, DeliveryMode::Unreliable) !=
                    SendStatus::Sent) {
             static_cast<void>(endpoint_.disconnect(connection_));
@@ -800,6 +829,28 @@ public:
         prediction_debug_offset_ = prediction_debug_offset_ + displacement;
         *predicted_position_ = injected_position;
         ++injected_prediction_error_count_;
+        const auto fault_id = next_debug_fault_id_++;
+        append_debug_fault_receipt({
+            .id = fault_id,
+            .kind = DebugFaultKind::PositionDivergence,
+            .phase = DebugFaultPhase::Armed,
+            .requested_count = 1,
+            .observed_count = 0,
+        });
+        append_debug_fault_receipt({
+            .id = fault_id,
+            .kind = DebugFaultKind::PositionDivergence,
+            .phase = DebugFaultPhase::Triggered,
+            .requested_count = 1,
+            .observed_count = 1,
+        });
+        append_debug_fault_receipt({
+            .id = fault_id,
+            .kind = DebugFaultKind::PositionDivergence,
+            .phase = DebugFaultPhase::Completed,
+            .requested_count = 1,
+            .observed_count = 1,
+        });
         mycore::debug::log_warning("dots.client.prediction",
                                    "Injected client-only prediction error ({:.3f}, {:.3f})",
                                    displacement.x,
@@ -808,19 +859,40 @@ public:
     }
 
     [[nodiscard]] bool debug_drop_next_input_packets(std::size_t count) {
-        if (state_ != State::Ready || count == 0 ||
+        if (state_ != State::Ready || count == 0 || pending_injected_input_drop_count_ > 0 ||
             count > kPredictionHistoryCapacity - pending_injected_input_drop_count_) {
             return false;
         }
         pending_injected_input_drop_count_ += count;
+        active_input_drop_fault_id_ = next_debug_fault_id_++;
+        active_input_drop_requested_count_ = count;
+        active_input_drop_observed_count_ = 0;
+        active_input_drop_triggered_ = false;
+        append_debug_fault_receipt({
+            .id = active_input_drop_fault_id_,
+            .kind = DebugFaultKind::InputPacketLoss,
+            .phase = DebugFaultPhase::Armed,
+            .requested_count = count,
+            .observed_count = 0,
+        });
         mycore::debug::log_warning(
             "dots.client.prediction", "Armed {} client-only injected input packet drops", count);
         return true;
     }
 
+    [[nodiscard]] std::span<const DebugFaultReceipt> debug_fault_receipts() const noexcept {
+        return debug_fault_receipts_;
+    }
+
     [[nodiscard]] PredictionStatistics
     prediction_statistics(std::chrono::steady_clock::time_point now) const noexcept {
         PredictionStatistics result{
+            .requested_profile = prediction::PredictionProfile::InteractionClosure,
+            .active_profile = prediction::PredictionProfile::InteractionClosure,
+            .fallback_reason = prediction::PredictionFallbackReason::None,
+            .mechanics = prediction::kCurrentPredictionMechanics,
+            .required_domains = 0,
+            .required_causal_channels = 0,
             .input_redundancy_enabled = settings_.input_redundancy,
             .last_input_sent = {},
             .last_input_acknowledged = world_.last_processed_input_id(),
@@ -841,13 +913,48 @@ public:
             .server_pending_input_high_water_mark = server_pending_input_high_water_mark_,
             .rollback_snapshot_id = rollback_snapshot_id_,
             .rollback_server_tick = rollback_server_tick_,
+            .authoritative_tick = timeline_ ? timeline_->authoritative_tick().value() : 0,
+            .predicted_tick = timeline_ ? timeline_->predicted_tick().value() : 0,
+            .prediction_lead_ticks =
+                timeline_ ? (timeline_->predicted_tick() - timeline_->authoritative_tick()).value()
+                          : 0,
             .rollback_input_acknowledgement = rollback_input_acknowledgement_,
+            .replay_first_input = {},
+            .replay_last_input = {},
+            .checkpoint_schema_id = latest_checkpoint_schema_id_,
+            .replicated_checkpoint_digest = latest_replicated_checkpoint_digest_,
+            .authoritative_prediction_digest = latest_authoritative_prediction_digest_,
+            .predicted_digest = latest_predicted_digest_,
+            .checkpoint_storage_bytes = latest_checkpoint_storage_bytes_,
             .latest_replay_count = latest_replay_count_,
             .total_replayed_input_count = total_replayed_input_count_,
             .maximum_replay_count = maximum_replay_count_,
             .latest_replay_milliseconds = latest_replay_milliseconds_,
             .average_replay_milliseconds = 0.0,
+            .replay_p50_milliseconds = 0.0,
+            .replay_p95_milliseconds = 0.0,
+            .replay_p99_milliseconds = 0.0,
             .maximum_replay_milliseconds = maximum_replay_milliseconds_,
+            .latest_rules_changed = false,
+            .latest_allocator_changed = false,
+            .latest_structural_change = false,
+            .latest_maximum_position_delta = 0.0F,
+            .latest_maximum_mass_delta = 0.0F,
+            .latest_owner_difference_count = 0,
+            .latest_player_difference_count = 0,
+            .latest_food_difference_count = 0,
+            .latest_entity_creation_count = 0,
+            .latest_entity_removal_count = 0,
+            .pending_predicted_spawn_count = 0,
+            .matched_predicted_spawn_count = matched_predicted_spawn_count_,
+            .rejected_predicted_spawn_count = rejected_predicted_spawn_count_,
+            .authority_only_spawn_count = authority_only_spawn_count_,
+            .ambiguous_predicted_spawn_count = ambiguous_predicted_spawn_count_,
+            .remote_assumption_count = remote_assumption_count_,
+            .remote_assumption_source_tick_min = remote_assumption_source_tick_min_,
+            .remote_assumption_source_tick_max = remote_assumption_source_tick_max_,
+            .remote_assumption_applied_tick_first = remote_assumption_applied_tick_first_,
+            .remote_assumption_applied_tick_last = remote_assumption_applied_tick_last_,
             .reconciliation_count = reconciliation_count_,
             .nonzero_correction_count = nonzero_correction_count_,
             .remote_entity_correction_count = remote_entity_correction_count_,
@@ -865,6 +972,8 @@ public:
             .pending_injected_input_drop_count = pending_injected_input_drop_count_,
             .injected_input_drop_count = injected_input_drop_count_,
             .injected_prediction_error_count = injected_prediction_error_count_,
+            .authority_receipt_rejections = authority_receipt_rejections_,
+            .prediction_event_queue_overflow_count = prediction_event_queue_overflow_count_,
             .authority_receipts_accepted_through = authority_receipts_.accepted_through(),
             .authority_receipts_published_through = authority_receipts_.published_through(),
             .authority_receipts_server_retired_through =
@@ -876,12 +985,29 @@ public:
         };
         if (timeline_ && timeline_->scope()) {
             const auto& scope = *timeline_->scope();
+            result.requested_profile = scope.requested_profile;
+            result.active_profile = scope.active_profile;
+            result.fallback_reason = scope.fallback_reason;
+            result.mechanics = scope.mechanics;
+            result.required_domains = scope.required_domains;
+            result.required_causal_channels = scope.required_causal_channels;
             result.scope_epoch = scope.scope_epoch.value();
             result.scope_replay_horizon_ticks = scope.replay_horizon.value();
             result.scope_owner_count = scope.owner_ids.size();
             result.scope_event_owner_count = scope.subscribed_event_owner_ids.size();
             result.scope_player_count = scope.player_ids.size();
             result.scope_food_count = scope.food_ids.size();
+            if (!timeline_->history().empty()) {
+                result.replay_first_input = protocol::InputSequenceId{static_cast<std::uint32_t>(
+                    timeline_->history().front().command_sequence.value())};
+                result.replay_last_input = protocol::InputSequenceId{static_cast<std::uint32_t>(
+                    timeline_->history().back().command_sequence.value())};
+            }
+            result.pending_predicted_spawn_count = static_cast<std::size_t>(std::ranges::count_if(
+                timeline_->state()->player_ids(), [this](simulation::EntityId player_id) {
+                    return timeline_->state()->prediction_key(player_id) &&
+                           world_.find(protocol::EntityId{player_id.value()}) == nullptr;
+                }));
         }
         if (next_input_id_ > 0) {
             result.last_input_sent = protocol::InputSequenceId{next_input_id_ - 1U};
@@ -895,6 +1021,39 @@ public:
             const auto end = begin + static_cast<std::ptrdiff_t>(replay_duration_sample_count_);
             result.average_replay_milliseconds = std::accumulate(begin, end, 0.0) /
                                                  static_cast<double>(replay_duration_sample_count_);
+            auto sorted = replay_duration_samples_;
+            std::sort(sorted.begin(),
+                      sorted.begin() + static_cast<std::ptrdiff_t>(replay_duration_sample_count_));
+            const auto percentile = [&sorted, this](double fraction) {
+                const auto rank = static_cast<std::size_t>(
+                    std::ceil(fraction * static_cast<double>(replay_duration_sample_count_)));
+                return sorted[std::clamp(rank, std::size_t{1}, replay_duration_sample_count_) - 1U];
+            };
+            result.replay_p50_milliseconds = percentile(0.50);
+            result.replay_p95_milliseconds = percentile(0.95);
+            result.replay_p99_milliseconds = percentile(0.99);
+        }
+        if (latest_state_difference_) {
+            const auto& difference = *latest_state_difference_;
+            result.latest_rules_changed = difference.rules_changed;
+            result.latest_allocator_changed = difference.allocator_changed;
+            result.latest_structural_change = difference.structural_change;
+            result.latest_maximum_position_delta = difference.maximum_position_delta;
+            result.latest_maximum_mass_delta = difference.maximum_mass_delta;
+            result.latest_owner_difference_count = difference.owners.size();
+            result.latest_player_difference_count = difference.players.size();
+            result.latest_food_difference_count = difference.food.size();
+            const auto accumulate_lifecycle = [&result](const auto& differences) {
+                for (const auto& difference : differences) {
+                    if (!difference.previous && difference.current) {
+                        ++result.latest_entity_creation_count;
+                    } else if (difference.previous && !difference.current) {
+                        ++result.latest_entity_removal_count;
+                    }
+                }
+            };
+            accumulate_lifecycle(difference.players);
+            accumulate_lifecycle(difference.food);
         }
         const auto window_start = now - std::chrono::minutes{1};
         const auto first =
@@ -1014,6 +1173,8 @@ private:
         const auto* receipt_delta =
             std::get_if<replication::AuthorityReceiptDelta>(&receipt_apply_result);
         if (receipt_delta == nullptr) {
+            record_authority_receipt_rejection(
+                std::get<replication::AuthorityReceiptApplyError>(receipt_apply_result));
             return {.error = RuntimeError::InvalidSnapshot};
         }
         if (!valid_acknowledgement(candidate_world.last_processed_input_id())) {
@@ -1303,6 +1464,62 @@ private:
             event);
     }
 
+    [[nodiscard]] static std::size_t
+    checkpoint_storage_bytes(const simulation::WorldCheckpoint& checkpoint) noexcept {
+        auto bytes = sizeof(checkpoint);
+        bytes += checkpoint.owners.size() * sizeof(simulation::OwnerCheckpoint);
+        bytes += checkpoint.players.size() * sizeof(simulation::PlayerCheckpoint);
+        bytes += checkpoint.food.size() * sizeof(simulation::FoodCheckpoint);
+        for (const auto& owner : checkpoint.owners) {
+            bytes += owner.player_ids.size() * sizeof(simulation::EntityId);
+        }
+        return bytes;
+    }
+
+    static void count_predicted_spawn_transitions(std::span<const PredictionEventBatch> batches,
+                                                  std::uint64_t& rejected_count,
+                                                  std::uint64_t& authority_only_count) noexcept {
+        for (const auto& batch : batches) {
+            for (const auto& change : batch.changes) {
+                const auto* event = change.current
+                                        ? &*change.current
+                                        : (change.previous ? &*change.previous : nullptr);
+                if (event == nullptr || !std::holds_alternative<simulation::PlayerSplit>(*event)) {
+                    continue;
+                }
+                if (change.transition == mycore::rollback::EventTransition::Retracted) {
+                    ++rejected_count;
+                } else if (change.transition == mycore::rollback::EventTransition::AuthorityOnly) {
+                    ++authority_only_count;
+                }
+            }
+        }
+    }
+
+    void record_remote_assumption_provenance(const prediction::Timeline& timeline) noexcept {
+        remote_assumption_count_ = 0;
+        remote_assumption_source_tick_min_ = 0;
+        remote_assumption_source_tick_max_ = 0;
+        remote_assumption_applied_tick_first_ = 0;
+        remote_assumption_applied_tick_last_ = 0;
+        for (const auto& frame : timeline.history()) {
+            for (const auto& assumption : frame.stimulus.remote_movement_assumptions) {
+                if (remote_assumption_count_ == 0) {
+                    remote_assumption_source_tick_min_ = assumption.source_tick.value();
+                    remote_assumption_source_tick_max_ = assumption.source_tick.value();
+                    remote_assumption_applied_tick_first_ = frame.tick.value();
+                } else {
+                    remote_assumption_source_tick_min_ = std::min(
+                        remote_assumption_source_tick_min_, assumption.source_tick.value());
+                    remote_assumption_source_tick_max_ = std::max(
+                        remote_assumption_source_tick_max_, assumption.source_tick.value());
+                }
+                remote_assumption_applied_tick_last_ = frame.tick.value();
+                ++remote_assumption_count_;
+            }
+        }
+    }
+
     static void remember_replay_retirements(
         std::map<simulation::SimulationEventKey, mycore::time::Tick>& pending_retirements,
         std::span<const PredictionEventBatch> batches) {
@@ -1451,6 +1668,7 @@ private:
                 candidate_receipts, receipt_delta, scratch_retirements, committed_batches);
             if (prediction_event_batches_.size() + committed_batches.size() >
                 kPredictionEventBatchCapacity) {
+                ++prediction_event_queue_overflow_count_;
                 return RuntimeError::PredictionEventQueueFull;
             }
             if (!pending_receipts.empty() &&
@@ -1545,6 +1763,9 @@ private:
             timeline_ && timeline_->state()
                 ? std::optional<simulation::WorldCheckpoint>{timeline_->state()->checkpoint()}
                 : std::nullopt;
+        const auto previous_state = timeline_ && timeline_->state()
+                                        ? std::optional<simulation::World>{*timeline_->state()}
+                                        : std::nullopt;
         const auto previous_scope =
             timeline_ && timeline_->scope()
                 ? std::optional<prediction::PredictionScope>{*timeline_->scope()}
@@ -1695,6 +1916,7 @@ private:
             prediction_identity_remaps(previous_checkpoint, current_checkpoint, *owner);
         auto* remaps = std::get_if<std::vector<PredictionIdentityRemap>>(&remaps_result);
         if (remaps == nullptr) {
+            ++ambiguous_predicted_spawn_count_;
             return std::get<RuntimeError>(remaps_result);
         }
         const auto projection =
@@ -1709,12 +1931,18 @@ private:
                                                  : mycore::math::Vector2{};
         const auto correction_distance = mycore::math::length(correction_displacement);
         const auto nonzero_correction = correction_distance > kCorrectionTolerance;
+        const auto* remote_comparison_checkpoint =
+            previous_checkpoint ? checkpoint_at_tick(scratch_timeline,
+                                                     *projected_authority,
+                                                     current_checkpoint,
+                                                     previous_checkpoint->tick)
+                                : nullptr;
         const auto remote_displacements =
-            previous_checkpoint
-                ? remote_player_displacements(*previous_checkpoint, current_checkpoint, *owner)
+            previous_checkpoint && remote_comparison_checkpoint
+                ? remote_player_displacements(
+                      *previous_checkpoint, *remote_comparison_checkpoint, *owner)
                 : std::vector<RemotePlayerDisplacement>{};
-        const auto comparable_remote_corrections =
-            previous_checkpoint && previous_checkpoint->tick == current_checkpoint.tick;
+        const auto comparable_remote_corrections = remote_comparison_checkpoint != nullptr;
         const auto maximum_remote_displacement =
             std::max_element(remote_displacements.begin(),
                              remote_displacements.end(),
@@ -1722,11 +1950,24 @@ private:
                                  return lhs.distance < rhs.distance;
                              });
 
+        const auto diagnostic_difference =
+            previous_state ? std::optional{prediction::WorldModel{}.diff(
+                                 *previous_state, *scratch_timeline.state(), selected_scope)}
+                           : std::optional<prediction::StateDifference>{};
+        const auto authoritative_prediction_digest =
+            prediction::WorldModel{}.digest(*projected_authority, selected_scope);
+        const auto predicted_digest =
+            prediction::WorldModel{}.digest(current_checkpoint, selected_scope);
+        auto scratch_rejected_spawn_count = rejected_predicted_spawn_count_;
+        auto scratch_authority_only_spawn_count = authority_only_spawn_count_;
+        count_predicted_spawn_transitions(
+            committed_batches, scratch_rejected_spawn_count, scratch_authority_only_spawn_count);
         auto scratch_retirements = pending_consequence_retirements_;
         attach_external_retirement_evidence(
             candidate_receipts, receipt_delta, scratch_retirements, committed_batches);
         if (prediction_event_batches_.size() + committed_batches.size() >
             kPredictionEventBatchCapacity) {
+            ++prediction_event_queue_overflow_count_;
             return RuntimeError::PredictionEventQueueFull;
         }
         if (!pending_receipts.empty() &&
@@ -1744,6 +1985,15 @@ private:
             prediction_event_batches_.push_back(std::move(batch));
         }
         pending_consequence_retirements_ = std::move(scratch_retirements);
+        latest_state_difference_ = diagnostic_difference;
+        latest_checkpoint_schema_id_ = snapshot.checkpoint_schema_id;
+        latest_replicated_checkpoint_digest_ = snapshot.checkpoint_digest;
+        latest_authoritative_prediction_digest_ = authoritative_prediction_digest.value;
+        latest_predicted_digest_ = predicted_digest.value;
+        latest_checkpoint_storage_bytes_ = checkpoint_storage_bytes(current_checkpoint);
+        rejected_predicted_spawn_count_ = scratch_rejected_spawn_count;
+        authority_only_spawn_count_ = scratch_authority_only_spawn_count;
+        matched_predicted_spawn_count_ += remaps->size();
         latest_authority_checkpoint_ = *authority;
         input_history_ = scratch_history;
         confirmed_owner_id_ = *owner;
@@ -1754,6 +2004,7 @@ private:
         prediction_debug_offset_ = {};
         latest_prediction_identity_remaps_ = std::move(*remaps);
         latest_replay_path_ = std::move(scratch_replay_path);
+        record_remote_assumption_provenance(*timeline_);
         if (acknowledgement_catch_up) {
             pre_correction_position_.reset();
             latest_correction_replay_path_.clear();
@@ -1897,6 +2148,24 @@ private:
         history_high_water_mark_ = std::max(history_high_water_mark_, input_history_.size());
         report_history_health(now);
         return std::nullopt;
+    }
+
+    [[nodiscard]] static const simulation::WorldCheckpoint*
+    checkpoint_at_tick(const prediction::Timeline& timeline,
+                       const simulation::WorldCheckpoint& authority,
+                       const simulation::WorldCheckpoint& current,
+                       mycore::time::Tick tick) noexcept {
+        if (current.tick == tick) {
+            return &current;
+        }
+        const auto frame = std::find_if(
+            timeline.history().begin(), timeline.history().end(), [tick](const auto& value) {
+                return value.tick == tick;
+            });
+        if (frame != timeline.history().end()) {
+            return &frame->checkpoint;
+        }
+        return authority.tick == tick ? &authority : nullptr;
     }
 
     [[nodiscard]] std::vector<mycore::math::Vector2>
@@ -2091,6 +2360,34 @@ private:
             std::max(server_pending_input_high_water_mark_, pending_input_count);
     }
 
+    void
+    record_authority_receipt_rejection(replication::AuthorityReceiptApplyError error) noexcept {
+        switch (error) {
+        case replication::AuthorityReceiptApplyError::InvalidRetirement:
+            ++authority_receipt_rejections_.invalid_retirement_count;
+            break;
+        case replication::AuthorityReceiptApplyError::SequenceGap:
+            ++authority_receipt_rejections_.sequence_gap_count;
+            break;
+        case replication::AuthorityReceiptApplyError::ConflictingReceipt:
+            ++authority_receipt_rejections_.conflicting_receipt_count;
+            break;
+        case replication::AuthorityReceiptApplyError::DuplicateEventKey:
+            ++authority_receipt_rejections_.duplicate_event_key_count;
+            break;
+        case replication::AuthorityReceiptApplyError::CapacityExceeded:
+            ++authority_receipt_rejections_.capacity_exceeded_count;
+            break;
+        }
+    }
+
+    void append_debug_fault_receipt(DebugFaultReceipt receipt) {
+        if (debug_fault_receipts_.size() == kDebugFaultReceiptCapacity) {
+            debug_fault_receipts_.erase(debug_fault_receipts_.begin());
+        }
+        debug_fault_receipts_.push_back(receipt);
+    }
+
     void clear_prediction_state() noexcept {
         input_history_.clear();
         timeline_.reset();
@@ -2195,6 +2492,7 @@ private:
     std::vector<protocol::EntityId> predicted_scope_entity_ids_;
     std::vector<PredictionIdentityRemap> latest_prediction_identity_remaps_;
     std::vector<PredictionCorrection> recent_prediction_corrections_;
+    std::optional<prediction::StateDifference> latest_state_difference_;
     std::optional<mycore::math::Vector2> predicted_position_;
     mycore::math::Vector2 prediction_debug_offset_;
     std::optional<mycore::math::Vector2> pre_correction_position_;
@@ -2208,6 +2506,20 @@ private:
     std::size_t latest_replay_count_{};
     std::uint64_t total_replayed_input_count_{};
     std::size_t maximum_replay_count_{};
+    std::uint16_t latest_checkpoint_schema_id_{};
+    std::uint64_t latest_replicated_checkpoint_digest_{};
+    std::uint64_t latest_authoritative_prediction_digest_{};
+    std::uint64_t latest_predicted_digest_{};
+    std::size_t latest_checkpoint_storage_bytes_{};
+    std::uint64_t matched_predicted_spawn_count_{};
+    std::uint64_t rejected_predicted_spawn_count_{};
+    std::uint64_t authority_only_spawn_count_{};
+    std::uint64_t ambiguous_predicted_spawn_count_{};
+    std::size_t remote_assumption_count_{};
+    std::uint64_t remote_assumption_source_tick_min_{};
+    std::uint64_t remote_assumption_source_tick_max_{};
+    std::uint64_t remote_assumption_applied_tick_first_{};
+    std::uint64_t remote_assumption_applied_tick_last_{};
     double latest_replay_milliseconds_{};
     double maximum_replay_milliseconds_{};
     std::array<double, kReplayDurationSampleCapacity> replay_duration_samples_{};
@@ -2232,6 +2544,14 @@ private:
     std::size_t pending_injected_input_drop_count_{};
     std::uint64_t injected_input_drop_count_{};
     std::uint64_t injected_prediction_error_count_{};
+    AuthorityReceiptRejectionStatistics authority_receipt_rejections_;
+    std::uint64_t prediction_event_queue_overflow_count_{};
+    std::vector<DebugFaultReceipt> debug_fault_receipts_;
+    std::uint64_t next_debug_fault_id_{1};
+    std::uint64_t active_input_drop_fault_id_{};
+    std::size_t active_input_drop_requested_count_{};
+    std::size_t active_input_drop_observed_count_{};
+    bool active_input_drop_triggered_{};
     std::optional<std::chrono::steady_clock::time_point> last_replay_warning_time_;
     std::optional<std::chrono::steady_clock::time_point> last_history_warning_time_;
     bool history_pressure_warning_active_{};
@@ -2376,6 +2696,10 @@ bool Runtime::debug_inject_prediction_error(mycore::math::Vector2 displacement) 
 
 bool Runtime::debug_drop_next_input_packets(std::size_t count) {
     return impl_->debug_drop_next_input_packets(count);
+}
+
+std::span<const DebugFaultReceipt> Runtime::debug_fault_receipts() const noexcept {
+    return impl_->debug_fault_receipts();
 }
 
 PredictionStatistics
