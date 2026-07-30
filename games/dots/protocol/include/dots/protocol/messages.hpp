@@ -204,6 +204,9 @@ struct RecipientSessionState {
     auto operator<=>(const RecipientSessionState&) const = default;
 };
 
+// Linux clang-analyzer loses the aggregate's explicit member initialization when an enclosing
+// protocol variant moves it through Catch2's synthetic assertion path.
+// NOLINTNEXTLINE(clang-analyzer-core.uninitialized.Assign)
 struct FullSnapshot {
     SnapshotId snapshot_id;
     std::uint32_t server_tick{};

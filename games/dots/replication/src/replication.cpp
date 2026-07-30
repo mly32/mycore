@@ -549,8 +549,7 @@ AuthorityReceiptInbox::server_retired_through() const noexcept {
     return server_retired_through_;
 }
 
-bool AuthorityReceiptInbox::contains_event_key(
-    const simulation::SimulationEventKey& key) const noexcept {
+bool AuthorityReceiptInbox::contains_event_key(const simulation::SimulationEventKey& key) const {
     return event_keys_.contains(key);
 }
 

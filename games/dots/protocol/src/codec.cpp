@@ -1018,7 +1018,7 @@ void encode_payload(Writer& writer, const FullSnapshot& message) {
     std::uint8_t latest_respawn_result{};
     std::uint16_t owned_entity_count{};
     std::uint8_t has_latest_absorption{};
-    FullSnapshot message;
+    FullSnapshot message{};
     if (!reader.read_u32(snapshot_id) || !reader.read_u32(message.server_tick) ||
         !reader.read_u32(last_processed_input_id) || !reader.read_u8(message.pending_input_count) ||
         !reader.read_u32(authority_receipts_retired_through) ||

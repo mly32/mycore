@@ -119,7 +119,7 @@ public:
     [[nodiscard]] protocol::AuthorityReceiptSequenceId accepted_through() const noexcept;
     [[nodiscard]] protocol::AuthorityReceiptSequenceId published_through() const noexcept;
     [[nodiscard]] protocol::AuthorityReceiptSequenceId server_retired_through() const noexcept;
-    [[nodiscard]] bool contains_event_key(const simulation::SimulationEventKey& key) const noexcept;
+    [[nodiscard]] bool contains_event_key(const simulation::SimulationEventKey& key) const;
     [[nodiscard]] std::size_t retained_count() const noexcept;
     [[nodiscard]] std::size_t pending_publication_count() const noexcept;
 
