@@ -488,33 +488,79 @@ Detailed plan:
 
 ### `feature/14-selectable-world-rollback`
 
-Purpose: replace position-only prediction with complete, selectable Dots World rollback.
+Purpose: replace position-only prediction with a game-neutral rollback timeline and a complete,
+interaction-closed predicted Dots World.
 
 Changes:
 
-- Add the Dots-owned rollback contracts defined in
+- Add the statically typed `MyCore::Rollback` mechanism and Dots-owned model defined in
   [`rollback_prediction_design.md`](rollback_prediction_design.md).
-- Restore and resimulate complete gameplay state with a selectable prediction set, defaulting to
-  every replicated entity.
+- Restore and resimulate complete gameplay state with an interaction-closure default,
+  full-replicated oracle/benchmark, and owner-local gameplay fallback.
+- Treat closure as causal state membership, including owner-local cooldown/piece-count state and
+  required global domains/authority facts rather than only spatial entities.
 - Add predicted split/launch/remerge, cooldowns, and predicted-spawn classification.
-- Render predicted remotes normally while retaining Feature 12 interpolation as fallback and
-  comparison.
+- Add typed event journals and post-commit `PredictOnce`, `PredictCancelable`, and `ConfirmOnce`
+  consequence delivery.
+- Compose predicted closure state with bounded presentation-only remote extrapolation while
+  retaining Feature 12 interpolation as fallback and comparison.
 - Add adaptive command-buffer timing plus Rollback metrics, overlays, and deliberate faults.
+- Add protocol receive-window flow control, retained unsent commands, hysteresis pause/resume,
+  and first-class direct spectator stress roles.
+- Keep outer sent/retained command frontiers distinct from timeline submission so speculative
+  local elimination can recover a validated ACK gap and roll the remaining suffix forward.
 
 Tests:
 
-- Matching/mismatching continuous and structural rollback.
-- Accepted/rejected predicted spawns, cue lifecycle, and guarded consequences.
-- Dynamic latency, loss, reordering, queue-depth convergence, and hard recovery.
+- A non-Dots toy model proving generic history, replay, atomic commit, and consequence behavior.
+- Matching/mismatching continuous and structural Dots rollback, non-spatial owner/global
+  dependencies, and closure fallback.
+- Accepted/rejected predicted spawns, stable event identity, every consequence policy, and
+  guarded session state.
+- Dynamic latency, loss, reordering, queue-depth convergence, and hard resync.
+- Authority-stall pause/drain with a buffered edge action, malicious out-of-window isolation, and
+  direct-spectator heartbeat liveness.
 - Recorded 10, 100, 500, and 1,000-entity replay workloads.
 
 Exit criterion:
 
-- Complete predicted gameplay converges atomically to server truth, remains measurable and
-  recoverable, and produces evidence for or against later multi-frame resimulation research.
+- Complete interaction-closed Dots gameplay converges atomically to server truth, Dots exercises
+  every generic consequence policy, and `MyCore::Rollback` contains no game or protocol policy.
+
+Implementation status: steps 1 through 9 are complete on `feature/14`. Adaptive command timing,
+expanded fault/diagnostic coverage, bounded router-ledger pruning, explicit correction
+generations, measured scale workloads, bounded native soaks, receive-window overload recovery,
+and direct spectator stress modes are implemented. The optimized
+target 200 ms, 1,000-entity workload measured 0.738 ms p99 with 0% rollback-only 30 Hz frame
+overruns, so the conditional multi-frame spike was not activated. The evidence is recorded in
+[`feature14_rollback_workload_results.md`](feature14_rollback_workload_results.md).
+
+Implement Feature 14 incrementally, beginning with the game-neutral rollback kernel. Keep commits
+small enough to review independently; the roadmap does not require separate branches or approval
+gates for each implementation step.
 
 Detailed plan:
-[`plans/14-selectable-world-rollback.md`](plans/14-selectable-world-rollback.md).
+[`plans/14-selectable-world-rollback.md`](plans/14-selectable-world-rollback.md). The step 9
+hardening record is
+[`plans/14-input-flow-control-spectator-stress.md`](plans/14-input-flow-control-spectator-stress.md).
+
+### `spike/multi-frame-resimulation` — conditional
+
+Purpose: evaluate time-sliced scratch replay only if Feature 14's optimized same-frame baseline
+exceeds 4 ms at p99 or causes rollback-attributable frame overruns in more than 1% of
+reconciliations in the target 200 ms impairment scenario.
+
+Do not create this branch from anticipated scale alone. The spike must use the recorded Feature
+14 workloads, keep presenting immutable committed state, accept commands while catching up,
+supersede work for newer authority, atomically swap only after reaching its moving target, and
+hard-resync before history exhaustion.
+
+Status: not activated by Feature 14. The recorded target workload remained below both thresholds.
+
+Exit criterion:
+
+- A measured comparison either rejects multi-frame replay or produces a separately reviewed
+  production feature plan; spike code does not merge as an unreviewed second scheduler.
 
 ### `feature/15-interest-management`
 
@@ -528,6 +574,9 @@ Changes:
 - Add debug visualization for AOI and replicated entity count.
 - Adapt Feature 14 prediction-set membership to AOI entry/exit, collision safety margins, and
   atomic initialization/removal of predicted entities.
+- Add a server-derived, epoch-versioned event-interest subscription covering owned events and
+  selected visible remote event categories. Change AOI membership and event subscription
+  atomically, and retain in-flight receipts across an epoch transition.
 
 Tests:
 
@@ -535,6 +584,8 @@ Tests:
 - AOI excludes distant entities.
 - Owned entity always has highest priority.
 - Snapshot entity counts shrink when entities exist outside view.
+- Event receipts follow the server-derived interest epoch without gaps or delivery outside the
+  subscribed owned/AOI set.
 
 Exit criterion:
 
@@ -794,6 +845,40 @@ Exit criterion:
   capture state in-game without consulting the TOML file or mistaking the display for server
   authority.
 
+### `feature/24-authoritative-input-provenance`
+
+Purpose: make the current arrival-based authoritative input scheduler directly observable without
+turning client-local ticks into trusted server timestamps or changing gameplay scheduling.
+
+Changes:
+
+- Add a bounded, opt-in server diagnostic record for accepted Player inputs containing client ID,
+  input sequence, protocol `client_tick`, receive-side server tick, authoritative application
+  tick, and queue wait in ticks.
+- Preserve current scheduling: each server tick consumes at most the oldest queued sequence per
+  session. Diagnostics must not backdate commands, alter ordering, or implement lag compensation.
+- Choose during detailed planning between rate-limited structured server logs and a developer
+  trace artifact. Do not add a replicated per-input stream to every snapshot without measured
+  need.
+- Summarize counts and queue-wait distributions for many-client soaks so opt-in diagnostics do
+  not flood normal logs.
+- Cross-reference the protocol/networking time model and clearly label `client_tick` as local
+  provenance rather than an authoritative clock.
+
+Tests:
+
+- Controlled arrival schedules prove exact receive/application ticks and queue waits for two
+  clients with different delays, including both commands applied in one shared server tick.
+- Loss, redundancy, reordering, and duplicate packets produce one application record per
+  sequence without changing authoritative results.
+- Diagnostics remain bounded and disabled by default; enabling them produces byte-identical
+  authoritative snapshots and checkpoints for the same input schedule.
+
+Exit criterion:
+
+- A developer can answer when a sequenced input arrived and when authority applied it without
+  subtracting client and server clocks or mistaking the trace for a server-rewind policy.
+
 ## Research Branches
 
 Create these only after the bot/load harness or Lua rules branch provides a stable
@@ -886,6 +971,9 @@ Preserve these subsystem boundaries:
   game-specific panels or state.
 - `MyCore::NetTransport`: connections and byte payload transport; no gameplay messages or
   replication policy.
+- `MyCore::Rollback`: typed game-neutral checkpoint/step history, atomic reconciliation, event
+  transitions, and consequence-delivery bookkeeping; no Dots state, mechanics, protocol,
+  presentation, or audio policy.
 - `MyCore::Tasks`: conditional, profile-driven bounded CPU task groups and fences; no game tick,
   render-submission, network-poll, or audio-callback ownership policy.
 - `MyCore::Scripting`: Lua VM lifetime and safe calls; no game capabilities.
@@ -894,6 +982,8 @@ Preserve these subsystem boundaries:
 - `Dots::Protocol`: Dots wire messages and concrete protocol IDs, independent of C++ memory
   layout and transport implementation.
 - `Dots::Replication`: client-specific Dots snapshot construction.
+- `Dots::Prediction`: Dots rollback model, checkpoint adapter, mechanic closure, event identity,
+  typed differences, and prediction profiles.
 - `Dots::Presentation`: Dots render extraction and conversion to engine draw data.
 - `dots_server`: headless Dots authority; must not link renderer, SDL video, presentation,
   or ImGui rendering.

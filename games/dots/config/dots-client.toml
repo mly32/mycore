@@ -23,6 +23,7 @@ up = ["W", "Up"]
 down = ["S", "Down"]
 left = ["A", "Left"]
 right = ["D", "Right"]
+split = ["Space"]
 follow = ["F"]
 respawn = ["R", "Enter"]
 zoom_in = ["PageUp"]
@@ -39,6 +40,9 @@ draw_grid = true
 grid_spacing_world_units = 8.0
 
 [spectator]
+# live interpolates buffered authority and extrapolates only a short underrun tail;
+# delayed holds as soon as that same authoritative buffer underruns.
+presentation_mode = "live"
 pan_speed_world_units_per_second = 12.0
 minimum_pixels_per_world_unit = 5.0
 maximum_pixels_per_world_unit = 80.0
@@ -46,6 +50,13 @@ maximum_pixels_per_world_unit = 80.0
 [debug]
 enabled = true
 presentation_mode = "comparison"
+# Networked playing presentation outside the predicted interaction closure:
+# extrapolated, interpolated, or comparison.
+remote_presentation_mode = "extrapolated"
+# info logs prediction scope and command-frontier transitions; debug also logs
+# comparable remote reconciliation corrections.
+prediction_log_level = "off"
+correction_history_count = 8
 
 [colors]
 background = "#101820"

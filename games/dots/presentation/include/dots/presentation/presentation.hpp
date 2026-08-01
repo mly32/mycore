@@ -10,6 +10,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <span>
 #include <vector>
@@ -29,6 +30,23 @@ enum class CircleKind : std::uint8_t {
     RemoteInterpolationConnectorStart,
     RemoteInterpolationConnectorMiddle,
     RemoteInterpolationConnectorEnd,
+    RemoteInterpolatedComparisonGhost,
+    MotionTrail,
+    StructuralFade,
+    FoodStructuralFade,
+    SplitFlash,
+    SplitLaunch,
+    FoodPop,
+    ConsumeFlash,
+    ConsumeCollapse,
+    ConfirmedAbsorption,
+};
+
+enum class PresentationSource : std::uint8_t {
+    State,
+    Predicted,
+    Extrapolated,
+    Interpolated,
 };
 
 struct CircleInstance {
@@ -37,6 +55,13 @@ struct CircleInstance {
     float radius{};
     CircleKind kind{};
     protocol::EntityId entity_id;
+    protocol::PlayerOwnerId owner_id;
+    float opacity{1.0F};
+    std::optional<protocol::PredictionKey> prediction_key;
+    PresentationSource source{PresentationSource::State};
+    std::uint64_t source_revision{};
+    std::uint64_t correction_generation{};
+    mycore::math::Vector2 correction_displacement{};
 
     auto operator<=>(const CircleInstance&) const = default;
 };
@@ -108,12 +133,135 @@ private:
     bool correction_visual_active_{};
 };
 
+struct PredictionCorrectionSample {
+    std::uint64_t sequence{};
+    protocol::EntityId entity_id;
+    mycore::math::Vector2 pre_correction_position;
+    float mass{};
+    bool remote{};
+};
+
+struct PredictionCorrectionGhost {
+    protocol::EntityId entity_id;
+    mycore::math::Vector2 position;
+    float mass{};
+    float opacity{1.0F};
+    bool remote{};
+};
+
+class PredictionCorrectionHistory {
+public:
+    explicit PredictionCorrectionHistory(std::size_t capacity);
+
+    void update(std::span<const PredictionCorrectionSample> samples,
+                std::uint64_t hard_resync_sequence,
+                std::chrono::steady_clock::time_point now);
+    void clear() noexcept;
+
+    [[nodiscard]] std::span<const PredictionCorrectionGhost> ghosts() const noexcept;
+    [[nodiscard]] std::size_t size() const noexcept;
+    [[nodiscard]] std::size_t capacity() const noexcept;
+    [[nodiscard]] std::size_t local_count() const noexcept;
+    [[nodiscard]] std::size_t remote_count() const noexcept;
+
+private:
+    struct RetainedCorrection {
+        PredictionCorrectionGhost ghost;
+        std::chrono::steady_clock::time_point observed_at;
+    };
+
+    std::vector<RetainedCorrection> retained_;
+    std::vector<PredictionCorrectionGhost> ghosts_;
+    std::size_t capacity_{};
+    std::uint64_t last_event_sequence_{};
+    std::uint64_t last_hard_resync_sequence_{};
+    bool initialized_{};
+};
+
+inline constexpr auto kStructuralPresentationSmoothingDuration = std::chrono::milliseconds{100};
+inline constexpr auto kMotionTrailRetentionDuration = std::chrono::milliseconds{300};
+inline constexpr std::size_t kMotionTrailCapacity = 8;
+
+struct PersistentPresentationStatistics {
+    std::size_t track_count{};
+    std::size_t structural_fade_count{};
+    std::size_t motion_trail_count{};
+    std::uint64_t source_handoff_count{};
+    std::uint64_t smoothed_correction_count{};
+    std::uint64_t identity_remap_count{};
+    float maximum_smoothed_distance{};
+};
+
+// Stabilizes the presentation identity and pose selected by the Dots frame extractor. State and
+// delayed-interpolated poses pass through, predicted revisions use fixed-tick interpolation, and
+// new extrapolation authority may leave a short correction residual. Only Player/Food gameplay
+// circles become tracks; diagnostic and consequence circles pass through.
+class PersistentWorldPresentation {
+public:
+    [[nodiscard]] FrameData compose(const FrameData& desired,
+                                    float fixed_tick_alpha,
+                                    std::uint64_t hard_resync_sequence,
+                                    protocol::EntityId motion_trail_entity_id,
+                                    std::chrono::steady_clock::time_point now);
+    void reset() noexcept;
+
+    [[nodiscard]] const PersistentPresentationStatistics& statistics() const noexcept;
+
+private:
+    struct SemanticEntityKey {
+        protocol::EntityKind kind{protocol::EntityKind::Player};
+        protocol::EntityId entity_id;
+        std::optional<protocol::PredictionKey> prediction_key;
+
+        auto operator<=>(const SemanticEntityKey&) const = default;
+    };
+
+    struct Track {
+        CircleInstance previous;
+        CircleInstance current;
+        mycore::math::Vector2 correction_offset;
+        float radius_correction{};
+        std::chrono::steady_clock::time_point correction_started_at;
+        std::chrono::steady_clock::time_point last_seen_at;
+        std::chrono::steady_clock::time_point disappearing_since;
+        protocol::EntityId last_entity_id;
+        bool correction_active{};
+        bool disappearing{};
+    };
+
+    struct TrailSample {
+        mycore::math::Vector2 position;
+        float radius{};
+        protocol::PlayerOwnerId owner_id;
+        std::chrono::steady_clock::time_point observed_at;
+    };
+
+    [[nodiscard]] static SemanticEntityKey key_for(const CircleInstance& circle);
+    [[nodiscard]] CircleInstance evaluate(const Track& track,
+                                          float fixed_tick_alpha,
+                                          std::chrono::steady_clock::time_point now) const;
+
+    std::map<SemanticEntityKey, Track> tracks_;
+    std::vector<TrailSample> motion_trail_;
+    PersistentPresentationStatistics statistics_;
+    std::uint64_t last_hard_resync_sequence_{};
+    bool initialized_{};
+};
+
 struct PredictedReplicatedPlayer {
+    struct EntityCorrectionResidual {
+        protocol::EntityId entity_id;
+        std::uint64_t generation{};
+        mycore::math::Vector2 displacement;
+    };
+
     protocol::EntityId entity_id;
     mycore::math::Vector2 presentation_position;
     mycore::math::Vector2 predicted_position;
     std::optional<mycore::math::Vector2> pre_correction_position;
     std::span<const mycore::math::Vector2> correction_replay_path;
+    std::span<const PredictionCorrectionGhost> correction_ghosts;
+    std::span<const EntityCorrectionResidual> correction_residuals;
     bool show_prediction_layers{true};
     bool show_replay_path{true};
 };
@@ -160,8 +308,33 @@ extract_remote_interpolated_predicted_frame(const replication::ReplicatedWorld& 
                                             std::span<const RemoteEntityEndpoints> remote_endpoints,
                                             const PredictedReplicatedPlayer& controlled_player);
 
+[[nodiscard]] FrameData extract_remote_interpolated_predicted_frame(
+    const replication::ReplicatedWorld& world,
+    const simulation::World& predicted_world,
+    std::span<const protocol::EntityId> predicted_scope_entity_ids,
+    const RemotePresentationFrame& remotes,
+    std::span<const RemoteEntityEndpoints> remote_endpoints,
+    const PredictedReplicatedPlayer& controlled_player);
+
+[[nodiscard]] FrameData extract_remote_extrapolated_predicted_frame(
+    const replication::ReplicatedWorld& world,
+    const simulation::World& predicted_world,
+    std::span<const protocol::EntityId> predicted_scope_entity_ids,
+    const RemoteExtrapolationFrame& remotes,
+    std::span<const RemoteEntityEndpoints> remote_endpoints,
+    const PredictedReplicatedPlayer& controlled_player);
+
+void append_interpolated_remote_comparison(FrameData& frame,
+                                           const RemotePresentationFrame& interpolated,
+                                           std::span<const protocol::EntityId> excluded_entity_ids);
+
 [[nodiscard]] FrameData
 extract_remote_interpolated_spectator_frame(const RemotePresentationFrame& remotes,
+                                            std::span<const RemoteEntityEndpoints> remote_endpoints,
+                                            mycore::math::Vector2 camera);
+
+[[nodiscard]] FrameData
+extract_remote_extrapolated_spectator_frame(const RemoteExtrapolationFrame& remotes,
                                             std::span<const RemoteEntityEndpoints> remote_endpoints,
                                             mycore::math::Vector2 camera);
 

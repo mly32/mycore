@@ -1,6 +1,6 @@
 #pragma once
 
-#include "dots/simulation/input_command.hpp"
+#include "dots/simulation/tick.hpp"
 #include "mycore/platform_sdl/input.hpp"
 
 #include <string_view>
@@ -19,6 +19,7 @@ struct Bindings {
     std::vector<mycore::platform_sdl::Key> down;
     std::vector<mycore::platform_sdl::Key> left;
     std::vector<mycore::platform_sdl::Key> right;
+    std::vector<mycore::platform_sdl::Key> split;
     std::vector<mycore::platform_sdl::Key> follow;
     std::vector<mycore::platform_sdl::Key> respawn;
     std::vector<mycore::platform_sdl::Key> zoom_in;
@@ -47,6 +48,19 @@ struct SpectatorControlIntent {
     bool request_respawn{};
 };
 
+struct PlayerControlIntent {
+    bool request_split{};
+};
+
+class PlayerControlTracker {
+public:
+    [[nodiscard]] PlayerControlIntent sample(const mycore::platform_sdl::InputSnapshot& input,
+                                             const ClientControls& controls) noexcept;
+
+private:
+    bool split_pressed_{};
+};
+
 class SpectatorControlTracker {
 public:
     [[nodiscard]] SpectatorControlIntent sample(const mycore::platform_sdl::InputSnapshot& input,
@@ -71,12 +85,13 @@ movement_from_input(const mycore::platform_sdl::InputSnapshot& input,
                     InputViewport viewport,
                     bool mouse_input_available = true) noexcept;
 
-[[nodiscard]] dots::simulation::InputCommand
-make_input_command(const mycore::platform_sdl::InputSnapshot& input,
-                   const ClientControls& controls,
-                   dots::simulation::EntityId entity_id,
-                   dots::simulation::InputCommandId command_id,
-                   InputViewport viewport,
-                   bool mouse_input_available = true) noexcept;
+[[nodiscard]] dots::simulation::TickCommand
+make_tick_command(const mycore::platform_sdl::InputSnapshot& input,
+                  const ClientControls& controls,
+                  dots::simulation::PlayerOwnerId owner_id,
+                  dots::simulation::InputCommandId command_id,
+                  InputViewport viewport,
+                  bool mouse_input_available = true,
+                  bool split_requested = false) noexcept;
 
 } // namespace dots::client

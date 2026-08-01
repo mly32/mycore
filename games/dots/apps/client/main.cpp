@@ -18,6 +18,7 @@ A playable SDL_GPU client with offline, embedded-authority, and native-network m
 
 Usage:
   dots_client [--config <path>] [--offline | --in-memory | --connect <address>]
+              [--spectate]
               [--fake-lag-ms <milliseconds>] [--fake-loss-percent <percent>]
               [--headless-smoke | --package-smoke] [--help]
 
@@ -26,6 +27,7 @@ Options:
   --offline                    Override configuration and run the local offline simulation.
   --in-memory                  Run an embedded authoritative server.
   --connect <address>          Connect to a numeric IPv4 or bracketed IPv6 server address.
+  --spectate                   Join a networked session as a permanent spectator.
   --fake-lag-ms <milliseconds> Add outgoing one-way packet delay in native mode.
   --fake-loss-percent <value>  Drop this percentage of outgoing packets (0..100).
   --headless-smoke             Initialize SDL and a hidden window, poll input once, then exit.
@@ -55,6 +57,7 @@ struct CliOptions {
     std::optional<std::filesystem::path> config_path;
     bool headless_smoke{};
     bool package_smoke{};
+    bool spectate{};
     std::optional<dots::client::NetworkMode> network_mode;
     std::optional<std::string> connect_address;
     mycore::net_transport::NetworkImpairment impairment;
@@ -83,6 +86,10 @@ CliOptions parse_arguments(int argc, char** argv) {
         }
         if (argument == "--package-smoke") {
             options.package_smoke = true;
+            continue;
+        }
+        if (argument == "--spectate") {
+            options.spectate = true;
             continue;
         }
         if (argument == "--in-memory") {
@@ -126,7 +133,7 @@ CliOptions parse_arguments(int argc, char** argv) {
         throw CliError{"--headless-smoke and --package-smoke are mutually exclusive"};
     }
     if ((options.headless_smoke || options.package_smoke) &&
-        (options.network_mode || options.impairment_specified)) {
+        (options.network_mode || options.impairment_specified || options.spectate)) {
         throw CliError{"network mode and impairment options cannot be used with smoke modes"};
     }
     return options;
@@ -145,6 +152,8 @@ int main(int argc, char** argv) {
         auto config = dots::client::load_client_config(options.config_path);
         const auto network_mode = options.network_mode.value_or(config.network.mode);
         dots::client::ClientRunOptions run_options{
+            .join_role = options.spectate ? dots::protocol::JoinRole::Spectator
+                                          : dots::protocol::JoinRole::Player,
             .server_address = options.connect_address.value_or(config.network.server_address),
             .impairment = options.impairment,
         };
@@ -168,6 +177,10 @@ int main(int argc, char** argv) {
         if (options.impairment_specified &&
             run_options.mode != dots::client::ClientRunMode::NativeGame) {
             throw CliError{"fake lag and loss options require native mode"};
+        }
+        if (options.spectate && run_options.mode != dots::client::ClientRunMode::NativeGame &&
+            run_options.mode != dots::client::ClientRunMode::InMemoryGame) {
+            throw CliError{"--spectate requires --connect or --in-memory"};
         }
         return dots::client::run_client(config, run_options);
     } catch (const CliError& error) {

@@ -14,6 +14,25 @@ constexpr double kMaximumCursorErrorTicks = 6.0;
 constexpr double kMinimumCursorRate = 0.95;
 constexpr double kMaximumCursorRate = 1.05;
 
+[[nodiscard]] constexpr std::chrono::steady_clock::duration
+post_cap_hold_duration(std::chrono::steady_clock::duration hold_duration) noexcept {
+    const auto extrapolation_limit =
+        std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<double>{static_cast<double>(kRemoteExtrapolationLimitTicks) /
+                                          kServerTicksPerSecond});
+    return hold_duration > extrapolation_limit ? hold_duration - extrapolation_limit
+                                               : std::chrono::steady_clock::duration::zero();
+}
+
+[[nodiscard]] double duration_percentage(std::chrono::steady_clock::duration portion,
+                                         std::chrono::steady_clock::duration whole) noexcept {
+    if (whole <= std::chrono::steady_clock::duration::zero()) {
+        return 0.0;
+    }
+    return 100.0 * std::chrono::duration<double>{portion}.count() /
+           std::chrono::duration<double>{whole}.count();
+}
+
 [[nodiscard]] bool valid_entity(const protocol::EntityState& entity) noexcept {
     return entity.entity_id.is_valid() && std::isfinite(entity.position_x) &&
            std::isfinite(entity.position_y) && std::isfinite(entity.mass) && entity.mass > 0.0F;
@@ -27,7 +46,194 @@ constexpr double kMaximumCursorRate = 1.05;
     return older + ((newer - older) * alpha);
 }
 
+[[nodiscard]] bool valid_rules(const simulation::WorldRules& rules) noexcept {
+    return std::isfinite(rules.player_speed_units_per_second) &&
+           rules.player_speed_units_per_second > 0.0F &&
+           std::isfinite(rules.launch_decay_units_per_second_squared) &&
+           rules.launch_decay_units_per_second_squared >= 0.0F;
+}
+
+[[nodiscard]] const protocol::OwnerState* find_owner(std::span<const protocol::OwnerState> owners,
+                                                     protocol::PlayerOwnerId owner_id) noexcept {
+    const auto iterator =
+        std::lower_bound(owners.begin(),
+                         owners.end(),
+                         owner_id,
+                         [](const protocol::OwnerState& owner, protocol::PlayerOwnerId value) {
+                             return owner.owner_id < value;
+                         });
+    return iterator != owners.end() && iterator->owner_id == owner_id ? &*iterator : nullptr;
+}
+
+[[nodiscard]] double age_ticks(const RemoteKinematicSnapshot& sample,
+                               std::chrono::steady_clock::time_point now) noexcept {
+    const auto age =
+        std::max(now - sample.arrival_time, std::chrono::steady_clock::duration::zero());
+    return std::chrono::duration<double>{age}.count() * kServerTicksPerSecond;
+}
+
 } // namespace
+
+bool RemoteExtrapolationBuffer::insert(RemoteKinematicSnapshot sample) {
+    const auto valid_owner = [](const protocol::OwnerState& owner) {
+        return owner.owner_id.is_valid() &&
+               simulation::is_valid_player_movement({owner.movement_x, owner.movement_y});
+    };
+    const auto owners_sorted =
+        std::is_sorted(sample.owners.begin(),
+                       sample.owners.end(),
+                       [](const protocol::OwnerState& lhs, const protocol::OwnerState& rhs) {
+                           return lhs.owner_id < rhs.owner_id;
+                       });
+    const auto unique_owners =
+        std::adjacent_find(sample.owners.begin(),
+                           sample.owners.end(),
+                           [](const protocol::OwnerState& lhs, const protocol::OwnerState& rhs) {
+                               return lhs.owner_id == rhs.owner_id;
+                           }) == sample.owners.end();
+    if (!sample.snapshot_id.is_valid() || !valid_rules(sample.rules) || !owners_sorted ||
+        !unique_owners || !std::all_of(sample.owners.begin(), sample.owners.end(), valid_owner) ||
+        (latest_ && (sample.snapshot_id <= latest_->snapshot_id ||
+                     sample.server_tick < latest_->server_tick))) {
+        ++rejected_snapshot_count_;
+        return false;
+    }
+
+    const auto entities_valid =
+        std::all_of(sample.entities.begin(),
+                    sample.entities.end(),
+                    [&sample](const protocol::EntityState& entity) {
+                        if (!valid_entity(entity) || !std::isfinite(entity.launch_velocity_x) ||
+                            !std::isfinite(entity.launch_velocity_y)) {
+                            return false;
+                        }
+                        return entity.kind != protocol::EntityKind::Player ||
+                               (entity.owner_id.is_valid() &&
+                                find_owner(sample.owners, entity.owner_id) != nullptr);
+                    });
+    const auto entities_sorted =
+        std::is_sorted(sample.entities.begin(),
+                       sample.entities.end(),
+                       [](const protocol::EntityState& lhs, const protocol::EntityState& rhs) {
+                           return lhs.entity_id < rhs.entity_id;
+                       });
+    const auto unique_entities =
+        std::adjacent_find(sample.entities.begin(),
+                           sample.entities.end(),
+                           [](const protocol::EntityState& lhs, const protocol::EntityState& rhs) {
+                               return lhs.entity_id == rhs.entity_id;
+                           }) == sample.entities.end();
+    if (!entities_valid || !entities_sorted || !unique_entities) {
+        ++rejected_snapshot_count_;
+        return false;
+    }
+    latest_ = std::move(sample);
+    ++accepted_snapshot_count_;
+    return true;
+}
+
+RemoteExtrapolationFrame
+RemoteExtrapolationBuffer::sample(std::chrono::steady_clock::time_point now,
+                                  protocol::EntityId controlled_entity_id) const {
+    if (!latest_) {
+        return {};
+    }
+    return sample_ticks(age_ticks(*latest_, now), controlled_entity_id);
+}
+
+RemoteExtrapolationFrame
+RemoteExtrapolationBuffer::sample_offset(double extrapolation_ticks,
+                                         protocol::EntityId controlled_entity_id) const {
+    if (!std::isfinite(extrapolation_ticks) || extrapolation_ticks < 0.0) {
+        return {};
+    }
+    return sample_ticks(extrapolation_ticks, controlled_entity_id);
+}
+
+RemoteExtrapolationFrame
+RemoteExtrapolationBuffer::sample_ticks(double extrapolation_ticks,
+                                        protocol::EntityId controlled_entity_id) const {
+    RemoteExtrapolationFrame frame;
+    if (!latest_) {
+        return frame;
+    }
+    const auto clamped_ticks =
+        std::clamp(extrapolation_ticks, 0.0, static_cast<double>(kRemoteExtrapolationLimitTicks));
+    frame.snapshot_id = latest_->snapshot_id;
+    frame.server_tick = latest_->server_tick;
+    frame.extrapolation_ticks = clamped_ticks;
+    frame.ready = true;
+    frame.holding = extrapolation_ticks >= static_cast<double>(kRemoteExtrapolationLimitTicks);
+    frame.entities.reserve(latest_->entities.size());
+
+    for (const auto& entity : latest_->entities) {
+        if (entity.entity_id == controlled_entity_id) {
+            continue;
+        }
+        auto entity_position = position(entity);
+        if (entity.kind == protocol::EntityKind::Player) {
+            const auto* owner = find_owner(latest_->owners, entity.owner_id);
+            if (owner == nullptr) {
+                continue;
+            }
+            const auto movement = mycore::math::Vector2{owner->movement_x, owner->movement_y};
+            auto kinematics = simulation::PlayerKinematicState{
+                .position = entity_position,
+                .launch_velocity = {entity.launch_velocity_x, entity.launch_velocity_y},
+            };
+            const auto whole_ticks = static_cast<std::uint32_t>(std::floor(clamped_ticks));
+            for (auto tick = std::uint32_t{}; tick < whole_ticks; ++tick) {
+                kinematics =
+                    simulation::advance_player_kinematics(kinematics, movement, latest_->rules);
+            }
+            const auto fraction =
+                static_cast<float>(clamped_ticks - static_cast<double>(whole_ticks));
+            if (fraction > 0.0F && whole_ticks < kRemoteExtrapolationLimitTicks) {
+                const auto velocity = simulation::player_kinematic_velocity(
+                    movement, kinematics.launch_velocity, latest_->rules);
+                kinematics.position +=
+                    velocity * (fraction / static_cast<float>(simulation::kTickRateHz));
+            }
+            entity_position = kinematics.position;
+        }
+        frame.entities.push_back({
+            .entity_id = entity.entity_id,
+            .kind = entity.kind,
+            .owner_id = entity.owner_id,
+            .prediction_key = entity.prediction_key,
+            .position = entity_position,
+            .mass = entity.mass,
+        });
+    }
+    return frame;
+}
+
+RemoteExtrapolationStatistics
+RemoteExtrapolationBuffer::statistics(std::chrono::steady_clock::time_point now) const noexcept {
+    RemoteExtrapolationStatistics result;
+    result.accepted_snapshot_count = accepted_snapshot_count_;
+    result.rejected_snapshot_count = rejected_snapshot_count_;
+    if (!latest_) {
+        return result;
+    }
+    const auto raw_ticks = age_ticks(*latest_, now);
+    result.snapshot_id = latest_->snapshot_id;
+    result.sample_age_milliseconds = raw_ticks * (1000.0 / kServerTicksPerSecond);
+    result.extrapolation_ticks =
+        std::clamp(raw_ticks, 0.0, static_cast<double>(kRemoteExtrapolationLimitTicks));
+    for (const auto& entity : latest_->entities) {
+        if (entity.kind == protocol::EntityKind::Player) {
+            if (raw_ticks >= static_cast<double>(kRemoteExtrapolationLimitTicks)) {
+                ++result.held_player_count;
+            } else {
+                ++result.extrapolated_player_count;
+            }
+        } else {
+            ++result.static_entity_count;
+        }
+    }
+    return result;
+}
 
 void RemoteSnapshotBuffer::insert(RemoteSnapshotSample sample) {
     if (!sample.snapshot_id.is_valid() || std::any_of(sample.entities.begin(),
@@ -91,6 +297,7 @@ void RemoteSnapshotBuffer::advance(std::chrono::steady_clock::time_point now) {
         }
         presentation_tick_ = static_cast<double>(newest_tick - kRemotePresentationDelayTicks);
         ready_ = true;
+        observation_started_at_ = now;
         last_advance_time_ = now;
         return;
     }
@@ -196,6 +403,8 @@ RemotePresentationFrame RemoteSnapshotBuffer::sample(protocol::EntityId controll
             frame.entities.push_back({
                 .entity_id = entity.entity_id,
                 .kind = entity.kind,
+                .owner_id = entity.owner_id,
+                .prediction_key = entity.prediction_key,
                 .position = entity_position,
                 .mass = mass,
             });
@@ -261,6 +470,8 @@ RemoteEntityEndpoints RemoteSnapshotBuffer::endpoints(protocol::EntityId entity_
         return RemoteEntitySample{
             .entity_id = entity.entity_id,
             .kind = entity.kind,
+            .owner_id = entity.owner_id,
+            .prediction_key = entity.prediction_key,
             .position = position(entity),
             .mass = entity.mass,
         };
@@ -285,6 +496,17 @@ RemoteSnapshotBuffer::statistics(std::chrono::steady_clock::time_point now) cons
     }
     const auto maximum_hold_duration = std::max(maximum_hold_duration_, current_hold_duration);
     const auto total_hold_duration = total_hold_duration_ + current_hold_duration;
+    const auto current_post_cap_hold_duration = post_cap_hold_duration(current_hold_duration);
+    const auto maximum_post_cap_hold_duration =
+        std::max(maximum_post_cap_hold_duration_, current_post_cap_hold_duration);
+    const auto total_post_cap_hold_duration =
+        total_post_cap_hold_duration_ + current_post_cap_hold_duration;
+    const auto post_cap_holding =
+        current_post_cap_hold_duration > std::chrono::steady_clock::duration::zero();
+    const auto observation_duration =
+        observation_started_at_
+            ? std::max(now - *observation_started_at_, std::chrono::steady_clock::duration::zero())
+            : std::chrono::steady_clock::duration::zero();
     RemotePresentationStatistics result{
         .sample_count = samples_.size(),
         .coverage_ticks =
@@ -315,7 +537,24 @@ RemoteSnapshotBuffer::statistics(std::chrono::steady_clock::time_point now) cons
             std::chrono::duration_cast<std::chrono::milliseconds>(maximum_hold_duration),
         .total_hold_duration =
             std::chrono::duration_cast<std::chrono::milliseconds>(total_hold_duration),
+        .observation_duration =
+            std::chrono::duration_cast<std::chrono::milliseconds>(observation_duration),
+        .hold_time_percentage = duration_percentage(total_hold_duration, observation_duration),
         .hold_recovery_count = hold_recovery_count_,
+        .post_cap_hold_episode_count =
+            post_cap_hold_recovery_count_ + static_cast<std::uint64_t>(post_cap_holding),
+        .post_cap_holding = post_cap_holding,
+        .current_post_cap_hold_duration =
+            std::chrono::duration_cast<std::chrono::milliseconds>(current_post_cap_hold_duration),
+        .last_post_cap_hold_duration =
+            std::chrono::duration_cast<std::chrono::milliseconds>(last_post_cap_hold_duration_),
+        .maximum_post_cap_hold_duration =
+            std::chrono::duration_cast<std::chrono::milliseconds>(maximum_post_cap_hold_duration),
+        .total_post_cap_hold_duration =
+            std::chrono::duration_cast<std::chrono::milliseconds>(total_post_cap_hold_duration),
+        .post_cap_hold_time_percentage =
+            duration_percentage(total_post_cap_hold_duration, observation_duration),
+        .post_cap_hold_recovery_count = post_cap_hold_recovery_count_,
         .rate_correction_count = rate_correction_count_,
         .hard_rebase_count = hard_rebase_count_,
         .delayed_entity_create_count = delayed_entity_create_count_,
@@ -352,6 +591,14 @@ void RemoteSnapshotBuffer::finish_hold(std::chrono::steady_clock::time_point now
     maximum_hold_duration_ = std::max(maximum_hold_duration_, last_hold_duration_);
     total_hold_duration_ += last_hold_duration_;
     ++hold_recovery_count_;
+    const auto post_cap_duration = post_cap_hold_duration(last_hold_duration_);
+    if (post_cap_duration > std::chrono::steady_clock::duration::zero()) {
+        last_post_cap_hold_duration_ = post_cap_duration;
+        maximum_post_cap_hold_duration_ =
+            std::max(maximum_post_cap_hold_duration_, post_cap_duration);
+        total_post_cap_hold_duration_ += post_cap_duration;
+        ++post_cap_hold_recovery_count_;
+    }
     hold_started_at_.reset();
 }
 

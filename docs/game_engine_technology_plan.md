@@ -851,12 +851,19 @@ Buffer snapshots and interpolate them with a delay of roughly two or three snaps
 
 Make this buffer adaptive later using measured jitter.
 
-After that known-endpoint baseline is working, Feature 14 deliberately tests selectable
-complete-World rollback. Its default predicts every replicated entity using recorded held
-movement and no invented edge actions, while owner-only mode retains interpolation. The
-Dots-owned contracts and consequence matrix are canonical in
-[`rollback_prediction_design.md`](rollback_prediction_design.md); do not extract them to an
-engine library until another game demonstrates the same abstraction.
+After that known-endpoint baseline is working, Feature 14 adds a statically typed
+`MyCore::Rollback` timeline and tests it through complete Dots World replay. The engine owns only
+game-neutral checkpoint/restore/step orchestration, retained stimuli, atomic reconciliation,
+event transitions, and consequence-delivery bookkeeping. Dots owns its checkpoint schema,
+mechanics, interaction closure, event identities, protocol, and presentation policy.
+
+The default Dots profile predicts the owned-and-interacting fixed-point causal closure. That
+scope includes non-spatial owner state and required global/mechanic dependencies as well as
+spatial entities. A full-replicated profile remains a correctness oracle and workload benchmark;
+owned movement is the safe fallback when closure state is incomplete. Remote level movement may
+be held only when recorded as a replay assumption, and unknown edge actions remain zero. The
+canonical contracts and consequence matrix are in
+[`rollback_prediction_design.md`](rollback_prediction_design.md).
 
 ## 10.4 Numerical model
 
@@ -1361,8 +1368,16 @@ MyCore::DebugUI
     depends on Debug + PlatformSDL + Render + Dear ImGui; owns backend lifetime but no
     game-specific panels
 
+MyCore::Rollback
+    depends on Core + Time; owns typed history, atomic restore/replay, event transitions, and
+    consequence routing without owning a game schema
+
 Dots::Simulation
     depends on Core + Math + Time only
+
+Dots::Prediction
+    depends on Dots Simulation + MyCore Rollback; owns Dots mechanic contracts, causal scopes,
+    checkpoint projection, digests, differences, and the rollback model adapter
 
 Dots::Protocol
     depends on Core and owns Dots wire messages and concrete protocol IDs
@@ -1384,8 +1399,8 @@ dots_server
     depends on Dots Server; remains headless
 
 dots_client
-    depends on Dots Simulation + Protocol + Presentation + MyCore PlatformSDL + Render2D +
-    DebugUI + NetTransport
+    depends on Dots Simulation + Prediction + Protocol + Presentation + MyCore PlatformSDL +
+    Render2D + DebugUI + NetTransport
 
 dots_bot
     depends on Dots Protocol + MyCore NetTransport
@@ -1543,7 +1558,7 @@ These systems align directly with the learning goals:
 | Dots snapshot format | Central networking research |
 | Delta and baseline system | Central replication research |
 | Interest management | Required for 1,000 clients |
-| Dots prediction and reconciliation | Primary gameplay networking goal; complete rollback stays Dots-owned until a second game proves an engine contract |
+| Rollback timeline and Dots prediction | Build the game-neutral typed history/reconciliation/event mechanism; keep Dots checkpoints, mechanics, closure, event meanings, protocol, and presentation Dots-owned |
 | Interpolation | Client presentation architecture |
 | Entity/component storage | Useful controlled design experiment |
 | Replay format | Debugging and regression infrastructure |

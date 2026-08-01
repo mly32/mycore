@@ -1,8 +1,10 @@
 #include "dots/app_cli/app_cli.hpp"
 #include "dots/client_runtime/client_runtime.hpp"
+#include "dots/client_runtime/command_timing.hpp"
 #include "dots/simulation/movement.hpp"
 #include "mycore/debug/log.hpp"
 #include "mycore/net_transport/net_transport.hpp"
+#include "mycore/time/time.hpp"
 
 #include <array>
 #include <chrono>
@@ -25,13 +27,14 @@ Connects to an authoritative Dots server and continuously moves in a wide rectan
 
 Usage:
   dots_bot --connect <address> [--fake-lag-ms <milliseconds>]
-           [--fake-loss-percent <percent>] [--ticks <count>] [--help]
+           [--fake-loss-percent <percent>] [--spectate] [--ticks <count>] [--help]
 
 Options:
   --connect <address>          Numeric IPv4 or bracketed IPv6 server address.
   --fake-lag-ms <milliseconds> Add outgoing one-way packet delay.
   --fake-loss-percent <value>  Drop this percentage of outgoing packets (0..100).
-  --ticks <count>              Send exactly this many 30 Hz movement inputs, then exit.
+  --spectate                   Join without an owned player and receive snapshots only.
+  --ticks <count>              Send this many movement inputs after the two-input prefill.
   --help                       Show this help and exit.
 
 The bot is headless and cycles right, down, left, and up every four seconds.
@@ -47,6 +50,7 @@ struct Options {
     std::string server_address;
     mycore::net_transport::NetworkImpairment impairment;
     std::optional<std::uint64_t> ticks;
+    bool spectate{};
     bool help{};
 };
 
@@ -56,6 +60,10 @@ struct Options {
         const std::string_view argument{argv[index]};
         if (argument == "--help") {
             options.help = true;
+            continue;
+        }
+        if (argument == "--spectate") {
+            options.spectate = true;
             continue;
         }
         if (argument == "--connect") {
@@ -75,6 +83,9 @@ struct Options {
     }
     if (!options.help && options.server_address.empty()) {
         throw std::runtime_error{"--connect is required"};
+    }
+    if (options.spectate && options.ticks) {
+        throw std::runtime_error{"--ticks cannot be used with --spectate"};
     }
     return options;
 }
@@ -106,12 +117,31 @@ int main(int argc, char** argv) {
 
         mycore::net_transport::GameNetworkingSocketsNetwork network{options.impairment};
         auto& endpoint = network.connect(server_address);
-        dots::client_runtime::Runtime client{endpoint};
+        dots::client_runtime::Runtime client{
+            endpoint,
+            {
+                .requested_role = options.spectate ? dots::protocol::JoinRole::Spectator
+                                                   : dots::protocol::JoinRole::Player,
+            },
+        };
+        dots::client_runtime::CommandTimingController command_timing;
+        const auto process_events = [&client, &command_timing] {
+            const auto result = client.process_events();
+            for (const auto& accepted : result.accepted_snapshots) {
+                command_timing.observe_server_queue_depth(accepted.snapshot.pending_input_count);
+            }
+            // Bots have no presentation side effects, but every runtime composition root must
+            // retire the bounded stream of post-commit prediction event batches.
+            static_cast<void>(client.take_prediction_event_batches());
+            return result.error;
+        };
         const auto handshake_deadline = std::chrono::steady_clock::now() + 10s;
         while (client.state() != dots::client_runtime::State::Ready &&
                std::chrono::steady_clock::now() < handshake_deadline) {
-            if (client.process_events().error) {
-                throw std::runtime_error{"The bot handshake failed"};
+            if (const auto error = process_events()) {
+                throw std::runtime_error{
+                    "The bot handshake failed: " +
+                    std::string{dots::client_runtime::runtime_error_name(*error)}};
             }
             std::this_thread::sleep_for(1ms);
         }
@@ -121,26 +151,59 @@ int main(int argc, char** argv) {
 
         std::signal(SIGINT, request_stop);
         std::signal(SIGTERM, request_stop);
-        std::uint64_t sent_ticks{};
+        std::uint64_t next_client_tick{};
+        if (!options.spectate) {
+            for (std::size_t index = 0; index < command_timing.initial_prefill_count(); ++index) {
+                if (client.submit_input(static_cast<std::uint32_t>(next_client_tick), {}) !=
+                    dots::client_runtime::InputSendResult::Sent) {
+                    throw std::runtime_error{"The bot could not prefill input"};
+                }
+                ++next_client_tick;
+                command_timing.record_prefill_inputs(1);
+            }
+        }
+        std::uint64_t movement_ticks{};
         auto next_tick = std::chrono::steady_clock::now();
-        mycore::debug::log_info("dots.bot",
-                                "Connected as client {} controlling entity {}",
-                                client.client_id().value(),
-                                client.controlled_entity_id().value());
-        while (stop_requested == 0 && (!options.ticks || sent_ticks < *options.ticks)) {
-            if (client.process_events().error) {
-                throw std::runtime_error{"The bot session failed"};
+        if (options.spectate) {
+            mycore::debug::log_info(
+                "dots.bot", "Connected as spectator client {}", client.client_id().value());
+        } else {
+            mycore::debug::log_info("dots.bot",
+                                    "Connected as client {} controlling entity {}",
+                                    client.client_id().value(),
+                                    client.controlled_entity_id().value());
+        }
+        while (stop_requested == 0 && (!options.ticks || movement_ticks < *options.ticks)) {
+            if (const auto error = process_events()) {
+                throw std::runtime_error{
+                    "The bot session failed: " +
+                    std::string{dots::client_runtime::runtime_error_name(*error)}};
             }
-            if (sent_ticks > std::numeric_limits<std::uint32_t>::max()) {
-                throw std::runtime_error{"Bot input ticks are exhausted"};
+            const auto produces_input =
+                client.accepted_role() == dots::protocol::JoinRole::Player &&
+                client.session_mode() == dots::protocol::SessionMode::Playing &&
+                !client.input_production_paused();
+            if (produces_input) {
+                if (next_client_tick > std::numeric_limits<std::uint32_t>::max()) {
+                    throw std::runtime_error{"Bot input ticks are exhausted"};
+                }
+                if (client.submit_input(static_cast<std::uint32_t>(next_client_tick),
+                                        movement_for_tick(movement_ticks)) !=
+                    dots::client_runtime::InputSendResult::Sent) {
+                    throw std::runtime_error{"The bot could not submit input"};
+                }
+                ++next_client_tick;
+                ++movement_ticks;
             }
-            if (client.send_input(static_cast<std::uint32_t>(sent_ticks),
-                                  movement_for_tick(sent_ticks)) !=
-                dots::client_runtime::InputSendResult::Sent) {
-                throw std::runtime_error{"The bot could not send input"};
+            const auto period = produces_input
+                                    ? command_timing.next_period(dots::simulation::kTickDuration)
+                                    : dots::simulation::kTickDuration;
+            const auto deadline = mycore::time::advance_periodic_deadline(
+                next_tick, period, std::chrono::steady_clock::now());
+            next_tick = deadline.time;
+            if (deadline.discarded_backlog) {
+                command_timing.record_discarded_backlog();
             }
-            ++sent_ticks;
-            next_tick += dots::simulation::kTickDuration;
             std::this_thread::sleep_until(next_tick);
         }
         static_cast<void>(client.disconnect());

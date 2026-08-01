@@ -18,10 +18,27 @@ enum class PresentationMode : std::uint8_t {
     Comparison,
 };
 
+enum class RemotePresentationMode : std::uint8_t {
+    Extrapolated,
+    Interpolated,
+    Comparison,
+};
+
+enum class SpectatorPresentationMode : std::uint8_t {
+    Live,
+    Delayed,
+};
+
 enum class NetworkMode : std::uint8_t {
     Offline,
     InMemory,
     Native,
+};
+
+enum class PredictionLogLevel : std::uint8_t {
+    Off,
+    Info,
+    Debug,
 };
 
 [[nodiscard]] constexpr std::string_view network_mode_name(NetworkMode mode) noexcept {
@@ -48,6 +65,30 @@ enum class NetworkMode : std::uint8_t {
     return "UNKNOWN";
 }
 
+[[nodiscard]] constexpr std::string_view
+remote_presentation_mode_name(RemotePresentationMode mode) noexcept {
+    switch (mode) {
+    case RemotePresentationMode::Extrapolated:
+        return "EXTRAPOLATED";
+    case RemotePresentationMode::Interpolated:
+        return "INTERPOLATED";
+    case RemotePresentationMode::Comparison:
+        return "COMPARISON";
+    }
+    return "UNKNOWN";
+}
+
+[[nodiscard]] constexpr std::string_view
+spectator_presentation_mode_name(SpectatorPresentationMode mode) noexcept {
+    switch (mode) {
+    case SpectatorPresentationMode::Live:
+        return "LIVE";
+    case SpectatorPresentationMode::Delayed:
+        return "DELAYED";
+    }
+    return "UNKNOWN";
+}
+
 class StartupError : public std::runtime_error {
 public:
     explicit StartupError(const std::string& message);
@@ -58,6 +99,8 @@ public:
 // client_config.cpp whenever accepted fields, types, defaults, or validation rules change.
 inline constexpr int kMinimumWindowWidth = 500;
 inline constexpr int kMinimumWindowHeight = 500;
+inline constexpr std::size_t kDefaultCorrectionHistoryCount = 8;
+inline constexpr std::size_t kMaximumCorrectionHistoryCount = 64;
 
 struct WindowSettings {
     std::string title{"Dots"};
@@ -87,6 +130,7 @@ struct ViewSettings {
 };
 
 struct SpectatorSettings {
+    SpectatorPresentationMode presentation_mode{SpectatorPresentationMode::Live};
     float pan_speed_world_units_per_second{12.0F};
     float minimum_pixels_per_world_unit{5.0F};
     float maximum_pixels_per_world_unit{80.0F};
@@ -95,6 +139,9 @@ struct SpectatorSettings {
 struct DebugSettings {
     bool enabled{true};
     PresentationMode presentation_mode{PresentationMode::Interpolated};
+    RemotePresentationMode remote_presentation_mode{RemotePresentationMode::Extrapolated};
+    PredictionLogLevel prediction_log_level{PredictionLogLevel::Off};
+    std::size_t correction_history_count{kDefaultCorrectionHistoryCount};
 };
 
 struct RgbColor {

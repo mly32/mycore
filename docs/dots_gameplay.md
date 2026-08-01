@@ -6,9 +6,12 @@ future mechanics outlined in feature plans. The server is authoritative for ever
 ## Current objective
 
 Dots is an early Agar.io-like movement and growth slice. Players move through a shared field,
-consume food, and can absorb smaller opponents. There is currently no score, win condition,
-split, merge, or separate energy system. Food is the current resource that fills the role an
-energy pickup might later fill.
+consume food, and can absorb smaller opponents. The shared deterministic World and offline
+rollback model also implement split, launch, cohesion, and merge rules. The graphical client
+submits split as an edge-triggered action on Space; protocol v5 carries it to authority while the
+complete client rollback timeline predicts its immediate topology and motion.
+There is no score, win condition, or separate energy system. Food is the current resource that
+fills the role an energy pickup might later fill.
 
 ## World and food
 
@@ -21,6 +24,28 @@ energy pickup might later fill.
   winner before contested food is resolved, using deterministic mass/entity ordering.
 - The default field contains 272 food entities in an 8-world-unit grid from `x = -80..80` and
   `y = -48..48`, excluding the origin. Food does not currently respawn.
+
+## Split, launch, cohesion, and merge
+
+A split is an edge action on an owner input command. The default immutable rules are:
+
+- A 15-tick/0.5-second owner recast.
+- A maximum of eight pieces per owner.
+- Minimum parent mass `16`; each eligible parent divides its mass evenly with one child.
+- Child launch speed 18 world units per second with linear decay of 18 world units per second
+  squared.
+- A 150-tick/5-second merge delay and post-deadline cohesion speed of 3 world units per second.
+
+Eligible parents are processed by stable entity identity until the piece cap is reached. Each
+child receives `PredictionKey{owner, input, child ordinal}`. Launch uses current movement,
+last non-zero movement, then positive X as deterministic fallbacks. A split input is consumed
+even when cooldown, mass, piece cap, or allocator state rejects the action.
+
+After the per-piece merge deadline, pieces move toward their mass-weighted owner centroid.
+Touching eligible pieces merge in stable entity order; the lower entity identity survives, mass
+is conserved, and position and launch velocity are mass weighted. Enemy absorption still occurs
+before same-owner merge, and food consumption occurs afterward. Newly spawned players receive
+the same merge-delay baseline, although normal join and respawn create an owner with one piece.
 
 ## Joining and spawning
 
@@ -36,12 +61,24 @@ clients never choose or predict them. The implementation and alternatives are re
 [authoritative spawn search plan](plans/authoritative-spawn-search.md).
 
 Offline play starts its local player at the origin; the food field deliberately leaves that point
-empty. Native and in-memory multiplayer use server-assigned spawns.
+empty. It advances the complete local World through the Dots rollback model using the
+full-replicated profile; because no server exists in this mode, it periodically promotes the
+committed local checkpoint as its new history baseline. Native and in-memory multiplayer use
+server-assigned spawns.
 
 ## Movement and connection loss
 
-Clients submit normalized movement intent at 30 Hz. A player moves at 6 world units per second.
-The server consumes at most one queued input sample per player per tick.
+Playing clients normally submit normalized movement intent at 30 Hz. A player moves at 6 world
+units per second.
+The server consumes at most one queued input sample per owner per tick. The simulation installs
+at most one owner command and applies its held movement to every piece owned by that owner. A live
+graphical network session may own up to eight pieces through edge-triggered split input.
+
+Each player snapshot advertises the exact 32-sequence input frontier authority currently accepts.
+The client predicts and retains locally accepted commands even when they cannot yet cross that
+frontier. At eight unsent commands it pauses new command sampling; after snapshots advance the
+grant and drain the suffix to two commands it resumes without replaying missed wall-clock time.
+The server's 64-entry queue remains a hostile-peer guard rather than normal overload control.
 
 Brief missing input does not immediately stop a player: the server holds the last applied movement
 for five ticks. On the following missing-input tick it neutralizes movement, while keeping the
@@ -65,18 +102,48 @@ uses the same safe server-owned spawn search and records `Accepted` or `Rejected
 An input acknowledgement means only that the sample was consumed—the repeated result field
 communicates whether the gameplay action succeeded.
 
+A client may instead request the permanent `Spectator` join role. A direct spectator receives
+full world snapshots but creates no owner or player, has no defeat or respawn deadline, cannot
+submit gameplay input or respawn, and receives no participant-only authority receipts. Direct
+spectators and defeated players keep their sessions live with a 5 Hz status heartbeat while
+ordinary 30 Hz neutral gameplay commands are stopped.
+
 ## What each client sees
 
 While `Playing`, the local primary player is responsive through client-side prediction: the
-client applies its own input immediately, then reconciles with the server's acknowledged snapshot
-and smooths only the visual correction.
+client applies its own input immediately to a complete interaction-closed World, then reconciles
+with the server's acknowledged checkpoint and replays the retained input suffix. Movement, food
+consumption, player absorption, split, launch, cohesion, and merge run through the same
+deterministic tick used by authority. Simulation corrects atomically; the primary player's
+position correction alone is visually smoothed.
+
+Each retained tick keeps its sampled local command unchanged. Remote movement inside the
+prediction closure is a last-known-authority assumption: reconciliation refreshes that derived
+field across the retained suffix before replay, and future prediction also uses the newest
+authority. A remote input edge that the client could not know may therefore cause one visible
+correction; it must not make the remote repeatedly jump between an obsolete guess and the newest
+server direction.
+
+The root cause and cross-mechanic prevention rules are documented in the
+[Feature 14 prediction-stutter postmortem](feature14_prediction_stutter_postmortem.md).
+
+Space submits one split request per press; holding it does not split every input tick. A predicted
+child appears immediately and is matched to authority by `PredictionKey`, even if the server
+assigns a different entity ID. A predicted absorption may temporarily remove the final local
+piece, but it cannot enter spectator mode or disable input. Only confirmed replicated session
+state can do that. Inputs sampled while the speculative World has no local piece remain in the
+outer client buffer because the prediction timeline cannot step them yet. If validated authority
+confirms survival and acknowledges inside that deferred range, the client hard-resyncs to the
+checkpoint, discards the acknowledged prefix, and rolls every newer retained input forward.
 
 The network client runtime accepts confirmed spectating snapshots without requiring a permanent
-controlled entity and continues sending session input/heartbeats. The graphical client enters
+controlled entity and continues sending status heartbeats. A defeated player sends gameplay
+input only for an explicit respawn edge. The graphical client enters
 spectator presentation only from that confirmed mode. It follows the confirmed killer by default,
-using the same delayed interpolated sample for the camera and the killer's circle. `F` toggles a
-free camera when that target is available. If the killer disappears, the client switches to free
-camera at the last valid presentation position rather than choosing another entity.
+using the same selected and composed presentation sample for the camera and the killer's circle.
+`F` toggles a free camera when that target is available. If the killer disappears, the client
+switches to free camera at the last valid presentation position rather than choosing another
+entity.
 
 In free-camera mode, WASD or the arrows pan at 12 world units per second by default. The mouse
 wheel or PageUp/PageDown changes zoom in 10 percent steps, clamped to the configured 5--80
@@ -90,18 +157,57 @@ Its respawn countdown advances the latest replicated server tick by local time s
 receipt. That display is approximate and presentation-only; only the server's current tick decides
 whether a request is eligible.
 
-Remote players are not extrapolated from guessed inputs. The client stores authoritative snapshots
-and renders remotes about six server ticks (200 ms) behind the newest known server state,
-interpolating between two known samples. If a newer sample is unavailable, the remote holds rather
-than inventing movement. See the [networked prediction and time reference](networked_prediction_reference.md)
-for state ownership and timing terminology.
+Remote entities inside the local interaction closure participate in rollback because their held
+level movement, momentum, topology, and collisions can affect an owned piece. The retained
+assumption uses their newest authoritative movement; unknown remote edge actions are neutral.
+While Playing, remote players outside that closure default to presentation-only extrapolation
+from the newest accepted authoritative movement and launch velocity. The client uses the shared
+movement/launch integrator for at most six ticks (200 ms), then holds; it does not run cohesion,
+collision, consumption, absorption, split, merge, or other gameplay there. A config switch can
+instead use six-tick delayed interpolation or overlay that delayed position for comparison.
+Spectators default to `live`: six-tick buffered interpolation remains the normal source, and Dots
+advances movement and launch for at most another six ticks/200 ms only when the presentation
+cursor exhausts its newest authoritative endpoint. Replacement authority is smoothed through
+persistent semantic tracks. Food stays at authority and no collision, consumption, absorption,
+split, merge, lifecycle, or other gameplay mechanic runs in this presentation layer. The
+`delayed` option uses the same buffered interpolation but holds immediately on underrun. This is
+a Dots presentation choice, not rollback prediction or an engine-kernel policy. See the
+[networked prediction and time reference](networked_prediction_reference.md) for state ownership
+and timing terminology.
 
-Player fill color is a deterministic hash of the authoritative entity ID, so the same player has
-the same color on every client for the life of that server world. Mass changes radius, not fill
-color.
+Presentation keeps semantic tracks by predicted spawn key when available and entity ID
+otherwise. Predicted fixed-tick poses interpolate with the client accumulator. Reconciliation,
+prediction-to-remote source changes, and authoritative child-ID remaps preserve the old visual
+pose and decay only the presentation residual over 100 ms. Removed circles fade for 100 ms, and
+the followed piece leaves an eight-sample/300 ms motion trail. The already-smoothed local primary
+and Feature 12 delayed-interpolation samples pass through the persistent adapter without another
+low-pass. A newer extrapolation snapshot can replace a guessed remote future, so that
+presentation-only residual still smooths over 100 ms. See the
+[persistent presentation audit](feature14_persistent_presentation_audit.md) for the complete
+source-policy matrix.
+
+Rollback-generated event journals drive Dots-owned consequence handlers only after an atomic
+timeline commit:
+
+| Mechanic | Visible feedback | Delivery behavior |
+|---|---|---|
+| Split | 180 ms flash | Predicted once; replay and confirmation cannot duplicate it. |
+| Split | Child launch ring/trail, up to one second | Revised, canceled, or confirmed through a keyed token. |
+| Food consumption | 250 ms four-particle food pop | Canceled with an 80 ms fade if rollback restores the food. |
+| Player absorption | 150 ms consume flash | Predicted once; one brief false positive is accepted. |
+| Player absorption | 300 ms victim-collapse pulse | Revised, canceled, or confirmed through a keyed token. |
+| Confirmed absorption | 1.5 second kill/defeat banner and monotonic stinger hook | Appears only from authority and only once. |
+| Merge | Survivor smoothing and consumed-piece fade | Derived from committed state rather than an event side effect. |
+
+Dots has no audio backend yet. The confirmed stinger sequence is an explicit future-audio hook;
+it does not play sound today.
+
+Player fill color is a deterministic hash of the authoritative owner ID. Every split piece owned
+by one player therefore keeps the same color, including while a predicted child waits for its
+authoritative entity-ID mapping. Mass changes radius, not fill color.
 
 ## Planned gameplay, not current rules
 
-Future plans may add scoring or winning, split/merge actions, additional cooldowns, and richer
-resource/energy mechanics. These must be specified in this guide when they become implemented
-gameplay rules; feature plans remain design documents until then.
+Future plans may add scoring or winning, richer resource/energy mechanics, and additional
+cooldowns. These remain unimplemented; feature plans remain design documents until the behavior
+is added here.

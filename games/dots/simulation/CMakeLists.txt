@@ -3,6 +3,7 @@ add_library(
     src/movement.cpp
     src/simulation.cpp
     src/spatial_grid.cpp
+    src/tick.cpp
     src/world.cpp
     src/world_setup.cpp
 )

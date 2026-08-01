@@ -4,6 +4,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -46,7 +47,161 @@ clock_time(std::chrono::steady_clock::duration offset) noexcept {
     };
 }
 
+[[nodiscard]] dots::presentation::RemoteKinematicSnapshot kinematic_snapshot(
+    std::uint32_t snapshot_id, std::uint32_t server_tick, std::chrono::milliseconds arrival) {
+    auto rules = dots::simulation::WorldRules{};
+    rules.player_speed_units_per_second = 30.0F;
+    rules.launch_decay_units_per_second_squared = 0.0F;
+    return {
+        .snapshot_id = dots::protocol::SnapshotId{snapshot_id},
+        .server_tick = server_tick,
+        .rules = rules,
+        .owners = {{
+            .owner_id = dots::protocol::PlayerOwnerId{5},
+            .movement_x = 1.0F,
+            .movement_y = 0.0F,
+        }},
+        .entities =
+            {
+                {
+                    .entity_id = dots::protocol::EntityId{2},
+                    .kind = dots::protocol::EntityKind::Player,
+                    .owner_id = dots::protocol::PlayerOwnerId{5},
+                    .position_x = 0.0F,
+                    .position_y = 3.0F,
+                    .mass = 4.0F,
+                    .launch_velocity_x = 30.0F,
+                    .prediction_key =
+                        dots::protocol::PredictionKey{
+                            .owner_id = dots::protocol::PlayerOwnerId{5},
+                            .input_id = dots::protocol::InputSequenceId{7},
+                            .child_ordinal = 1,
+                        },
+                },
+                {
+                    .entity_id = dots::protocol::EntityId{3},
+                    .kind = dots::protocol::EntityKind::Food,
+                    .position_x = 9.0F,
+                    .position_y = 8.0F,
+                    .mass = 1.0F,
+                },
+            },
+        .arrival_time = clock_time(arrival),
+    };
+}
+
 } // namespace
+
+TEST_CASE("Remote extrapolation advances movement and launch but keeps food static",
+          "[dots][remote-presentation][extrapolation]") {
+    dots::presentation::RemoteExtrapolationBuffer buffer;
+    REQUIRE(buffer.insert(kinematic_snapshot(1, 40, 0ms)));
+
+    const auto frame = buffer.sample(clock_time(116666667ns));
+    REQUIRE(frame.ready);
+    REQUIRE_FALSE(frame.holding);
+    CHECK(frame.extrapolation_ticks == Catch::Approx(3.5));
+    REQUIRE(frame.entities.size() == 2);
+    CHECK(frame.entities[0].position.x == Catch::Approx(7.0F));
+    CHECK(frame.entities[0].position.y == Catch::Approx(3.0F));
+    CHECK(frame.entities[0].owner_id == dots::protocol::PlayerOwnerId{5});
+    REQUIRE(frame.entities[0].prediction_key.has_value());
+    CHECK(frame.entities[0].prediction_key->input_id == dots::protocol::InputSequenceId{7});
+    CHECK(frame.entities[1].position.x == Catch::Approx(9.0F));
+    CHECK(frame.entities[1].position.y == Catch::Approx(8.0F));
+
+    const auto offset_frame = buffer.sample_offset(1.5);
+    REQUIRE(offset_frame.ready);
+    REQUIRE_FALSE(offset_frame.holding);
+    CHECK(offset_frame.extrapolation_ticks == Catch::Approx(1.5));
+    CHECK(offset_frame.entities[0].position.x == Catch::Approx(3.0F));
+    CHECK_FALSE(buffer.sample_offset(-1.0).ready);
+
+    const auto statistics = buffer.statistics(clock_time(116666667ns));
+    CHECK(statistics.extrapolated_player_count == 1);
+    CHECK(statistics.static_entity_count == 1);
+    CHECK(statistics.held_player_count == 0);
+}
+
+TEST_CASE("Remote extrapolation holds after its six-tick horizon",
+          "[dots][remote-presentation][extrapolation]") {
+    dots::presentation::RemoteExtrapolationBuffer buffer;
+    REQUIRE(buffer.insert(kinematic_snapshot(1, 40, 0ms)));
+
+    const auto frame = buffer.sample(clock_time(500ms));
+    REQUIRE(frame.ready);
+    REQUIRE(frame.holding);
+    CHECK(frame.extrapolation_ticks ==
+          Catch::Approx(dots::presentation::kRemoteExtrapolationLimitTicks));
+    REQUIRE(frame.entities.size() == 2);
+    CHECK(frame.entities[0].position.x == Catch::Approx(12.0F));
+
+    const auto statistics = buffer.statistics(clock_time(500ms));
+    CHECK(statistics.extrapolated_player_count == 0);
+    CHECK(statistics.held_player_count == 1);
+}
+
+TEST_CASE("Live spectator extrapolates only the interpolation underrun tail",
+          "[dots][remote-presentation][spectator]") {
+    dots::presentation::RemoteSnapshotBuffer interpolation;
+    interpolation.insert(snapshot(1, 0, 0.0F, 0ms));
+    interpolation.insert(snapshot(2, 2, 2.0F, 67ms));
+    interpolation.insert(snapshot(3, 4, 4.0F, 133ms));
+    interpolation.insert(snapshot(4, 6, 6.0F, 200ms));
+    interpolation.advance(clock_time(200ms));
+    interpolation.advance(clock_time(400ms));
+    REQUIRE(interpolation.sample({}).holding);
+    interpolation.advance(clock_time(450ms));
+
+    const auto statistics = interpolation.statistics(clock_time(450ms));
+    REQUIRE(statistics.holding);
+    REQUIRE(statistics.current_hold_duration == 50ms);
+    const auto underrun_ticks =
+        std::chrono::duration<double>{statistics.current_hold_duration}.count() *
+        static_cast<double>(dots::simulation::kTickRateHz);
+
+    dots::presentation::RemoteExtrapolationBuffer extrapolation;
+    REQUIRE(extrapolation.insert(kinematic_snapshot(1, 6, 0ms)));
+    const auto fallback = extrapolation.sample_offset(underrun_ticks);
+    const auto project_to_now = extrapolation.sample(clock_time(450ms));
+
+    REQUIRE(fallback.ready);
+    CHECK(fallback.extrapolation_ticks == Catch::Approx(1.5));
+    CHECK(fallback.entities[0].position.x == Catch::Approx(3.0F));
+    REQUIRE(project_to_now.holding);
+    CHECK(project_to_now.entities[0].position.x == Catch::Approx(12.0F));
+}
+
+TEST_CASE("Remote extrapolation rejects invalid and stale authoritative samples",
+          "[dots][remote-presentation][extrapolation]") {
+    dots::presentation::RemoteExtrapolationBuffer buffer;
+    REQUIRE(buffer.insert(kinematic_snapshot(2, 40, 0ms)));
+    CHECK_FALSE(buffer.insert(kinematic_snapshot(1, 42, 1ms)));
+    CHECK_FALSE(buffer.insert(kinematic_snapshot(3, 39, 1ms)));
+    REQUIRE(buffer.insert(kinematic_snapshot(3, 40, 1ms)));
+
+    auto invalid_velocity = kinematic_snapshot(4, 42, 1ms);
+    invalid_velocity.entities[0].launch_velocity_x = std::numeric_limits<float>::quiet_NaN();
+    const auto accepted_invalid_velocity = buffer.insert(std::move(invalid_velocity));
+    CHECK_FALSE(accepted_invalid_velocity);
+    auto invalid_movement = kinematic_snapshot(4, 42, 1ms);
+    invalid_movement.owners[0].movement_x = 2.0F;
+    const auto accepted_invalid_movement = buffer.insert(std::move(invalid_movement));
+    CHECK_FALSE(accepted_invalid_movement);
+    auto unsorted_owners = kinematic_snapshot(4, 42, 1ms);
+    unsorted_owners.owners.push_back({
+        .owner_id = dots::protocol::PlayerOwnerId{4},
+        .movement_x = 0.0F,
+        .movement_y = 1.0F,
+    });
+    const auto accepted_unsorted_owners = buffer.insert(std::move(unsorted_owners));
+    CHECK_FALSE(accepted_unsorted_owners);
+
+    const auto statistics = buffer.statistics(clock_time(1ms));
+    CHECK(statistics.accepted_snapshot_count == 2);
+    CHECK(statistics.rejected_snapshot_count == 5);
+    CHECK(statistics.snapshot_id == dots::protocol::SnapshotId{3});
+}
 
 TEST_CASE("Remote presentation holds the first sample while its normal delay buffers",
           "[dots][remote-presentation]") {
@@ -131,6 +286,46 @@ TEST_CASE("Remote presentation holds on an underrun and does not extrapolate",
     CHECK(statistics.cursor_rate == Catch::Approx(0.0));
     CHECK(statistics.hard_rebase_count == 0);
     CHECK(statistics.holding);
+}
+
+TEST_CASE("Remote presentation measures underrun and post-cap pause time",
+          "[dots][remote-presentation][spectator]") {
+    dots::presentation::RemoteSnapshotBuffer buffer;
+    buffer.insert(snapshot(1, 0, 0.0F, 0ms));
+    buffer.insert(snapshot(2, 2, 2.0F, 67ms));
+    buffer.insert(snapshot(3, 4, 4.0F, 133ms));
+    buffer.insert(snapshot(4, 6, 6.0F, 200ms));
+    buffer.advance(clock_time(200ms));
+    buffer.advance(clock_time(400ms));
+    buffer.advance(clock_time(600ms));
+
+    auto statistics = buffer.statistics(clock_time(700ms));
+    REQUIRE(statistics.holding);
+    CHECK(statistics.observation_duration == 500ms);
+    CHECK(statistics.total_hold_duration == 300ms);
+    CHECK(statistics.hold_time_percentage == Catch::Approx(60.0));
+    REQUIRE(statistics.post_cap_holding);
+    CHECK(statistics.post_cap_hold_episode_count == 1);
+    CHECK(statistics.post_cap_hold_recovery_count == 0);
+    CHECK(statistics.current_post_cap_hold_duration == 100ms);
+    CHECK(statistics.maximum_post_cap_hold_duration == 100ms);
+    CHECK(statistics.total_post_cap_hold_duration == 100ms);
+    CHECK(statistics.post_cap_hold_time_percentage == Catch::Approx(20.0));
+
+    buffer.insert(snapshot(5, 8, 8.0F, 701ms));
+    buffer.insert(snapshot(6, 10, 10.0F, 702ms));
+    buffer.insert(snapshot(7, 12, 12.0F, 703ms));
+    buffer.insert(snapshot(8, 14, 14.0F, 704ms));
+    buffer.advance(clock_time(710ms));
+
+    statistics = buffer.statistics(clock_time(710ms));
+    CHECK_FALSE(statistics.holding);
+    CHECK_FALSE(statistics.post_cap_holding);
+    CHECK(statistics.post_cap_hold_episode_count == 1);
+    CHECK(statistics.post_cap_hold_recovery_count == 1);
+    CHECK(statistics.last_post_cap_hold_duration == 110ms);
+    CHECK(statistics.maximum_post_cap_hold_duration == 110ms);
+    CHECK(statistics.total_post_cap_hold_duration == 110ms);
 }
 
 TEST_CASE("Remote presentation recovers monotonically through late snapshots",

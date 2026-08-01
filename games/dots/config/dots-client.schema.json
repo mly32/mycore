@@ -169,6 +169,17 @@
             "$ref": "#/definitions/physicalKey"
           }
         },
+        "split": {
+          "description": "Keys that request one predicted and authoritative split edge while playing.",
+          "type": "array",
+          "minItems": 1,
+          "default": [
+            "Space"
+          ],
+          "items": {
+            "$ref": "#/definitions/physicalKey"
+          }
+        },
         "follow": {
           "description": "Keys that toggle between the confirmed killer and the free camera while spectating.",
           "type": "array",
@@ -228,10 +239,26 @@
       }
     },
     "spectator": {
-      "description": "Client-only spectator camera behavior. These settings never change server authority.",
+      "description": "Client-only spectator presentation and camera behavior. These settings never change server authority or rollback state.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "presentation_mode": {
+          "description": "Spectator world presentation. Live normally uses six-tick authoritative interpolation and applies at most 200 ms of movement/launch extrapolation only after that buffer underruns; delayed uses the same interpolation but holds immediately on underrun. Neither mode runs rollback or gameplay mechanics. Names are case-insensitive.",
+          "type": "string",
+          "default": "live",
+          "anyOf": [
+            {
+              "enum": [
+                "live",
+                "delayed"
+              ]
+            },
+            {
+              "pattern": "^(?:[lL][iI][vV][eE]|[dD][eE][lL][aA][yY][eE][dD])$"
+            }
+          ]
+        },
         "pan_speed_world_units_per_second": {
           "description": "Free-camera keyboard pan speed in world units per second.",
           "type": "number",
@@ -332,6 +359,47 @@
               "pattern": "^(?:[iI][nN][tT][eE][rR][pP][oO][lL][aA][tT][eE][dD]|[fF][iI][xX][eE][dD]|[cC][oO][mM][pP][aA][rR][iI][sS][oO][nN])$"
             }
           ]
+        },
+        "remote_presentation_mode": {
+          "description": "Networked playing presentation outside the predicted interaction closure. Extrapolated advances known movement/launch for at most 200 ms, interpolated uses delayed authority, and comparison overlays both.",
+          "type": "string",
+          "default": "extrapolated",
+          "anyOf": [
+            {
+              "enum": [
+                "extrapolated",
+                "interpolated",
+                "comparison"
+              ]
+            },
+            {
+              "pattern": "^(?:[eE][xX][tT][rR][aA][pP][oO][lL][aA][tT][eE][dD]|[iI][nN][tT][eE][rR][pP][oO][lL][aA][tT][eE][dD]|[cC][oO][mM][pP][aA][rR][iI][sS][oO][nN])$"
+            }
+          ]
+        },
+        "prediction_log_level": {
+          "description": "Prediction-category log detail. Off suppresses optional transition details, info logs scope and command-frontier defer/recovery changes, and debug also logs comparable remote corrections. Fatal frontier context is always logged. Names are case-insensitive.",
+          "type": "string",
+          "default": "off",
+          "anyOf": [
+            {
+              "enum": [
+                "off",
+                "info",
+                "debug"
+              ]
+            },
+            {
+              "pattern": "^(?:[oO][fF][fF]|[iI][nN][fF][oO]|[dD][eE][bB][uU][gG])$"
+            }
+          ]
+        },
+        "correction_history_count": {
+          "description": "Maximum number of recent local and remote prediction-correction ghosts retained for world-space diagnostics.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64,
+          "default": 8
         }
       }
     },

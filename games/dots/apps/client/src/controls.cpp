@@ -53,6 +53,16 @@ Vector2 mouse_movement(const mycore::platform_sdl::MouseSnapshot& mouse,
 
 } // namespace
 
+PlayerControlIntent PlayerControlTracker::sample(const mycore::platform_sdl::InputSnapshot& input,
+                                                 const ClientControls& controls) noexcept {
+    const auto split_pressed = any_pressed(input.keyboard, controls.bindings.split);
+    const PlayerControlIntent intent{
+        .request_split = split_pressed && !split_pressed_,
+    };
+    split_pressed_ = split_pressed;
+    return intent;
+}
+
 SpectatorControlIntent
 SpectatorControlTracker::sample(const mycore::platform_sdl::InputSnapshot& input,
                                 const ClientControls& controls) noexcept {
@@ -100,16 +110,19 @@ bool quit_requested(const mycore::platform_sdl::InputSnapshot& input,
     return input.quit_requested || any_pressed(input.keyboard, controls.bindings.quit);
 }
 
-dots::simulation::InputCommand make_input_command(const mycore::platform_sdl::InputSnapshot& input,
-                                                  const ClientControls& controls,
-                                                  dots::simulation::EntityId entity_id,
-                                                  dots::simulation::InputCommandId command_id,
-                                                  InputViewport viewport,
-                                                  bool mouse_input_available) noexcept {
+dots::simulation::TickCommand make_tick_command(const mycore::platform_sdl::InputSnapshot& input,
+                                                const ClientControls& controls,
+                                                dots::simulation::PlayerOwnerId owner_id,
+                                                dots::simulation::InputCommandId command_id,
+                                                InputViewport viewport,
+                                                bool mouse_input_available,
+                                                bool split_requested) noexcept {
     return {
-        .id = command_id,
-        .entity_id = entity_id,
+        .type = dots::simulation::TickCommandType::ApplyInput,
+        .input_id = command_id,
+        .owner_id = owner_id,
         .movement = movement_from_input(input, controls, viewport, mouse_input_available),
+        .split_requested = split_requested,
     };
 }
 

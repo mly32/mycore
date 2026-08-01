@@ -40,7 +40,9 @@ target_link_libraries(
         dots_client_support
         Dots::AppCli
         Dots::ClientRuntime
+        Dots::Prediction
         Dots::Presentation
+        Dots::RollbackPresentation
         Dots::Server
         MyCore::DebugUI
         MyCore::NetTransport

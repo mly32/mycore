@@ -270,6 +270,22 @@ InputMode parse_input_mode(std::string_view value,
     fail(source, field, "expected mouse, keyboard, or hybrid");
 }
 
+PredictionLogLevel parse_prediction_log_level(std::string_view value,
+                                              const std::filesystem::path& source,
+                                              std::string_view field) {
+    const auto normalized = uppercase(value);
+    if (normalized == "OFF") {
+        return PredictionLogLevel::Off;
+    }
+    if (normalized == "INFO") {
+        return PredictionLogLevel::Info;
+    }
+    if (normalized == "DEBUG") {
+        return PredictionLogLevel::Debug;
+    }
+    fail(source, field, "expected off, info, or debug");
+}
+
 PresentationMode parse_presentation_mode(std::string_view value,
                                          const std::filesystem::path& source,
                                          std::string_view field) {
@@ -286,6 +302,35 @@ PresentationMode parse_presentation_mode(std::string_view value,
     fail(source, field, "expected interpolated, fixed, or comparison");
 }
 
+RemotePresentationMode parse_remote_presentation_mode(std::string_view value,
+                                                      const std::filesystem::path& source,
+                                                      std::string_view field) {
+    const auto normalized = uppercase(value);
+    if (normalized == "EXTRAPOLATED") {
+        return RemotePresentationMode::Extrapolated;
+    }
+    if (normalized == "INTERPOLATED") {
+        return RemotePresentationMode::Interpolated;
+    }
+    if (normalized == "COMPARISON") {
+        return RemotePresentationMode::Comparison;
+    }
+    fail(source, field, "expected extrapolated, interpolated, or comparison");
+}
+
+SpectatorPresentationMode parse_spectator_presentation_mode(std::string_view value,
+                                                            const std::filesystem::path& source,
+                                                            std::string_view field) {
+    const auto normalized = uppercase(value);
+    if (normalized == "LIVE") {
+        return SpectatorPresentationMode::Live;
+    }
+    if (normalized == "DELAYED") {
+        return SpectatorPresentationMode::Delayed;
+    }
+    fail(source, field, "expected live or delayed");
+}
+
 void validate_binding_conflicts(const ClientConfig& config, const std::filesystem::path& source) {
     struct BindingView {
         std::string_view name;
@@ -296,6 +341,7 @@ void validate_binding_conflicts(const ClientConfig& config, const std::filesyste
         BindingView{"down", &config.controls.bindings.down},
         BindingView{"left", &config.controls.bindings.left},
         BindingView{"right", &config.controls.bindings.right},
+        BindingView{"split", &config.controls.bindings.split},
         BindingView{"follow", &config.controls.bindings.follow},
         BindingView{"respawn", &config.controls.bindings.respawn},
         BindingView{"zoom_in", &config.controls.bindings.zoom_in},
@@ -404,11 +450,19 @@ void parse_input(const toml::table& table,
 void parse_bindings(const toml::table& table,
                     ClientConfig& config,
                     const std::filesystem::path& source) {
-    validate_keys(
-        table,
-        {"up", "down", "left", "right", "follow", "respawn", "zoom_in", "zoom_out", "quit"},
-        source,
-        "bindings");
+    validate_keys(table,
+                  {"up",
+                   "down",
+                   "left",
+                   "right",
+                   "split",
+                   "follow",
+                   "respawn",
+                   "zoom_in",
+                   "zoom_out",
+                   "quit"},
+                  source,
+                  "bindings");
     if (table.contains("up")) {
         config.controls.bindings.up = read_binding(table, "up", source, "bindings.up");
     }
@@ -420,6 +474,9 @@ void parse_bindings(const toml::table& table,
     }
     if (table.contains("right")) {
         config.controls.bindings.right = read_binding(table, "right", source, "bindings.right");
+    }
+    if (table.contains("split")) {
+        config.controls.bindings.split = read_binding(table, "split", source, "bindings.split");
     }
     if (table.contains("follow")) {
         config.controls.bindings.follow = read_binding(table, "follow", source, "bindings.follow");
@@ -497,11 +554,18 @@ void parse_spectator(const toml::table& table,
                      ClientConfig& config,
                      const std::filesystem::path& source) {
     validate_keys(table,
-                  {"pan_speed_world_units_per_second",
+                  {"presentation_mode",
+                   "pan_speed_world_units_per_second",
                    "minimum_pixels_per_world_unit",
                    "maximum_pixels_per_world_unit"},
                   source,
                   "spectator");
+    if (table.contains("presentation_mode")) {
+        config.spectator.presentation_mode = parse_spectator_presentation_mode(
+            read_string(table, "presentation_mode", source, "spectator.presentation_mode"),
+            source,
+            "spectator.presentation_mode");
+    }
     if (table.contains("pan_speed_world_units_per_second")) {
         config.spectator.pan_speed_world_units_per_second =
             read_positive_float(table,
@@ -534,7 +598,14 @@ void parse_spectator(const toml::table& table,
 void parse_debug(const toml::table& table,
                  ClientConfig& config,
                  const std::filesystem::path& source) {
-    validate_keys(table, {"enabled", "presentation_mode"}, source, "debug");
+    validate_keys(table,
+                  {"enabled",
+                   "presentation_mode",
+                   "remote_presentation_mode",
+                   "prediction_log_level",
+                   "correction_history_count"},
+                  source,
+                  "debug");
     if (table.contains("enabled")) {
         config.debug.enabled = read_bool(table, "enabled", source, "debug.enabled");
     }
@@ -543,6 +614,27 @@ void parse_debug(const toml::table& table,
             read_string(table, "presentation_mode", source, "debug.presentation_mode"),
             source,
             "debug.presentation_mode");
+    }
+    if (table.contains("remote_presentation_mode")) {
+        config.debug.remote_presentation_mode = parse_remote_presentation_mode(
+            read_string(
+                table, "remote_presentation_mode", source, "debug.remote_presentation_mode"),
+            source,
+            "debug.remote_presentation_mode");
+    }
+    if (table.contains("prediction_log_level")) {
+        config.debug.prediction_log_level = parse_prediction_log_level(
+            read_string(table, "prediction_log_level", source, "debug.prediction_log_level"),
+            source,
+            "debug.prediction_log_level");
+    }
+    if (table.contains("correction_history_count")) {
+        const auto value = read_integer(
+            table, "correction_history_count", source, "debug.correction_history_count");
+        if (value <= 0 || value > static_cast<std::int64_t>(kMaximumCorrectionHistoryCount)) {
+            fail(source, "debug.correction_history_count", "must be in the range 1..64");
+        }
+        config.debug.correction_history_count = static_cast<std::size_t>(value);
     }
 }
 
@@ -594,6 +686,7 @@ ClientConfig default_client_config() {
         .down = {Key::S, Key::Down},
         .left = {Key::A, Key::Left},
         .right = {Key::D, Key::Right},
+        .split = {Key::Space},
         .follow = {Key::F},
         .respawn = {Key::R, Key::Enter},
         .zoom_in = {Key::PageUp},

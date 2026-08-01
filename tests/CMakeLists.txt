@@ -46,6 +46,16 @@ target_link_libraries(
 mycore_configure_test_executable(mycore_assets_tests)
 catch_discover_tests(mycore_assets_tests)
 
+add_executable(mycore_rollback_tests mycore_rollback_tests.cpp)
+target_link_libraries(
+    mycore_rollback_tests
+    PRIVATE
+        MyCore::Rollback
+        Catch2::Catch2WithMain
+)
+mycore_configure_test_executable(mycore_rollback_tests)
+catch_discover_tests(mycore_rollback_tests)
+
 add_executable(mycore_platform_sdl_tests mycore_platform_sdl_tests.cpp)
 target_link_libraries(
     mycore_platform_sdl_tests
@@ -115,6 +125,7 @@ target_link_libraries(
     dots_session_tests
     PRIVATE
         Dots::ClientRuntime
+        Dots::Prediction
         Dots::Server
         Catch2::Catch2WithMain
 )
@@ -137,6 +148,25 @@ target_link_libraries(
 mycore_configure_test_executable(dots_simulation_tests)
 catch_discover_tests(dots_simulation_tests)
 
+add_executable(dots_world_prediction_tests dots_world_prediction_tests.cpp)
+target_link_libraries(
+    dots_world_prediction_tests
+    PRIVATE
+        Dots::Prediction
+        Catch2::Catch2WithMain
+)
+mycore_configure_test_executable(dots_world_prediction_tests)
+catch_discover_tests(dots_world_prediction_tests)
+
+add_executable(dots_rollback_workload dots_rollback_workload.cpp)
+target_link_libraries(
+    dots_rollback_workload
+    PRIVATE
+        Dots::Prediction
+)
+mycore_configure_test_executable(dots_rollback_workload)
+add_test(NAME dots_rollback_workload_verify COMMAND dots_rollback_workload --iterations 1)
+
 add_executable(dots_presentation_tests dots_presentation_tests.cpp)
 target_link_libraries(
     dots_presentation_tests
@@ -146,6 +176,16 @@ target_link_libraries(
 )
 mycore_configure_test_executable(dots_presentation_tests)
 catch_discover_tests(dots_presentation_tests)
+
+add_executable(dots_rollback_presentation_tests dots_rollback_presentation_tests.cpp)
+target_link_libraries(
+    dots_rollback_presentation_tests
+    PRIVATE
+        Dots::RollbackPresentation
+        Catch2::Catch2WithMain
+)
+mycore_configure_test_executable(dots_rollback_presentation_tests)
+catch_discover_tests(dots_rollback_presentation_tests)
 
 add_executable(dots_remote_presentation_tests dots_remote_presentation_tests.cpp)
 target_link_libraries(

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "dots/presentation/remote_presentation.hpp"
+#include "dots/presentation/presentation.hpp"
 #include "dots/protocol/ids.hpp"
 #include "mycore/math/vector2.hpp"
 
@@ -32,8 +32,8 @@ public:
     void enter(mycore::math::Vector2 initial_position,
                float initial_pixels_per_world_unit,
                protocol::EntityId confirmed_follow_entity_id,
-               const RemotePresentationFrame& frame);
-    void update(const RemotePresentationFrame& frame,
+               const FrameData& frame);
+    void update(const FrameData& frame,
                 protocol::EntityId confirmed_follow_entity_id,
                 SpectatorCameraInput input,
                 float elapsed_seconds);
@@ -43,8 +43,8 @@ public:
     [[nodiscard]] float pixels_per_world_unit() const noexcept;
 
 private:
-    [[nodiscard]] static const RemoteEntitySample*
-    find_confirmed_follow(const RemotePresentationFrame& frame,
+    [[nodiscard]] static const CircleInstance*
+    find_confirmed_follow(const FrameData& frame,
                           protocol::EntityId confirmed_follow_entity_id) noexcept;
 
     SpectatorCameraSettings settings_;

@@ -72,6 +72,27 @@ TEST_CASE("Ticks support arithmetic and duration conversion", "[time][tick]") {
     REQUIRE(mycore::time::ticks_to_duration(TickDelta{3}, 20ms) == 60ms);
 }
 
+TEST_CASE("Periodic deadlines discard producer backlog after an overrun",
+          "[time][periodic-deadline]") {
+    using namespace std::chrono_literals;
+
+    const auto start = mycore::time::MonotonicTimePoint{1s};
+    const auto on_time = mycore::time::advance_periodic_deadline(start, 20ms, start + 5ms);
+    CHECK(on_time.time == start + 20ms);
+    CHECK_FALSE(on_time.discarded_backlog);
+
+    const auto exact_deadline = mycore::time::advance_periodic_deadline(start, 20ms, start + 20ms);
+    CHECK(exact_deadline.time == start + 40ms);
+    CHECK(exact_deadline.discarded_backlog);
+
+    const auto late = mycore::time::advance_periodic_deadline(start, 20ms, start + 95ms);
+    CHECK(late.time == start + 115ms);
+    CHECK(late.discarded_backlog);
+
+    CHECK_THROWS_AS(mycore::time::advance_periodic_deadline(start, 0ns, start),
+                    std::invalid_argument);
+}
+
 TEST_CASE("Fixed-step accumulation reports and can discard capped backlog", "[time][fixed-step]") {
     using namespace std::chrono_literals;
 

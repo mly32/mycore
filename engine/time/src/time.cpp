@@ -16,6 +16,21 @@ void require_positive_step(Duration tick_duration) {
 
 } // namespace
 
+PeriodicDeadline
+advance_periodic_deadline(MonotonicTimePoint previous, Duration period, MonotonicTimePoint now) {
+    require_positive_step(period);
+    const auto clock_period = std::chrono::duration_cast<MonotonicTimePoint::duration>(period);
+    if (clock_period <= MonotonicTimePoint::duration::zero()) {
+        throw std::invalid_argument{"period is shorter than the monotonic clock resolution"};
+    }
+
+    const auto phase_preserving_deadline = previous + clock_period;
+    if (phase_preserving_deadline > now) {
+        return {.time = phase_preserving_deadline, .discarded_backlog = false};
+    }
+    return {.time = now + clock_period, .discarded_backlog = true};
+}
+
 TickDelta duration_to_ticks(Duration duration, Duration tick_duration) {
     require_positive_step(tick_duration);
     if (duration < Duration::zero()) {

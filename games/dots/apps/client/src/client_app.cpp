@@ -2,7 +2,10 @@
 
 #include "dots/client/controls.hpp"
 #include "dots/client_runtime/client_runtime.hpp"
+#include "dots/client_runtime/command_timing.hpp"
+#include "dots/prediction/prediction.hpp"
 #include "dots/presentation/presentation.hpp"
+#include "dots/presentation/rollback_consequences.hpp"
 #include "dots/presentation/spectator_camera.hpp"
 #include "dots/protocol/codec.hpp"
 #include "dots/server/server_runtime.hpp"
@@ -35,6 +38,7 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace dots::client {
 namespace {
@@ -106,7 +110,18 @@ struct DebugWorldStats {
         std::uint32_t server_tick{};
         std::uint32_t local_input_tick{};
         dots::client_runtime::PredictionStatistics prediction;
+        dots::client_runtime::InputFlowStatistics input_flow;
+        dots::client_runtime::CommandTimingStatistics command_timing;
         dots::presentation::RemotePresentationStatistics remote_presentation;
+        dots::presentation::RemoteExtrapolationStatistics remote_extrapolation;
+        dots::presentation::ConsequencePresentationStatistics consequences;
+        dots::presentation::PersistentPresentationStatistics persistent_presentation;
+        std::span<const dots::client_runtime::DebugFaultReceipt> fault_receipts;
+        RemotePresentationMode remote_presentation_mode{RemotePresentationMode::Extrapolated};
+        SpectatorPresentationMode spectator_presentation_mode{SpectatorPresentationMode::Live};
+        bool spectator_live_fallback_active{};
+        double spectator_live_fallback_ticks{};
+        bool spectator_live_fallback_holding{};
         std::optional<dots::protocol::EntityId> representative_remote_entity;
         dots::presentation::RemoteEntityEndpoints representative_remote_endpoints;
         std::optional<Vector2> latest_authoritative_sample;
@@ -114,6 +129,10 @@ struct DebugWorldStats {
         std::optional<Vector2> presentation_position;
         std::optional<Vector2> smoothing_offset;
         std::optional<Vector2> last_nonzero_movement_input;
+        std::size_t retained_correction_count{};
+        std::size_t correction_history_capacity{};
+        std::size_t retained_local_correction_count{};
+        std::size_t retained_remote_correction_count{};
     };
     std::optional<NetworkSession> network_session;
     struct GameplaySession {
@@ -137,7 +156,7 @@ constexpr auto kFaultCompletionReceiptDuration = std::chrono::seconds{2};
 
 struct PredictionDebugControls {
     bool show_prediction_layers{true};
-    bool show_replay_path{true};
+    bool show_replay_path{};
     bool show_remote_endpoint_layers{true};
     std::optional<Vector2> requested_prediction_error;
     bool drop_input_packets_requested{};
@@ -222,6 +241,17 @@ session_mode_name(dots::protocol::SessionMode mode) noexcept {
     return "UNKNOWN";
 }
 
+[[nodiscard]] constexpr std::string_view join_role_name(dots::protocol::JoinRole role) noexcept {
+    using dots::protocol::JoinRole;
+    switch (role) {
+    case JoinRole::Player:
+        return "PLAYER";
+    case JoinRole::Spectator:
+        return "SPECTATOR";
+    }
+    return "UNKNOWN";
+}
+
 [[nodiscard]] constexpr std::string_view
 respawn_result_name(dots::protocol::RespawnResult result) noexcept {
     using dots::protocol::RespawnResult;
@@ -240,7 +270,82 @@ respawn_result_name(dots::protocol::RespawnResult result) noexcept {
     return "UNKNOWN";
 }
 
+[[nodiscard]] constexpr std::string_view
+consequence_policy_name(mycore::rollback::ConsequencePolicy policy) noexcept {
+    using mycore::rollback::ConsequencePolicy;
+    switch (policy) {
+    case ConsequencePolicy::PredictOnce:
+        return "PREDICT ONCE";
+    case ConsequencePolicy::PredictCancelable:
+        return "CANCELABLE";
+    case ConsequencePolicy::ConfirmOnce:
+        return "CONFIRM ONCE";
+    }
+    return "UNKNOWN";
+}
+
+[[nodiscard]] constexpr std::string_view
+prediction_profile_name(dots::prediction::PredictionProfile profile) noexcept {
+    using dots::prediction::PredictionProfile;
+    switch (profile) {
+    case PredictionProfile::InteractionClosure:
+        return "INTERACTION CLOSURE";
+    case PredictionProfile::FullReplicated:
+        return "FULL REPLICATED";
+    case PredictionProfile::OwnedGameplay:
+        return "OWNED GAMEPLAY";
+    }
+    return "UNKNOWN";
+}
+
+[[nodiscard]] constexpr std::string_view
+prediction_fallback_name(dots::prediction::PredictionFallbackReason reason) noexcept {
+    using dots::prediction::PredictionFallbackReason;
+    switch (reason) {
+    case PredictionFallbackReason::None:
+        return "NONE";
+    case PredictionFallbackReason::IncompleteClosure:
+        return "INCOMPLETE CLOSURE";
+    }
+    return "UNKNOWN";
+}
+
+[[nodiscard]] constexpr std::string_view
+debug_fault_kind_name(dots::client_runtime::DebugFaultKind kind) noexcept {
+    using dots::client_runtime::DebugFaultKind;
+    switch (kind) {
+    case DebugFaultKind::PositionDivergence:
+        return "POSITION";
+    case DebugFaultKind::InputPacketLoss:
+        return "INPUT LOSS";
+    }
+    return "UNKNOWN";
+}
+
+[[nodiscard]] constexpr std::string_view
+debug_fault_phase_name(dots::client_runtime::DebugFaultPhase phase) noexcept {
+    using dots::client_runtime::DebugFaultPhase;
+    switch (phase) {
+    case DebugFaultPhase::Armed:
+        return "ARMED";
+    case DebugFaultPhase::Triggered:
+        return "TRIGGERED";
+    case DebugFaultPhase::Completed:
+        return "COMPLETED";
+    }
+    return "UNKNOWN";
+}
+
 void draw_input_sequence(std::string_view label, dots::protocol::InputSequenceId value) {
+    if (value.is_valid()) {
+        ImGui::Text("%.*s: %u", static_cast<int>(label.size()), label.data(), value.value());
+    } else {
+        ImGui::Text("%.*s: none", static_cast<int>(label.size()), label.data());
+    }
+}
+
+void draw_authority_receipt_sequence(std::string_view label,
+                                     dots::protocol::AuthorityReceiptSequenceId value) {
     if (value.is_valid()) {
         ImGui::Text("%.*s: %u", static_cast<int>(label.size()), label.data(), value.value());
     } else {
@@ -485,18 +590,125 @@ void draw_prediction_debug_tab(const DebugWorldStats& world) {
     }
 
     const auto& session = *world.network_session;
+    const auto& prediction = session.prediction;
+    const auto& input_flow = session.input_flow;
+    const auto requested_role = join_role_name(input_flow.requested_role);
+    ImGui::Text("Join role requested: %.*s",
+                static_cast<int>(requested_role.size()),
+                requested_role.data());
+    if (input_flow.accepted_role) {
+        const auto accepted_role = join_role_name(*input_flow.accepted_role);
+        ImGui::Text("Join role accepted: %.*s",
+                    static_cast<int>(accepted_role.size()),
+                    accepted_role.data());
+    } else {
+        ImGui::TextUnformatted("Join role accepted: pending");
+    }
+    draw_input_sequence("Input ACK", input_flow.acknowledged_through);
+    draw_input_sequence("Receive grant", input_flow.receive_through);
+    draw_input_sequence("Transmitted through", input_flow.transmitted_through);
+    ImGui::Text("Unsent / high-water: %zu / %zu",
+                input_flow.unsent_count,
+                input_flow.unsent_high_water_mark);
+    if (input_flow.production_paused) {
+        ImGui::TextColored({1.0F, 0.55F, 0.2F, 1.0F}, "Input production: PAUSED");
+    } else {
+        ImGui::TextColored({0.35F, 0.9F, 0.45F, 1.0F}, "Input production: RUNNING");
+    }
+    ImGui::Text("Pauses / paused time / status: %llu / %lld ms / %llu",
+                static_cast<unsigned long long>(input_flow.pause_count),
+                static_cast<long long>(input_flow.accumulated_paused_time.count()),
+                static_cast<unsigned long long>(input_flow.status_count));
+    const auto requested_profile = prediction_profile_name(prediction.requested_profile);
+    const auto active_profile = prediction_profile_name(prediction.active_profile);
+    const auto fallback = prediction_fallback_name(prediction.fallback_reason);
+    ImGui::Text("Profile requested / active: %.*s / %.*s",
+                static_cast<int>(requested_profile.size()),
+                requested_profile.data(),
+                static_cast<int>(active_profile.size()),
+                active_profile.data());
+    ImGui::Text("Fallback / mechanics / domains / causes: %.*s / 0x%X / 0x%X / 0x%X",
+                static_cast<int>(fallback.size()),
+                fallback.data(),
+                prediction.mechanics,
+                prediction.required_domains,
+                prediction.required_causal_channels);
+    ImGui::Separator();
+    ImGui::TextUnformatted("Authority receipt publication");
+    draw_authority_receipt_sequence("Accepted through",
+                                    prediction.authority_receipts_accepted_through);
+    draw_authority_receipt_sequence("Published through",
+                                    prediction.authority_receipts_published_through);
+    draw_authority_receipt_sequence("Server retired through",
+                                    prediction.authority_receipts_server_retired_through);
+    ImGui::Text("Retained / awaiting publication: %zu / %zu",
+                prediction.authority_receipt_retained_count,
+                prediction.authority_receipt_pending_publication_count);
+    ImGui::Text("Queued event batches: %zu", prediction.pending_prediction_event_batch_count);
+    const auto& receipt_rejections = prediction.authority_receipt_rejections;
+    ImGui::Text("Receipt reject retire/gap/conflict/duplicate/capacity: "
+                "%llu/%llu/%llu/%llu/%llu",
+                static_cast<unsigned long long>(receipt_rejections.invalid_retirement_count),
+                static_cast<unsigned long long>(receipt_rejections.sequence_gap_count),
+                static_cast<unsigned long long>(receipt_rejections.conflicting_receipt_count),
+                static_cast<unsigned long long>(receipt_rejections.duplicate_event_key_count),
+                static_cast<unsigned long long>(receipt_rejections.capacity_exceeded_count));
+    ImGui::Text("Event queue overflow: %llu",
+                static_cast<unsigned long long>(prediction.prediction_event_queue_overflow_count));
+    const auto& consequences = session.consequences;
+    ImGui::Separator();
+    ImGui::TextUnformatted("Rollback consequences");
+    ImGui::Text("Batches / visible cues / stinger: %llu / %zu / %llu",
+                static_cast<unsigned long long>(consequences.consumed_batch_count),
+                consequences.visible_cue_count,
+                static_cast<unsigned long long>(consequences.stinger_sequence));
+    ImGui::Text("Transitions first / revised / retracted / confirmed / authority: "
+                "%llu / %llu / %llu / %llu / %llu",
+                static_cast<unsigned long long>(consequences.transition_counts[0]),
+                static_cast<unsigned long long>(consequences.transition_counts[1]),
+                static_cast<unsigned long long>(consequences.transition_counts[2]),
+                static_cast<unsigned long long>(consequences.transition_counts[3]),
+                static_cast<unsigned long long>(consequences.transition_counts[4]));
+    const auto& ledger = consequences.ledger;
+    ImGui::Text("Ledger replay/external proof: %zu / %zu; pruned: %llu",
+                ledger.replay_retirement_evidence_count,
+                ledger.external_retirement_evidence_count,
+                static_cast<unsigned long long>(ledger.pruned_occurrence_count));
+    ImGui::Text("Ledger once/confirmed/cancel active/inactive: %zu / %zu / %zu / %zu",
+                ledger.predict_once_key_count,
+                ledger.confirm_once_key_count,
+                ledger.cancelable_active_key_count,
+                ledger.cancelable_inactive_key_count);
+    for (const auto& handler : consequences.handlers) {
+        const auto policy = consequence_policy_name(handler.policy);
+        const auto& values = handler.statistics;
+        ImGui::Text("H%zu %.*s d/s/r/x/c/f: %llu/%llu/%llu/%llu/%llu/%llu",
+                    handler.handler_index,
+                    static_cast<int>(policy.size()),
+                    policy.data(),
+                    static_cast<unsigned long long>(values.delivered_count),
+                    static_cast<unsigned long long>(values.suppressed_count),
+                    static_cast<unsigned long long>(values.revised_count),
+                    static_cast<unsigned long long>(values.canceled_count),
+                    static_cast<unsigned long long>(values.confirmed_count),
+                    static_cast<unsigned long long>(values.failure_count));
+    }
+
     if (!session.local_prediction_available || !session.latest_authoritative_sample ||
         !session.predicted_position || !session.presentation_position ||
         !session.smoothing_offset) {
-        mycore::debug_ui::description("Prediction diagnostics are unavailable while spectating.");
+        mycore::debug_ui::description(
+            "Local prediction diagnostics are unavailable while spectating.");
         return;
     }
-    const auto& prediction = session.prediction;
+    ImGui::Separator();
     ImGui::TextUnformatted("Input history and rollback");
     ImGui::Text("Redundancy: %s", prediction.input_redundancy_enabled ? "ENABLED" : "DISABLED");
-    draw_input_sequence("Last input sent", prediction.last_input_sent);
+    draw_input_sequence("Last input accepted", prediction.last_input_sent);
     draw_input_sequence("Last input acknowledged", prediction.last_input_acknowledged);
+    draw_input_sequence("Timeline input submitted", prediction.last_timeline_input_submitted);
     ImGui::Text("Command lead: %zu", prediction.unacknowledged_input_count);
+    ImGui::Text("Deferred outside timeline: %zu", prediction.deferred_prediction_input_count);
     const auto history_percent = prediction.history_capacity > 0
                                      ? (100.0F * static_cast<float>(prediction.history_count)) /
                                            static_cast<float>(prediction.history_capacity)
@@ -507,33 +719,128 @@ void draw_prediction_debug_tab(const DebugWorldStats& world) {
                        prediction.history_capacity,
                        history_percent,
                        prediction.history_high_water_mark);
+    ImGui::Text("Scope epoch / horizon: %llu / %llu ticks",
+                static_cast<unsigned long long>(prediction.scope_epoch),
+                static_cast<unsigned long long>(prediction.scope_replay_horizon_ticks));
+    ImGui::Text("Scope owners / event owners / players / food: %zu / %zu / %zu / %zu",
+                prediction.scope_owner_count,
+                prediction.scope_event_owner_count,
+                prediction.scope_player_count,
+                prediction.scope_food_count);
+    ImGui::Text("Scope rebases: %llu",
+                static_cast<unsigned long long>(prediction.scope_rebase_count));
     ImGui::Text("Server pending: %u, high %u",
                 static_cast<unsigned int>(prediction.latest_server_pending_input_count),
                 static_cast<unsigned int>(prediction.server_pending_input_high_water_mark));
+    const auto& command_timing = session.command_timing;
+    if (command_timing.latest_depth) {
+        ImGui::Text("Command buffer target / latest / EWMA: %.1f / %u / %.3f",
+                    command_timing.target_depth,
+                    static_cast<unsigned int>(*command_timing.latest_depth),
+                    command_timing.smoothed_depth);
+    } else {
+        ImGui::Text("Command buffer target / latest / EWMA: %.1f / unavailable / %.3f",
+                    command_timing.target_depth,
+                    command_timing.smoothed_depth);
+    }
+    const auto phase_milliseconds =
+        std::chrono::duration<double, std::milli>{command_timing.accumulated_phase_correction};
+    ImGui::Text("Cadence scale / phase: %.4f / %.3f ms",
+                command_timing.rate_scale,
+                phase_milliseconds.count());
+    ImGui::Text("Depth low / high / prefill / overrun: %llu / %llu / %zu / %llu",
+                static_cast<unsigned long long>(command_timing.low_depth_observation_count),
+                static_cast<unsigned long long>(command_timing.high_depth_observation_count),
+                command_timing.prefill_input_count,
+                static_cast<unsigned long long>(command_timing.discarded_backlog_count));
     draw_snapshot_sequence("Rollback snapshot", prediction.rollback_snapshot_id);
     ImGui::Text("Rollback server tick: %u", prediction.rollback_server_tick);
+    ImGui::Text("Authority / predicted / lead ticks: %llu / %llu / %llu",
+                static_cast<unsigned long long>(prediction.authoritative_tick),
+                static_cast<unsigned long long>(prediction.predicted_tick),
+                static_cast<unsigned long long>(prediction.prediction_lead_ticks));
     draw_input_sequence("Rollback input ACK", prediction.rollback_input_acknowledgement);
+    draw_input_sequence("Replay first input", prediction.replay_first_input);
+    draw_input_sequence("Replay last input", prediction.replay_last_input);
+    ImGui::Text("Checkpoint schema / storage: %u / %zu bytes",
+                static_cast<unsigned int>(prediction.checkpoint_schema_id),
+                prediction.checkpoint_storage_bytes);
+    ImGui::Text("Digest replicated / authority / predicted: %016llX / %016llX / %016llX",
+                static_cast<unsigned long long>(prediction.replicated_checkpoint_digest),
+                static_cast<unsigned long long>(prediction.authoritative_prediction_digest),
+                static_cast<unsigned long long>(prediction.predicted_digest));
     ImGui::Text("Replay last / total / max: %zu / %llu / %zu",
                 prediction.latest_replay_count,
                 static_cast<unsigned long long>(prediction.total_replayed_input_count),
                 prediction.maximum_replay_count);
-    ImGui::Text("Replay ms last / avg / max: %.3f / %.3f / %.3f",
+    ImGui::Text("Replay ms last / avg / p50 / p95 / p99 / max: "
+                "%.3f / %.3f / %.3f / %.3f / %.3f / %.3f",
                 prediction.latest_replay_milliseconds,
                 prediction.average_replay_milliseconds,
+                prediction.replay_p50_milliseconds,
+                prediction.replay_p95_milliseconds,
+                prediction.replay_p99_milliseconds,
                 prediction.maximum_replay_milliseconds);
-    ImGui::Text("Replay over budget / hard resync: %llu / %llu",
+    ImGui::Text("Replay over budget / hard resync / ACK catch-up: %llu / %llu / %llu",
                 static_cast<unsigned long long>(prediction.replay_over_budget_count),
-                static_cast<unsigned long long>(prediction.hard_resync_count));
+                static_cast<unsigned long long>(prediction.hard_resync_count),
+                static_cast<unsigned long long>(prediction.acknowledgement_catch_up_count));
+    ImGui::Text("Diff rules/allocator/structural: %s / %s / %s",
+                prediction.latest_rules_changed ? "YES" : "NO",
+                prediction.latest_allocator_changed ? "YES" : "NO",
+                prediction.latest_structural_change ? "YES" : "NO");
+    ImGui::Text("Diff max position/mass: %.4f / %.4f; owner/player/food: %zu/%zu/%zu",
+                prediction.latest_maximum_position_delta,
+                prediction.latest_maximum_mass_delta,
+                prediction.latest_owner_difference_count,
+                prediction.latest_player_difference_count,
+                prediction.latest_food_difference_count);
+    ImGui::Text(
+        "Entity create/remove: %zu/%zu; spawns pending/matched/rejected/authority/ambiguous: "
+        "%zu/%llu/%llu/%llu/%llu",
+        prediction.latest_entity_creation_count,
+        prediction.latest_entity_removal_count,
+        prediction.pending_predicted_spawn_count,
+        static_cast<unsigned long long>(prediction.matched_predicted_spawn_count),
+        static_cast<unsigned long long>(prediction.rejected_predicted_spawn_count),
+        static_cast<unsigned long long>(prediction.authority_only_spawn_count),
+        static_cast<unsigned long long>(prediction.ambiguous_predicted_spawn_count));
+    ImGui::Text("Remote assumptions: %zu, source ticks %llu..%llu, applied %llu..%llu",
+                prediction.remote_assumption_count,
+                static_cast<unsigned long long>(prediction.remote_assumption_source_tick_min),
+                static_cast<unsigned long long>(prediction.remote_assumption_source_tick_max),
+                static_cast<unsigned long long>(prediction.remote_assumption_applied_tick_first),
+                static_cast<unsigned long long>(prediction.remote_assumption_applied_tick_last));
 
     ImGui::Separator();
     ImGui::TextUnformatted("Correction and presentation");
     ImGui::Text("Reconciliations / corrections: %llu / %llu",
                 static_cast<unsigned long long>(prediction.reconciliation_count),
                 static_cast<unsigned long long>(prediction.nonzero_correction_count));
+    ImGui::Text("Remote entity corrections last / total: %zu / %llu",
+                prediction.latest_remote_entity_correction_count,
+                static_cast<unsigned long long>(prediction.remote_entity_correction_count));
     ImGui::Text("Correction last / max: %.4f / %.4f units",
                 prediction.latest_correction_distance,
                 prediction.maximum_correction_distance);
+    ImGui::Text("Remote correction last / max: %.4f / %.4f units",
+                prediction.latest_remote_correction_distance,
+                prediction.maximum_remote_correction_distance);
     ImGui::Text("Corrections/min: %.0f", prediction.corrections_per_minute);
+    ImGui::Text("Correction ghosts: %zu / %zu (local %zu, remote %zu)",
+                session.retained_correction_count,
+                session.correction_history_capacity,
+                session.retained_local_correction_count,
+                session.retained_remote_correction_count);
+    const auto& persistent = session.persistent_presentation;
+    ImGui::Text("Presentation tracks / fades / trail: %zu / %zu / %zu",
+                persistent.track_count,
+                persistent.structural_fade_count,
+                persistent.motion_trail_count);
+    ImGui::Text("Source handoffs / smoothed / remaps: %llu / %llu / %llu",
+                static_cast<unsigned long long>(persistent.source_handoff_count),
+                static_cast<unsigned long long>(persistent.smoothed_correction_count),
+                static_cast<unsigned long long>(persistent.identity_remap_count));
     ImGui::Text("Authority sample: (%.3f, %.3f)",
                 session.latest_authoritative_sample->x,
                 session.latest_authoritative_sample->y);
@@ -552,13 +859,39 @@ void draw_prediction_debug_tab(const DebugWorldStats& world) {
 }
 
 void draw_interpolation_debug_tab(const DebugWorldStats& world) {
-    ImGui::TextUnformatted("Remote interpolation");
+    ImGui::TextUnformatted("Remote presentation");
     if (!world.network_session) {
         mycore::debug_ui::description("Interpolation diagnostics require a network session.");
         return;
     }
     const auto& session = *world.network_session;
     const auto& remote = session.remote_presentation;
+    const auto remote_mode = remote_presentation_mode_name(session.remote_presentation_mode);
+    ImGui::Text("Playing mode: %.*s", static_cast<int>(remote_mode.size()), remote_mode.data());
+    const auto spectator_mode =
+        spectator_presentation_mode_name(session.spectator_presentation_mode);
+    ImGui::Text(
+        "Spectator mode: %.*s", static_cast<int>(spectator_mode.size()), spectator_mode.data());
+    if (session.spectator_live_fallback_active) {
+        ImGui::Text("Live underrun fallback: %.2f ticks%s",
+                    session.spectator_live_fallback_ticks,
+                    session.spectator_live_fallback_holding ? " (HELD AT CAP)" : "");
+    } else {
+        ImGui::TextUnformatted("Live underrun fallback: inactive");
+    }
+    const auto& extrapolation = session.remote_extrapolation;
+    ImGui::Text("Extrapolation age / ticks: %.1f ms / %.2f",
+                extrapolation.sample_age_milliseconds,
+                extrapolation.extrapolation_ticks);
+    ImGui::Text("Extrapolating / held / static: %zu / %zu / %zu",
+                extrapolation.extrapolated_player_count,
+                extrapolation.held_player_count,
+                extrapolation.static_entity_count);
+    ImGui::Text("Extrapolation samples accepted / rejected: %llu / %llu",
+                static_cast<unsigned long long>(extrapolation.accepted_snapshot_count),
+                static_cast<unsigned long long>(extrapolation.rejected_snapshot_count));
+    ImGui::Separator();
+    ImGui::TextUnformatted("Delayed interpolation fallback");
     ImGui::Text("Buffer: %zu / %zu", remote.sample_count, remote.sample_capacity);
     ImGui::Text(
         "Coverage: %u ticks / %.1f ms", remote.coverage_ticks, remote.coverage_milliseconds);
@@ -592,6 +925,20 @@ void draw_interpolation_debug_tab(const DebugWorldStats& world) {
     ImGui::Text("Hold maximum / total: %lld / %lld ms",
                 static_cast<long long>(remote.maximum_hold_duration.count()),
                 static_cast<long long>(remote.total_hold_duration.count()));
+    ImGui::Text("Observed / underrun share: %lld ms / %.2f%%",
+                static_cast<long long>(remote.observation_duration.count()),
+                remote.hold_time_percentage);
+    ImGui::Text("Live displayed pause: %s", remote.post_cap_holding ? "YES" : "NO");
+    ImGui::Text("Live pause episodes / recoveries: %llu / %llu",
+                static_cast<unsigned long long>(remote.post_cap_hold_episode_count),
+                static_cast<unsigned long long>(remote.post_cap_hold_recovery_count));
+    ImGui::Text("Live pause current / last: %lld / %lld ms",
+                static_cast<long long>(remote.current_post_cap_hold_duration.count()),
+                static_cast<long long>(remote.last_post_cap_hold_duration.count()));
+    ImGui::Text("Live pause maximum / total / share: %lld / %lld ms / %.2f%%",
+                static_cast<long long>(remote.maximum_post_cap_hold_duration.count()),
+                static_cast<long long>(remote.total_post_cap_hold_duration.count()),
+                remote.post_cap_hold_time_percentage);
     ImGui::Text("Rate corrections / rebases: %llu / %llu",
                 static_cast<unsigned long long>(remote.rate_correction_count),
                 static_cast<unsigned long long>(remote.hard_rebase_count));
@@ -606,6 +953,8 @@ void draw_interpolation_debug_tab(const DebugWorldStats& world) {
                         older.position.x,
                         older.position.y,
                         older.mass);
+        } else {
+            ImGui::TextUnformatted("Older endpoint: unavailable");
         }
         if (session.representative_remote_endpoints.newer) {
             const auto& newer = *session.representative_remote_endpoints.newer;
@@ -613,11 +962,18 @@ void draw_interpolation_debug_tab(const DebugWorldStats& world) {
                         newer.position.x,
                         newer.position.y,
                         newer.mass);
+        } else {
+            ImGui::TextUnformatted("Newer endpoint: unavailable");
         }
     } else {
         ImGui::TextUnformatted("Example remote entity: unavailable");
+        ImGui::TextUnformatted("Older endpoint: unavailable");
+        ImGui::TextUnformatted("Newer endpoint: unavailable");
     }
-    mycore::debug_ui::description("Remote fill: delayed known authority; no extrapolation.");
+    mycore::debug_ui::description(
+        "Playing extrapolation advances only known movement and launch for six ticks, then "
+        "holds. Spectators normally interpolate known authority; live covers underruns for six "
+        "ticks before the displayed world pauses.");
 }
 
 void draw_prediction_tools_tab(const DebugWorldStats& world,
@@ -681,11 +1037,29 @@ void draw_prediction_tools_tab(const DebugWorldStats& world,
             prediction_controls->drop_input_packets_requested = true;
         }
         ImGui::EndDisabled();
+        if (!session.fault_receipts.empty()) {
+            ImGui::TextUnformatted("Bounded fault receipts");
+            const auto first = session.fault_receipts.size() > 6 ? session.fault_receipts.size() - 6
+                                                                 : std::size_t{};
+            for (auto index = first; index < session.fault_receipts.size(); ++index) {
+                const auto& receipt = session.fault_receipts[index];
+                const auto kind = debug_fault_kind_name(receipt.kind);
+                const auto phase = debug_fault_phase_name(receipt.phase);
+                ImGui::Text("#%llu %.*s %.*s %zu/%zu",
+                            static_cast<unsigned long long>(receipt.id),
+                            static_cast<int>(kind.size()),
+                            kind.data(),
+                            static_cast<int>(phase.size()),
+                            phase.data(),
+                            receipt.observed_count,
+                            receipt.requested_count);
+            }
+        }
 
         ImGui::Separator();
         ImGui::TextUnformatted("Visual layers");
         ImGui::Checkbox("Show prediction layers", &prediction_controls->show_prediction_layers);
-        ImGui::Checkbox("Show correction replay", &prediction_controls->show_replay_path);
+        ImGui::Checkbox("Show corrected roll-forward path", &prediction_controls->show_replay_path);
         ImGui::Checkbox("Show remote endpoint outlines",
                         &prediction_controls->show_remote_endpoint_layers);
         if (ImGui::Button("Clear correction ghosts")) {
@@ -693,7 +1067,8 @@ void draw_prediction_tools_tab(const DebugWorldStats& world,
         }
         mycore::debug_ui::description("White: predicted position");
         mycore::debug_ui::description("Orange: latest authoritative sample");
-        mycore::debug_ui::description("Magenta: pre-correction; Purple: replay");
+        mycore::debug_ui::description(
+            "Magenta: local/remote pre-correction (fades with age); Purple: replay");
         mycore::debug_ui::description("Cyan / Blue: older / newer remote snapshot");
         mycore::debug_ui::description("Fill: presentation position");
         return;
@@ -734,6 +1109,21 @@ void draw_debug_overlay(const ClientConfig& config,
         } else {
             ImGui::TextDisabled("Authoritative player: unavailable");
         }
+        if (world.gameplay_session && world.gameplay_session->respawn_available_tick) {
+            const auto& gameplay = *world.gameplay_session;
+            if (gameplay.respawn_seconds_remaining && *gameplay.respawn_seconds_remaining > 0.0) {
+                ImGui::TextColored({1.0F, 0.75F, 0.25F, 1.0F},
+                                   "Respawn: %.1f s (tick %u)",
+                                   *gameplay.respawn_seconds_remaining,
+                                   *gameplay.respawn_available_tick);
+            } else if (gameplay.respawn_seconds_remaining) {
+                ImGui::TextColored({0.35F, 0.9F, 0.45F, 1.0F},
+                                   "Respawn: eligible (tick %u)",
+                                   *gameplay.respawn_available_tick);
+            } else {
+                ImGui::Text("Respawn: unavailable (tick %u)", *gameplay.respawn_available_tick);
+            }
+        }
     }
     ImGui::End();
 
@@ -770,7 +1160,7 @@ void draw_debug_overlay(const ClientConfig& config,
     ImGui::SetNextWindowBgAlpha(0.82F);
     if (ImGui::Begin("Dots diagnostics", nullptr, kWindowFlags)) {
         if (ImGui::BeginTabBar("Dots diagnostics tabs")) {
-            if (ImGui::BeginTabItem("Prediction")) {
+            if (ImGui::BeginTabItem("Rollback")) {
                 draw_prediction_debug_tab(world);
                 ImGui::EndTabItem();
             }
@@ -786,6 +1176,30 @@ void draw_debug_overlay(const ClientConfig& config,
         }
     }
     ImGui::End();
+}
+
+void draw_confirmed_notice(const std::optional<dots::presentation::ConfirmedNotice>& notice) {
+    if (!notice) {
+        return;
+    }
+    const auto* viewport = ImGui::GetMainViewport();
+    constexpr auto kFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                            ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                            ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs;
+    ImGui::SetNextWindowPos(
+        {viewport->WorkPos.x + (viewport->WorkSize.x * 0.5F), viewport->WorkPos.y + 42.0F},
+        ImGuiCond_Always,
+        {0.5F, 0.0F});
+    ImGui::SetNextWindowBgAlpha(0.72F * notice->opacity);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{1.0F, 0.82F, 0.35F, notice->opacity});
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2{22.0F, 12.0F});
+    if (ImGui::Begin("Dots confirmed consequence", nullptr, kFlags)) {
+        const auto text = dots::presentation::confirmed_notice_text(notice->kind);
+        ImGui::TextUnformatted(text.data(), text.data() + text.size());
+    }
+    ImGui::End();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
 }
 
 class SimulationHealthReporter {
@@ -877,22 +1291,83 @@ int run_networked_game(
     const dots::presentation::Settings& render_settings,
     mycore::net_transport::Endpoint& endpoint,
     dots::server::Runtime* embedded_server,
+    dots::protocol::JoinRole join_role,
     std::optional<std::chrono::milliseconds> graceful_disconnect_drain = std::nullopt) {
     using namespace std::chrono_literals;
     dots::client_runtime::Runtime client{
         endpoint,
-        {.input_redundancy = config.network.input_redundancy},
+        {
+            .requested_role = join_role,
+            .input_redundancy = config.network.input_redundancy,
+            .log_prediction_scope_changes =
+                config.debug.prediction_log_level != PredictionLogLevel::Off,
+            .log_prediction_frontier_changes =
+                config.debug.prediction_log_level != PredictionLogLevel::Off,
+            .log_prediction_reconciliation_details =
+                config.debug.prediction_log_level == PredictionLogLevel::Debug,
+        },
     };
+    dots::client_runtime::CommandTimingController command_timing;
     dots::presentation::RemoteSnapshotBuffer remote_snapshot_buffer;
+    dots::presentation::RemoteExtrapolationBuffer remote_extrapolation_buffer;
+    dots::presentation::RollbackConsequencePresentation consequence_presentation;
+    auto consequence_delivery_ready = false;
+    const auto drain_consequence_batches = [&](std::chrono::steady_clock::time_point observed_at) {
+        if (!consequence_delivery_ready) {
+            return;
+        }
+        for (const auto& batch : client.take_prediction_event_batches()) {
+            const auto report = consequence_presentation.consume(batch, observed_at);
+            if (!report.failures.empty()) {
+                mycore::debug::log_error(
+                    "dots.client.consequence",
+                    "Rollback consequence batch reported {} non-retried handler failures",
+                    report.failures.size());
+            }
+        }
+    };
     const auto process_client_events = [&](std::chrono::steady_clock::time_point now) {
         auto result = client.process_events(now);
         for (auto& accepted : result.accepted_snapshots) {
+            command_timing.observe_server_queue_depth(accepted.snapshot.pending_input_count);
+            auto interpolation_entities = accepted.snapshot.entities;
             remote_snapshot_buffer.insert({
                 .snapshot_id = accepted.snapshot.snapshot_id,
                 .server_tick = accepted.snapshot.server_tick,
-                .entities = std::move(accepted.snapshot.entities),
+                .entities = std::move(interpolation_entities),
                 .arrival_time = accepted.arrival_time,
             });
+            if (const auto rules = client.world_rules()) {
+                const auto owner_count = accepted.snapshot.owners.size();
+                const auto entity_count = accepted.snapshot.entities.size();
+                const auto inserted = remote_extrapolation_buffer.insert({
+                    .snapshot_id = accepted.snapshot.snapshot_id,
+                    .server_tick = accepted.snapshot.server_tick,
+                    .rules = dots::replication::to_simulation(*rules),
+                    .owners = std::move(accepted.snapshot.owners),
+                    .entities = std::move(accepted.snapshot.entities),
+                    .arrival_time = accepted.arrival_time,
+                });
+                if (!inserted) {
+                    const auto previous = remote_extrapolation_buffer.statistics(now);
+                    mycore::debug::log_error("dots.client.presentation",
+                                             "Rejected extrapolation sample {} at server tick {} "
+                                             "(previous sample {}, owners {}, entities {})",
+                                             accepted.snapshot.snapshot_id.value(),
+                                             accepted.snapshot.server_tick,
+                                             previous.snapshot_id.value(),
+                                             owner_count,
+                                             entity_count);
+                    result.error = dots::client_runtime::RuntimeError::InvalidSnapshot;
+                    break;
+                }
+            }
+        }
+        drain_consequence_batches(now);
+        if (result.error) {
+            const auto name = dots::client_runtime::runtime_error_name(*result.error);
+            mycore::debug::log_error(
+                "dots.client.session", "Client runtime processing failed: {}", name);
         }
         return result.error.has_value();
     };
@@ -914,26 +1389,54 @@ int run_networked_game(
         }
         std::this_thread::sleep_for(1ms);
     }
+    if (const auto* controlled = client.world().find(client.primary_entity_id())) {
+        consequence_presentation.set_local_owner(
+            dots::simulation::PlayerOwnerId{controlled->owner_id.value()});
+    }
+    consequence_delivery_ready = true;
+    drain_consequence_batches(std::chrono::steady_clock::now());
+
+    std::uint32_t client_tick{};
+    if (join_role == dots::protocol::JoinRole::Player) {
+        for (std::size_t index = 0; index < command_timing.initial_prefill_count(); ++index) {
+            if (client.submit_input(client_tick++, {}) !=
+                dots::client_runtime::InputSendResult::Sent) {
+                throw StartupError{"Could not prefill the authoritative input queue"};
+            }
+            command_timing.record_prefill_inputs(1);
+        }
+    }
+    if (embedded_server != nullptr && embedded_server->process_events()) {
+        throw StartupError{"The embedded authoritative server rejected input prefill"};
+    }
+    drain_consequence_batches(std::chrono::steady_clock::now());
 
     mycore::time::FixedStepAccumulator accumulator{dots::simulation::kTickDuration};
     auto previous_time = std::chrono::steady_clock::now();
-    std::uint32_t client_tick{};
     const auto maximum_frame_delta = std::chrono::duration_cast<mycore::time::Duration>(
         std::chrono::milliseconds{config.simulation.max_frame_delta_ms});
     mycore::debug::FrameMetrics frame_metrics;
     mycore::debug::FixedStepMetrics simulation_metrics{dots::simulation::kTickDuration};
     SimulationHealthReporter simulation_health_reporter;
     dots::presentation::LocalPredictionPresentation local_prediction_presentation;
+    dots::presentation::PersistentWorldPresentation persistent_world_presentation;
+    dots::presentation::PredictionCorrectionHistory prediction_correction_history{
+        config.debug.correction_history_count};
+    std::vector<dots::presentation::PredictionCorrectionSample> prediction_correction_samples;
+    std::vector<dots::presentation::PredictedReplicatedPlayer::EntityCorrectionResidual>
+        prediction_correction_residuals;
     dots::presentation::SpectatorCamera spectator_camera{{
         .pan_speed_world_units_per_second = config.spectator.pan_speed_world_units_per_second,
         .minimum_pixels_per_world_unit = config.spectator.minimum_pixels_per_world_unit,
         .maximum_pixels_per_world_unit = config.spectator.maximum_pixels_per_world_unit,
     }};
+    PlayerControlTracker player_control_tracker;
     SpectatorControlTracker spectator_control_tracker;
     PredictionDebugControls prediction_debug_controls;
     std::optional<Vector2> last_nonzero_movement_input;
     Vector2 last_camera_position;
     bool spectator_camera_active{};
+    bool split_request_pending{};
     bool respawn_request_pending{};
     while (true) {
         MYCORE_PROFILE_FRAME();
@@ -971,7 +1474,7 @@ int run_networked_game(
         if (client.state() != dots::client_runtime::State::Ready) {
             throw StartupError{"The networked authoritative session disconnected"};
         }
-        if (config.debug.enabled && render_surface_available) {
+        if (render_surface_available) {
             debug_ui.begin_frame();
         }
         const auto mouse_input_available =
@@ -982,17 +1485,27 @@ int run_networked_game(
         }
         const auto spectator_control_intent =
             spectator_control_tracker.sample(spectator_input, config.controls);
+        const auto player_control_intent = player_control_tracker.sample(input, config.controls);
         const auto frame_duration =
             std::chrono::duration_cast<mycore::time::Duration>(now - previous_time);
         frame_metrics.add_sample(frame_duration);
-        const auto elapsed = std::min(frame_duration, maximum_frame_delta);
-        const auto discarded_frame_time = frame_duration - elapsed;
+        const auto bounded_elapsed = std::min(frame_duration, maximum_frame_delta);
+        const auto discarded_frame_time = frame_duration - bounded_elapsed;
+        const auto cadence_control_active =
+            client.session_mode() == dots::protocol::SessionMode::Playing &&
+            !client.input_production_paused();
+        const auto elapsed = cadence_control_active
+                                 ? command_timing.scale_accumulator_elapsed(bounded_elapsed)
+                                 : bounded_elapsed;
         previous_time = now;
         const auto step_result =
             accumulator.advance(elapsed, config.simulation.max_steps_per_frame);
         const auto discarded_backlog = step_result.step_limit_reached
                                            ? accumulator.discard_pending_steps()
                                            : mycore::time::Duration::zero();
+        if (step_result.step_limit_reached) {
+            command_timing.record_discarded_backlog();
+        }
 
         const auto playing_before_steps =
             client.session_mode() == dots::protocol::SessionMode::Playing;
@@ -1003,7 +1516,10 @@ int run_networked_game(
         }
         if (playing_before_steps) {
             respawn_request_pending = false;
-        } else if (spectator_control_intent.request_respawn) {
+            split_request_pending = split_request_pending || player_control_intent.request_split;
+        } else if (join_role == dots::protocol::JoinRole::Player &&
+                   spectator_control_intent.request_respawn) {
+            split_request_pending = false;
             respawn_request_pending = true;
         }
         auto viewport = InputViewport{};
@@ -1036,22 +1552,41 @@ int run_networked_game(
                     if (controlled == nullptr) {
                         throw StartupError{"The replicated local player disappeared"};
                     }
-                    viewport.player_radius_pixels =
-                        dots::simulation::radius_for_mass(controlled->mass) *
-                        config.view.pixels_per_world_unit;
+                    const auto predicted_primary = client.predicted_primary_entity_id();
+                    const auto predicted_mass =
+                        client.predicted_world() != nullptr && predicted_primary.is_valid()
+                            ? client.predicted_world()->mass(
+                                  dots::simulation::EntityId{predicted_primary.value()})
+                            : std::nullopt;
+                    viewport.player_radius_pixels = dots::simulation::radius_for_mass(
+                                                        predicted_mass.value_or(controlled->mass)) *
+                                                    config.view.pixels_per_world_unit;
                     movement = movement_from_input(
                         input, config.controls, viewport, mouse_input_available);
                 }
                 if (playing && mycore::math::length_squared(movement) > 0.0F) {
                     last_nonzero_movement_input = movement;
                 }
-                const auto action_bits = static_cast<std::uint16_t>(
-                    !playing && respawn_request_pending ? dots::protocol::kRespawnActionBit : 0U);
-                if (client.send_input(client_tick++, movement, action_bits) !=
-                    dots::client_runtime::InputSendResult::Sent) {
-                    throw StartupError{"The networked client could not send input"};
+                auto action_bits = std::uint16_t{};
+                if (playing && split_request_pending) {
+                    action_bits |= dots::protocol::kSplitActionBit;
                 }
-                if (action_bits != 0U) {
+                if (!playing && respawn_request_pending) {
+                    action_bits |= dots::protocol::kRespawnActionBit;
+                }
+                const auto may_submit_playing = playing && !client.input_production_paused();
+                const auto may_submit_respawn =
+                    !playing && join_role == dots::protocol::JoinRole::Player &&
+                    respawn_request_pending && !client.input_production_paused();
+                if ((may_submit_playing || may_submit_respawn) &&
+                    client.submit_input(client_tick++, movement, action_bits) !=
+                        dots::client_runtime::InputSendResult::Sent) {
+                    throw StartupError{"The networked client could not submit input"};
+                }
+                if (may_submit_playing && (action_bits & dots::protocol::kSplitActionBit) != 0U) {
+                    split_request_pending = false;
+                }
+                if (may_submit_respawn && (action_bits & dots::protocol::kRespawnActionBit) != 0U) {
                     respawn_request_pending = false;
                 }
                 if (embedded_server != nullptr &&
@@ -1060,6 +1595,17 @@ int run_networked_game(
                 }
                 if (process_client_events(now)) {
                     throw StartupError{"The networked authoritative session failed"};
+                }
+                if (!playing && client.session_mode() == dots::protocol::SessionMode::Playing) {
+                    for (std::size_t index = 0; index < command_timing.initial_prefill_count();
+                         ++index) {
+                        if (client.submit_input(client_tick++, {}) !=
+                            dots::client_runtime::InputSendResult::Sent) {
+                            throw StartupError{
+                                "Could not prefill inputs after authoritative respawn"};
+                        }
+                        command_timing.record_prefill_inputs(1);
+                    }
                 }
                 if (client.session_mode() == dots::protocol::SessionMode::Playing) {
                     controlled = client.world().find(client.primary_entity_id());
@@ -1071,6 +1617,7 @@ int run_networked_game(
                         config.view.pixels_per_world_unit;
                 } else {
                     controlled = nullptr;
+                    split_request_pending = false;
                 }
             }
         }
@@ -1100,11 +1647,31 @@ int run_networked_game(
         }
         if (playing) {
             respawn_request_pending = false;
+        } else {
+            split_request_pending = false;
         }
         const auto sampled_local_entity =
             playing ? client.primary_entity_id() : dots::protocol::EntityId{};
         const auto remote_frame = remote_snapshot_buffer.sample(sampled_local_entity);
+        const auto extrapolated_remote_frame =
+            remote_extrapolation_buffer.sample(now, sampled_local_entity);
         const auto remote_presentation_statistics = remote_snapshot_buffer.statistics(now);
+        const auto remote_extrapolation_statistics = remote_extrapolation_buffer.statistics(now);
+        const auto spectator_live_fallback_active =
+            !playing && config.spectator.presentation_mode == SpectatorPresentationMode::Live &&
+            remote_frame.ready && remote_frame.holding;
+        const auto spectator_live_fallback_ticks =
+            spectator_live_fallback_active
+                ? std::chrono::duration<double>{remote_presentation_statistics
+                                                    .current_hold_duration}
+                          .count() *
+                      static_cast<double>(dots::simulation::kTickRateHz)
+                : 0.0;
+        const auto spectator_live_fallback_frame =
+            spectator_live_fallback_active
+                ? remote_extrapolation_buffer.sample_offset(spectator_live_fallback_ticks,
+                                                            sampled_local_entity)
+                : dots::presentation::RemoteExtrapolationFrame{};
         auto prediction_statistics = client.prediction_statistics(now);
         prediction_debug_controls.observe_input_drop_burst(prediction_statistics, now);
         const auto update_local_prediction_presentation = [&] {
@@ -1124,6 +1691,30 @@ int run_networked_game(
                     .correction_replay_path = client.latest_correction_replay_path(),
                 },
                 now);
+            prediction_correction_samples.clear();
+            prediction_correction_samples.reserve(client.recent_prediction_corrections().size());
+            prediction_correction_residuals.clear();
+            prediction_correction_residuals.reserve(client.recent_prediction_corrections().size());
+            for (const auto& correction : client.recent_prediction_corrections()) {
+                prediction_correction_samples.push_back({
+                    .sequence = correction.sequence,
+                    .entity_id = correction.entity_id,
+                    .pre_correction_position = correction.pre_correction_position,
+                    .mass = correction.mass,
+                    .remote = correction.source ==
+                              dots::client_runtime::PredictionCorrectionSource::Remote,
+                });
+                if (correction.source == dots::client_runtime::PredictionCorrectionSource::Remote) {
+                    prediction_correction_residuals.push_back({
+                        .entity_id = correction.entity_id,
+                        .generation = correction.sequence,
+                        .displacement =
+                            correction.pre_correction_position - correction.corrected_position,
+                    });
+                }
+            }
+            prediction_correction_history.update(
+                prediction_correction_samples, prediction_statistics.hard_resync_count, now);
         };
         if (playing) {
             if (spectator_camera_active) {
@@ -1134,22 +1725,10 @@ int run_networked_game(
             last_camera_position = local_prediction_presentation.presentation_position();
         } else {
             if (!spectator_camera_active) {
-                spectator_camera.enter(last_camera_position,
-                                       render_settings.pixels_per_world_unit,
-                                       client.follow_entity_id(),
-                                       remote_frame);
-                spectator_camera_active = true;
                 local_prediction_presentation.reset();
+                prediction_correction_history.clear();
+                persistent_world_presentation.reset();
             }
-            spectator_camera.update(remote_frame,
-                                    client.follow_entity_id(),
-                                    {
-                                        .pan = spectator_control_intent.pan,
-                                        .zoom_steps = spectator_control_intent.zoom_steps,
-                                        .toggle_follow = spectator_control_intent.toggle_follow,
-                                    },
-                                    std::chrono::duration<float>{elapsed}.count());
-            last_camera_position = spectator_camera.position();
             prediction_debug_controls.requested_prediction_error.reset();
             prediction_debug_controls.drop_input_packets_requested = false;
             prediction_debug_controls.clear_correction_visuals_requested = false;
@@ -1205,7 +1784,22 @@ int run_networked_game(
                             .server_tick = client.world().server_tick(),
                             .local_input_tick = client_tick,
                             .prediction = prediction_statistics,
+                            .input_flow = client.input_flow_statistics(now),
+                            .command_timing = command_timing.statistics(),
                             .remote_presentation = remote_presentation_statistics,
+                            .remote_extrapolation = remote_extrapolation_statistics,
+                            .consequences = consequence_presentation.statistics(),
+                            .persistent_presentation = persistent_world_presentation.statistics(),
+                            .fault_receipts = client.debug_fault_receipts(),
+                            .remote_presentation_mode = config.debug.remote_presentation_mode,
+                            .spectator_presentation_mode = config.spectator.presentation_mode,
+                            .spectator_live_fallback_active = spectator_live_fallback_active,
+                            .spectator_live_fallback_ticks =
+                                spectator_live_fallback_frame.ready
+                                    ? spectator_live_fallback_frame.extrapolation_ticks
+                                    : 0.0,
+                            .spectator_live_fallback_holding =
+                                spectator_live_fallback_frame.holding,
                             .representative_remote_entity = representative_remote_entity,
                             .representative_remote_endpoints = representative_remote_endpoints,
                             .latest_authoritative_sample =
@@ -1226,6 +1820,12 @@ int run_networked_game(
                                                                         .smoothing_offset()}
                                                     : std::nullopt,
                             .last_nonzero_movement_input = last_nonzero_movement_input,
+                            .retained_correction_count = prediction_correction_history.size(),
+                            .correction_history_capacity = prediction_correction_history.capacity(),
+                            .retained_local_correction_count =
+                                prediction_correction_history.local_count(),
+                            .retained_remote_correction_count =
+                                prediction_correction_history.remote_count(),
                         },
                     .gameplay_session =
                         DebugWorldStats::GameplaySession{
@@ -1266,6 +1866,7 @@ int run_networked_game(
         }
         if (playing && prediction_debug_controls.clear_correction_visuals_requested) {
             local_prediction_presentation.clear_correction_visuals();
+            prediction_correction_history.clear();
             prediction_debug_controls.clear_correction_visuals_requested = false;
         }
 
@@ -1285,43 +1886,102 @@ int run_networked_game(
             const auto correction_visual_active =
                 local_prediction_presentation.correction_visual_active();
             last_camera_position = local_prediction_presentation.presentation_position();
-            frame = dots::presentation::extract_remote_interpolated_predicted_frame(
-                client.world(),
-                remote_frame,
-                remote_endpoint_layers,
-                {
-                    .entity_id = client.primary_entity_id(),
-                    .presentation_position = local_prediction_presentation.presentation_position(),
-                    .predicted_position = local_prediction_presentation.predicted_position(),
-                    .pre_correction_position =
-                        correction_visual_active
-                            ? local_prediction_presentation.retained_pre_correction_position()
-                            : std::nullopt,
-                    .correction_replay_path =
-                        correction_visual_active
-                            ? local_prediction_presentation.retained_correction_replay_path()
-                            : std::span<const Vector2>{},
-                    .show_prediction_layers =
-                        config.debug.enabled && prediction_debug_controls.show_prediction_layers,
-                    .show_replay_path =
-                        config.debug.enabled && prediction_debug_controls.show_replay_path,
-                });
+            const auto* predicted_world = client.predicted_world();
+            if (predicted_world == nullptr) {
+                throw StartupError{"The complete local prediction World disappeared"};
+            }
+            const auto predicted_primary = client.predicted_primary_entity_id().is_valid()
+                                               ? client.predicted_primary_entity_id()
+                                               : client.primary_entity_id();
+            const auto controlled_presentation = dots::presentation::PredictedReplicatedPlayer{
+                .entity_id = predicted_primary,
+                .presentation_position = local_prediction_presentation.presentation_position(),
+                .predicted_position = local_prediction_presentation.predicted_position(),
+                .pre_correction_position = std::nullopt,
+                .correction_replay_path =
+                    correction_visual_active
+                        ? local_prediction_presentation.retained_correction_replay_path()
+                        : std::span<const Vector2>{},
+                .correction_ghosts = prediction_correction_history.ghosts(),
+                .correction_residuals = prediction_correction_residuals,
+                .show_prediction_layers =
+                    config.debug.enabled && prediction_debug_controls.show_prediction_layers,
+                .show_replay_path =
+                    config.debug.enabled && prediction_debug_controls.show_replay_path,
+            };
+            if (config.debug.remote_presentation_mode == RemotePresentationMode::Interpolated ||
+                !extrapolated_remote_frame.ready) {
+                frame = dots::presentation::extract_remote_interpolated_predicted_frame(
+                    client.world(),
+                    *predicted_world,
+                    client.predicted_scope_entity_ids(),
+                    remote_frame,
+                    remote_endpoint_layers,
+                    controlled_presentation);
+            } else {
+                frame = dots::presentation::extract_remote_extrapolated_predicted_frame(
+                    client.world(),
+                    *predicted_world,
+                    client.predicted_scope_entity_ids(),
+                    extrapolated_remote_frame,
+                    remote_endpoint_layers,
+                    controlled_presentation);
+                if (config.debug.remote_presentation_mode == RemotePresentationMode::Comparison) {
+                    dots::presentation::append_interpolated_remote_comparison(
+                        frame, remote_frame, client.predicted_scope_entity_ids());
+                }
+            }
+            const auto fixed_tick_alpha =
+                std::clamp(static_cast<float>(accumulator.accumulated_time().count()) /
+                               static_cast<float>(accumulator.step_duration().count()),
+                           0.0F,
+                           1.0F);
+            frame = persistent_world_presentation.compose(frame,
+                                                          fixed_tick_alpha,
+                                                          prediction_statistics.hard_resync_count,
+                                                          predicted_primary,
+                                                          now);
         } else {
+            if (spectator_live_fallback_active && spectator_live_fallback_frame.ready) {
+                frame = dots::presentation::extract_remote_extrapolated_spectator_frame(
+                    spectator_live_fallback_frame,
+                    remote_endpoint_layers,
+                    spectator_camera.position());
+            } else {
+                frame = dots::presentation::extract_remote_interpolated_spectator_frame(
+                    remote_frame, remote_endpoint_layers, spectator_camera.position());
+            }
+            frame = persistent_world_presentation.compose(
+                frame, 1.0F, prediction_statistics.hard_resync_count, {}, now);
+            if (!spectator_camera_active) {
+                spectator_camera.enter(last_camera_position,
+                                       render_settings.pixels_per_world_unit,
+                                       client.follow_entity_id(),
+                                       frame);
+                spectator_camera_active = true;
+            }
+            spectator_camera.update(frame,
+                                    client.follow_entity_id(),
+                                    {
+                                        .pan = spectator_control_intent.pan,
+                                        .zoom_steps = spectator_control_intent.zoom_steps,
+                                        .toggle_follow = spectator_control_intent.toggle_follow,
+                                    },
+                                    std::chrono::duration<float>{elapsed}.count());
             current_render_settings.pixels_per_world_unit =
                 spectator_camera.pixels_per_world_unit();
-            frame = dots::presentation::extract_remote_interpolated_spectator_frame(
-                remote_frame, remote_endpoint_layers, spectator_camera.position());
+            frame.camera = spectator_camera.position();
+            last_camera_position = frame.camera;
         }
+        consequence_presentation.append_cues(frame, now);
+        draw_confirmed_notice(consequence_presentation.confirmed_notice(now));
         const auto presented =
             renderer.render(dots::presentation::build_draw_list(frame, current_render_settings),
-                            [&debug_ui, debug_enabled = config.debug.enabled](
-                                mycore::render::CommandList& commands,
-                                const mycore::render::SwapchainTarget& target) {
-                                if (debug_enabled) {
-                                    debug_ui.render(commands, target);
-                                }
+                            [&debug_ui](mycore::render::CommandList& commands,
+                                        const mycore::render::SwapchainTarget& target) {
+                                debug_ui.render(commands, target);
                             });
-        if (!presented && config.debug.enabled) {
+        if (!presented) {
             debug_ui.cancel_frame();
         }
     }
@@ -1331,7 +1991,8 @@ int run_in_memory_game(const ClientConfig& config,
                        mycore::platform_sdl::Window& window,
                        mycore::render_2d::Renderer& renderer,
                        mycore::debug_ui::Context& debug_ui,
-                       const dots::presentation::Settings& render_settings) {
+                       const dots::presentation::Settings& render_settings,
+                       dots::protocol::JoinRole join_role) {
     dots::simulation::World authoritative_world;
     if (!dots::simulation::spawn_default_food_field(authoritative_world)) {
         throw StartupError{"Could not spawn the authoritative food field"};
@@ -1340,7 +2001,7 @@ int run_in_memory_game(const ClientConfig& config,
     dots::server::Runtime server{network.server_endpoint(), std::move(authoritative_world)};
     auto& endpoint = network.connect_client();
     return run_networked_game(
-        config, window, renderer, debug_ui, render_settings, endpoint, &server);
+        config, window, renderer, debug_ui, render_settings, endpoint, &server, join_role);
 }
 
 int run_native_game(const ClientConfig& config,
@@ -1372,6 +2033,7 @@ int run_native_game(const ClientConfig& config,
                               render_settings,
                               endpoint,
                               nullptr,
+                              options.join_role,
                               std::chrono::milliseconds{drain_milliseconds});
 }
 
@@ -1417,7 +2079,9 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
     const auto render_settings = presentation_settings(config);
     const auto presentation_label =
         mode == ClientRunMode::InMemoryGame || mode == ClientRunMode::NativeGame
-            ? std::string_view{"NETWORKED PREDICTED"}
+            ? options.join_role == dots::protocol::JoinRole::Spectator
+                  ? std::string_view{"NETWORKED SPECTATOR"}
+                  : std::string_view{"NETWORKED PREDICTED"}
             : presentation_mode_name(config.debug.presentation_mode);
     mycore::debug::log_info("dots.client",
                             "Started SDL_GPU renderer '{}' with {}, {} presentation, and {} input",
@@ -1428,24 +2092,70 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
     window.show();
 
     if (mode == ClientRunMode::InMemoryGame) {
-        return run_in_memory_game(config, window, renderer, debug_ui, render_settings);
+        return run_in_memory_game(
+            config, window, renderer, debug_ui, render_settings, options.join_role);
     }
     if (mode == ClientRunMode::NativeGame) {
         return run_native_game(config, window, renderer, debug_ui, render_settings, options);
     }
 
-    dots::simulation::World world;
-    const auto player = world.spawn_player(dots::simulation::PlayerOwnerId{0});
+    constexpr auto kOfflineScopeEpoch = mycore::rollback::ScopeEpoch{1};
+    constexpr auto kOfflineReplayHorizon = mycore::time::TickDelta{64};
+    dots::simulation::World initial_world;
+    const auto player = initial_world.spawn_player(dots::simulation::PlayerOwnerId{0});
     if (!player) {
         throw dots::client::StartupError{"Could not spawn the local player"};
     }
-    if (!dots::simulation::spawn_default_food_field(world)) {
+    if (!dots::simulation::spawn_default_food_field(initial_world)) {
         throw dots::client::StartupError{"Could not spawn the local food field"};
     }
+    const auto initial_checkpoint = initial_world.checkpoint();
+    auto scope_result = dots::prediction::build_prediction_scope(
+        initial_checkpoint,
+        {
+            .profile = dots::prediction::PredictionProfile::FullReplicated,
+            .mechanics = dots::prediction::kCurrentPredictionMechanics,
+            .owned_owner_ids = {dots::simulation::PlayerOwnerId{0}},
+            .subscribed_event_owner_ids = {dots::simulation::PlayerOwnerId{0}},
+            .replay_horizon = kOfflineReplayHorizon,
+            .scope_epoch = kOfflineScopeEpoch,
+            .coverage = {},
+        });
+    const auto* offline_scope = std::get_if<dots::prediction::PredictionScope>(&scope_result);
+    if (offline_scope == nullptr) {
+        throw dots::client::StartupError{"Could not build the offline prediction scope"};
+    }
+    auto projected_result =
+        dots::prediction::project_checkpoint(initial_checkpoint, *offline_scope);
+    const auto* projected_checkpoint =
+        std::get_if<dots::simulation::WorldCheckpoint>(&projected_result);
+    if (projected_checkpoint == nullptr) {
+        throw dots::client::StartupError{"Could not project the offline prediction checkpoint"};
+    }
+    dots::prediction::Timeline timeline{
+        dots::prediction::WorldModel{},
+        {.capacity = static_cast<std::size_t>(kOfflineReplayHorizon.value())},
+    };
+    const auto initialized = timeline.initialize(
+        {
+            .tick = projected_checkpoint->tick,
+            .acknowledged_through = std::nullopt,
+            .scope_epoch = kOfflineScopeEpoch,
+            .checkpoint = *projected_checkpoint,
+            .events = {},
+        },
+        *offline_scope);
+    if (!std::holds_alternative<dots::prediction::Commit>(initialized)) {
+        throw dots::client::StartupError{"Could not initialize the offline rollback timeline"};
+    }
+    dots::presentation::RollbackConsequencePresentation consequence_presentation;
+    consequence_presentation.set_local_owner(dots::simulation::PlayerOwnerId{0});
+    dots::presentation::PersistentWorldPresentation persistent_world_presentation;
+    auto offline_hard_resync_sequence = std::uint64_t{};
 
     mycore::time::FixedStepAccumulator accumulator{dots::simulation::kTickDuration};
     auto previous_time = std::chrono::steady_clock::now();
-    const auto initial_position = world.position(*player);
+    const auto initial_position = timeline.state()->position(*player);
     if (!initial_position) {
         throw dots::client::StartupError{"Could not get player position"};
     }
@@ -1457,6 +2167,8 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
     mycore::debug::FrameMetrics frame_metrics;
     mycore::debug::FixedStepMetrics simulation_metrics{dots::simulation::kTickDuration};
     SimulationHealthReporter simulation_health_reporter;
+    PlayerControlTracker player_control_tracker;
+    bool split_request_pending{};
     MYCORE_PROFILE_THREAD("Dots client");
 
     while (true) {
@@ -1467,6 +2179,8 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
         if (quit_requested(input, config.controls)) {
             return 0;
         }
+        split_request_pending = split_request_pending ||
+                                player_control_tracker.sample(input, config.controls).request_split;
 
         const auto output_size = window.pixel_size();
         const auto logical_size = window.size();
@@ -1476,9 +2190,7 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
             continue;
         }
 
-        if (config.debug.enabled) {
-            debug_ui.begin_frame();
-        }
+        debug_ui.begin_frame();
         const auto mouse_input_available = !config.debug.enabled || !debug_ui.wants_mouse_capture();
         const auto now = std::chrono::steady_clock::now();
         const auto frame_duration =
@@ -1493,7 +2205,7 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
                                            ? accumulator.discard_pending_steps()
                                            : mycore::time::Duration::zero();
 
-        const auto player_radius = world.radius(*player);
+        const auto player_radius = timeline.state()->radius(*player);
         if (!player_radius) {
             throw dots::client::StartupError{"The local player disappeared from the world"};
         }
@@ -1514,26 +2226,79 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
                     throw dots::client::StartupError{"Local input command IDs are exhausted"};
                 }
                 const auto command =
-                    make_input_command(input,
-                                       config.controls,
-                                       *player,
-                                       dots::simulation::InputCommandId{next_command_id},
-                                       viewport,
-                                       mouse_input_available);
-                ++next_command_id;
-                if (!world.apply_input(command)) {
-                    throw dots::client::StartupError{"The local world rejected an input command"};
-                }
+                    make_tick_command(input,
+                                      config.controls,
+                                      dots::simulation::PlayerOwnerId{0},
+                                      dots::simulation::InputCommandId{next_command_id},
+                                      viewport,
+                                      mouse_input_available,
+                                      split_request_pending);
+                split_request_pending = false;
                 previous_player_position = current_player_position;
-                if (!world.step()) {
-                    throw dots::client::StartupError{"The local world rejected a simulation step"};
+                const auto sequence = mycore::rollback::CommandSequence{next_command_id};
+                ++next_command_id;
+                auto advanced = timeline.advance(sequence,
+                                                 dots::prediction::TickStimulus{
+                                                     .commands = {command},
+                                                     .remote_movement_assumptions = {},
+                                                 });
+                auto* advanced_commit = std::get_if<dots::prediction::Commit>(&advanced);
+                if (advanced_commit == nullptr) {
+                    throw dots::client::StartupError{
+                        "The offline rollback timeline rejected an atomic tick"};
                 }
-                const auto position = world.position(*player);
+                const auto advanced_report = consequence_presentation.consume(
+                    mycore::rollback::event_batch_from_commit(std::move(*advanced_commit)), now);
+                if (!advanced_report.failures.empty()) {
+                    mycore::debug::log_error(
+                        "dots.client.consequence",
+                        "Offline rollback consequence batch reported {} non-retried failures",
+                        advanced_report.failures.size());
+                }
+                if (timeline.history().size() ==
+                    static_cast<std::size_t>(kOfflineReplayHorizon.value())) {
+                    std::vector<dots::prediction::AuthorityEvent> confirmed_events;
+                    for (const auto& frame_record : timeline.history()) {
+                        for (const auto& event : frame_record.events) {
+                            confirmed_events.push_back({
+                                .disposition =
+                                    mycore::rollback::AuthorityEventDisposition::Confirmed,
+                                .key = dots::simulation::simulation_event_key(event),
+                                .event = event,
+                            });
+                        }
+                    }
+                    const auto rebased_checkpoint = timeline.state()->checkpoint();
+                    auto rebased = timeline.hard_resync(
+                        {
+                            .tick = rebased_checkpoint.tick,
+                            .acknowledged_through = sequence,
+                            .scope_epoch = kOfflineScopeEpoch,
+                            .checkpoint = rebased_checkpoint,
+                            .events = std::move(confirmed_events),
+                        },
+                        *offline_scope);
+                    auto* rebased_commit = std::get_if<dots::prediction::Commit>(&rebased);
+                    if (rebased_commit == nullptr) {
+                        throw dots::client::StartupError{
+                            "Could not prune the offline rollback history"};
+                    }
+                    ++offline_hard_resync_sequence;
+                    const auto rebased_report = consequence_presentation.consume(
+                        mycore::rollback::event_batch_from_commit(std::move(*rebased_commit)), now);
+                    if (!rebased_report.failures.empty()) {
+                        mycore::debug::log_error(
+                            "dots.client.consequence",
+                            "Offline confirmation batch reported {} non-retried failures",
+                            rebased_report.failures.size());
+                    }
+                }
+                const auto position = timeline.state()->position(*player);
                 if (!position) {
                     throw dots::client::StartupError{"The local player disappeared from the world"};
                 }
                 current_player_position = *position;
-                const auto current_radius = world.radius(*player);
+                const auto current_radius = timeline.state()->radius(*player);
                 if (!current_radius) {
                     throw dots::client::StartupError{"The local player disappeared from the world"};
                 }
@@ -1562,7 +2327,7 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
         {
             MYCORE_PROFILE_ZONE("Dots presentation extraction");
             frame = dots::presentation::extract_interpolated_follow_frame(
-                world,
+                *timeline.state(),
                 {
                     .entity_id = *player,
                     .previous_position = previous_player_position,
@@ -1573,6 +2338,13 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
                         config.debug.enabled &&
                         config.debug.presentation_mode == PresentationMode::Comparison,
                 });
+            frame = persistent_world_presentation.compose(
+                frame,
+                config.debug.presentation_mode == PresentationMode::Fixed ? 1.0F : alpha,
+                offline_hard_resync_sequence,
+                dots::protocol::EntityId{player->value()},
+                now);
+            consequence_presentation.append_cues(frame, now);
         }
 
         if (config.debug.enabled) {
@@ -1580,11 +2352,11 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
                 config,
                 {
                     .presentation = presentation_mode_name(config.debug.presentation_mode),
-                    .tick = world.tick().value(),
-                    .player_count = world.player_count(),
-                    .food_count = world.food_count(),
+                    .tick = timeline.state()->tick().value(),
+                    .player_count = timeline.state()->player_count(),
+                    .food_count = timeline.state()->food_count(),
                     .current_player_position = current_player_position,
-                    .occupied_grid_cells = world.occupied_spatial_cell_count(),
+                    .occupied_grid_cells = timeline.state()->occupied_spatial_cell_count(),
                     .snapshot_id = std::nullopt,
                     .transport = std::nullopt,
                     .replication = std::nullopt,
@@ -1594,19 +2366,17 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
                 frame_metrics.snapshot(),
                 simulation_snapshot);
         }
+        draw_confirmed_notice(consequence_presentation.confirmed_notice(now));
         bool presented{};
         {
             MYCORE_PROFILE_ZONE("Dots render submission");
             presented = renderer.render(dots::presentation::build_draw_list(frame, render_settings),
-                                        [&debug_ui, debug_enabled = config.debug.enabled](
-                                            mycore::render::CommandList& commands,
-                                            const mycore::render::SwapchainTarget& target) {
-                                            if (debug_enabled) {
-                                                debug_ui.render(commands, target);
-                                            }
+                                        [&debug_ui](mycore::render::CommandList& commands,
+                                                    const mycore::render::SwapchainTarget& target) {
+                                            debug_ui.render(commands, target);
                                         });
         }
-        if (!presented && config.debug.enabled) {
+        if (!presented) {
             debug_ui.cancel_frame();
         }
     }

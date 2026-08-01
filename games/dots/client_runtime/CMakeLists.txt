@@ -1,4 +1,4 @@
-add_library(dots_client_runtime STATIC src/client_runtime.cpp)
+add_library(dots_client_runtime STATIC src/client_runtime.cpp src/command_timing.cpp)
 add_library(Dots::ClientRuntime ALIAS dots_client_runtime)
 
 target_include_directories(
@@ -11,11 +11,13 @@ target_link_libraries(
     dots_client_runtime
     PUBLIC
         Dots::Protocol
+        Dots::Prediction
         Dots::Replication
+        Dots::Simulation
         MyCore::Math
         MyCore::NetTransport
+        MyCore::Time
     PRIVATE
-        Dots::Simulation
         MyCore::Debug
 )
 mycore_configure_target(dots_client_runtime)

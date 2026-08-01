@@ -11,14 +11,29 @@
 
 - [Building MyCore](building.md): prerequisites, presets, testing, packaging, and IDE setup.
 - [C++ style guide](cpp_style_guide.md): conventions, ownership boundaries, and API design.
+- [Rollback library guide](rollback_library_guide.md): onboarding a game to
+  `MyCore::Rollback`, implementing a model, driving the timeline, consequence handlers, and
+  recovery.
 - [Server-authoritative networking](server_authoritative_networking_guide.md): protocol,
   transport, authority, replication, impairment, and the prediction/interpolation model.
 - [Networked prediction and time reference](networked_prediction_reference.md): canonical state
   ownership, clocks, compensation terminology, lag compensation, and scale vocabulary.
 - [Debugging and observability](debugging_and_observability.md): overlay fields, metric meanings,
   debug visuals, fault controls, and troubleshooting.
-- [Rollback prediction design](rollback_prediction_design.md): durable complete-checkpoint,
-  selectable-prediction, consequence, timing, and recovery contracts.
+- [Rollback prediction design](rollback_prediction_design.md): game-neutral rollback timeline,
+  Dots checkpoint/closure integration, consequence delivery, timing, and recovery contracts.
+- [Feature 14 prediction-stutter postmortem](feature14_prediction_stutter_postmortem.md): how
+  causal-horizon and replay-provenance mistakes caused remote oscillation, the correction, and
+  the cross-mechanic prevention checklist.
+- [Feature 14 rollback and prediction audit](feature14_rollback_prediction_audit.md): assessment
+  of mechanic closure, event subscriptions, receipt lifecycle, client commit delivery, and the
+  step 6.5 remediation criteria.
+- [Feature 14 persistent presentation audit](feature14_persistent_presentation_audit.md): source
+  sampling contracts, the double-smoothing correction, remote prediction/extrapolation modes,
+  and prevention rules.
+- [Feature 14 rollback workload results](feature14_rollback_workload_results.md): optimized
+  entity/replay measurements, bounded native impairment soaks, and the same-frame replay
+  decision.
 - [SDL_GPU rendering](sdl_gpu_rendering_guide.md): shaders, resources, draw flow, and platform
   backends.
 
@@ -45,7 +60,8 @@
 - [Remote interpolation](plans/12-remote-interpolation.md)
 - [Authoritative interactions and spectating](plans/13-authoritative-interactions-spectating.md)
 - [Authoritative spawn search](plans/authoritative-spawn-search.md)
-- [Selectable World rollback](plans/14-selectable-world-rollback.md)
+- [Engine rollback programming model and predicted Dots World](plans/14-selectable-world-rollback.md)
+- [Feature 14 input flow control and spectator stress](plans/14-input-flow-control-spectator-stress.md)
 
 Plans record intended scope and acceptance criteria. Inspect the current code, tests, branch,
 and worktree before treating a plan as implemented behavior.

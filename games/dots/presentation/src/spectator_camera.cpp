@@ -31,7 +31,7 @@ SpectatorCamera::SpectatorCamera(SpectatorCameraSettings settings)
 void SpectatorCamera::enter(mycore::math::Vector2 initial_position,
                             float initial_pixels_per_world_unit,
                             protocol::EntityId confirmed_follow_entity_id,
-                            const RemotePresentationFrame& frame) {
+                            const FrameData& frame) {
     if (!finite(initial_position) || !std::isfinite(initial_pixels_per_world_unit) ||
         initial_pixels_per_world_unit <= 0.0F) {
         throw std::invalid_argument{"Dots spectator camera initial state is invalid"};
@@ -51,7 +51,7 @@ void SpectatorCamera::enter(mycore::math::Vector2 initial_position,
     }
 }
 
-void SpectatorCamera::update(const RemotePresentationFrame& frame,
+void SpectatorCamera::update(const FrameData& frame,
                              protocol::EntityId confirmed_follow_entity_id,
                              SpectatorCameraInput input,
                              float elapsed_seconds) {
@@ -105,21 +105,20 @@ float SpectatorCamera::pixels_per_world_unit() const noexcept {
     return pixels_per_world_unit_;
 }
 
-const RemoteEntitySample*
-SpectatorCamera::find_confirmed_follow(const RemotePresentationFrame& frame,
+const CircleInstance*
+SpectatorCamera::find_confirmed_follow(const FrameData& frame,
                                        protocol::EntityId confirmed_follow_entity_id) noexcept {
     if (!confirmed_follow_entity_id.is_valid()) {
         return nullptr;
     }
-    const auto iterator =
-        std::find_if(frame.entities.begin(),
-                     frame.entities.end(),
-                     [confirmed_follow_entity_id](const RemoteEntitySample& entity) {
-                         return entity.entity_id == confirmed_follow_entity_id &&
-                                entity.kind == protocol::EntityKind::Player &&
-                                finite(entity.position);
-                     });
-    return iterator == frame.entities.end() ? nullptr : &*iterator;
+    const auto iterator = std::find_if(frame.circles.begin(),
+                                       frame.circles.end(),
+                                       [confirmed_follow_entity_id](const CircleInstance& circle) {
+                                           return circle.entity_id == confirmed_follow_entity_id &&
+                                                  circle.kind == CircleKind::Player &&
+                                                  finite(circle.position);
+                                       });
+    return iterator == frame.circles.end() ? nullptr : &*iterator;
 }
 
 } // namespace dots::presentation

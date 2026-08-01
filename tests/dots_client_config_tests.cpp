@@ -78,11 +78,16 @@ TEST_CASE("Client configuration defaults match the playable client", "[dots][cli
     REQUIRE(config.simulation.max_steps_per_frame == 5);
     REQUIRE(config.view.pixels_per_world_unit == 20.0F);
     REQUIRE(config.view.draw_grid);
+    REQUIRE(config.spectator.presentation_mode == dots::client::SpectatorPresentationMode::Live);
     REQUIRE(config.spectator.pan_speed_world_units_per_second == 12.0F);
     REQUIRE(config.spectator.minimum_pixels_per_world_unit == 5.0F);
     REQUIRE(config.spectator.maximum_pixels_per_world_unit == 80.0F);
     REQUIRE(config.debug.enabled);
     REQUIRE(config.debug.presentation_mode == dots::client::PresentationMode::Interpolated);
+    REQUIRE(config.debug.remote_presentation_mode ==
+            dots::client::RemotePresentationMode::Extrapolated);
+    REQUIRE(config.debug.prediction_log_level == dots::client::PredictionLogLevel::Off);
+    REQUIRE(config.debug.correction_history_count == dots::client::kDefaultCorrectionHistoryCount);
     REQUIRE(config.colors.player == dots::client::RgbColor{0x4C, 0xC9, 0xF0});
     REQUIRE(config.colors.player_growth == dots::client::RgbColor{0xFF, 0xD1, 0x66});
     REQUIRE(config.colors.food == dots::client::RgbColor{0xF7, 0x25, 0x85});
@@ -103,6 +108,16 @@ TEST_CASE("Presentation modes have display labels", "[dots][client][config]") {
     REQUIRE(dots::client::presentation_mode_name(dots::client::PresentationMode::Fixed) == "FIXED");
     REQUIRE(dots::client::presentation_mode_name(dots::client::PresentationMode::Comparison) ==
             "COMPARISON");
+    REQUIRE(dots::client::remote_presentation_mode_name(
+                dots::client::RemotePresentationMode::Extrapolated) == "EXTRAPOLATED");
+    REQUIRE(dots::client::remote_presentation_mode_name(
+                dots::client::RemotePresentationMode::Interpolated) == "INTERPOLATED");
+    REQUIRE(dots::client::remote_presentation_mode_name(
+                dots::client::RemotePresentationMode::Comparison) == "COMPARISON");
+    REQUIRE(dots::client::spectator_presentation_mode_name(
+                dots::client::SpectatorPresentationMode::Live) == "LIVE");
+    REQUIRE(dots::client::spectator_presentation_mode_name(
+                dots::client::SpectatorPresentationMode::Delayed) == "DELAYED");
 }
 
 TEST_CASE("Client configuration accepts complete TOML", "[dots][client][config]") {
@@ -146,6 +161,7 @@ draw_grid = false
 grid_spacing_world_units = 4.0
 
 [spectator]
+presentation_mode = "delayed"
 pan_speed_world_units_per_second = 18.0
 minimum_pixels_per_world_unit = 6.0
 maximum_pixels_per_world_unit = 70.0
@@ -153,6 +169,9 @@ maximum_pixels_per_world_unit = 70.0
 [debug]
 enabled = false
 presentation_mode = "comparison"
+remote_presentation_mode = "interpolated"
+prediction_log_level = "debug"
+correction_history_count = 12
 
 [colors]
 background = "#010203"
@@ -182,11 +201,16 @@ food = "#FEDCBA"
     REQUIRE(config.view.pixels_per_world_unit == 32.0F);
     REQUIRE_FALSE(config.view.draw_grid);
     REQUIRE(config.view.grid_spacing_world_units == 4.0F);
+    REQUIRE(config.spectator.presentation_mode == dots::client::SpectatorPresentationMode::Delayed);
     REQUIRE(config.spectator.pan_speed_world_units_per_second == 18.0F);
     REQUIRE(config.spectator.minimum_pixels_per_world_unit == 6.0F);
     REQUIRE(config.spectator.maximum_pixels_per_world_unit == 70.0F);
     REQUIRE_FALSE(config.debug.enabled);
     REQUIRE(config.debug.presentation_mode == dots::client::PresentationMode::Comparison);
+    REQUIRE(config.debug.remote_presentation_mode ==
+            dots::client::RemotePresentationMode::Interpolated);
+    REQUIRE(config.debug.prediction_log_level == dots::client::PredictionLogLevel::Debug);
+    REQUIRE(config.debug.correction_history_count == 12);
     REQUIRE(config.colors.background == dots::client::RgbColor{0x01, 0x02, 0x03});
     REQUIRE(config.colors.grid == dots::client::RgbColor{0xA0, 0xB1, 0xC2});
     REQUIRE(config.colors.player == dots::client::RgbColor{0x11, 0x22, 0x33});
@@ -203,9 +227,14 @@ width = 900
 [input]
 mode = "HyBrId"
 
+[spectator]
+presentation_mode = "LiVe"
+
 [debug]
 enabled = false
 presentation_mode = "FiXeD"
+remote_presentation_mode = "CoMpArIsOn"
+prediction_log_level = "InFo"
 
 [bindings]
 up = ["w"]
@@ -220,8 +249,12 @@ quit = ["eScApE"]
     REQUIRE(config.window.height == 720);
     REQUIRE(config.window.title == "Dots");
     REQUIRE(config.controls.mode == dots::client::InputMode::Hybrid);
+    REQUIRE(config.spectator.presentation_mode == dots::client::SpectatorPresentationMode::Live);
     REQUIRE_FALSE(config.debug.enabled);
     REQUIRE(config.debug.presentation_mode == dots::client::PresentationMode::Fixed);
+    REQUIRE(config.debug.remote_presentation_mode ==
+            dots::client::RemotePresentationMode::Comparison);
+    REQUIRE(config.debug.prediction_log_level == dots::client::PredictionLogLevel::Info);
     REQUIRE(config.controls.bindings.up == std::vector{mycore::platform_sdl::Key::W});
     REQUIRE(config.controls.bindings.quit == std::vector{mycore::platform_sdl::Key::Escape});
     REQUIRE(config.colors.background == dots::client::RgbColor{0x10, 0x18, 0x20});
@@ -235,6 +268,7 @@ up = ["Z", "0", "Digit1", "Up", "Tab", "LeftShift", "RightControl"]
 down = ["2", "Down", "Space", "RightShift", "LeftControl"]
 left = ["3", "Left", "LeftAlt", "RightGui", "Insert", "Home", "F1", "F12"]
 right = ["4", "Right", "RightAlt", "LeftGui", "Delete", "End", "F2", "F11"]
+split = ["Q"]
 follow = ["PageUp"]
 respawn = ["Enter"]
 zoom_in = ["PageDown"]
@@ -248,6 +282,7 @@ quit = ["Escape", "Backspace", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10"]
     REQUIRE(config.controls.bindings.up[2] == mycore::platform_sdl::Key::Digit1);
     REQUIRE(config.controls.bindings.left.back() == mycore::platform_sdl::Key::F12);
     REQUIRE(config.controls.bindings.right[3] == mycore::platform_sdl::Key::LeftGui);
+    REQUIRE(config.controls.bindings.split.front() == mycore::platform_sdl::Key::Q);
     REQUIRE(config.controls.bindings.follow.front() == mycore::platform_sdl::Key::PageUp);
     REQUIRE(config.controls.bindings.respawn.front() == mycore::platform_sdl::Key::Enter);
 }
@@ -313,11 +348,19 @@ TEST_CASE("Invalid client TOML reports the source and field", "[dots][client][co
         InvalidDocument{"[view]\ngrid_spacing_world_units = -2", "view.grid_spacing_world_units"},
         InvalidDocument{"[spectator]\npan_speed_world_units_per_second = 0",
                         "spectator.pan_speed_world_units_per_second"},
+        InvalidDocument{"[spectator]\npresentation_mode = \"future\"",
+                        "spectator.presentation_mode"},
         InvalidDocument{"[spectator]\nminimum_pixels_per_world_unit = 90\n"
                         "maximum_pixels_per_world_unit = 80",
                         "spectator.minimum_pixels_per_world_unit"},
         InvalidDocument{"[debug]\nenabled = 1", "debug.enabled"},
         InvalidDocument{"[debug]\npresentation_mode = \"predicted\"", "debug.presentation_mode"},
+        InvalidDocument{"[debug]\nremote_presentation_mode = \"future\"",
+                        "debug.remote_presentation_mode"},
+        InvalidDocument{"[debug]\nprediction_log_level = \"verbose\"",
+                        "debug.prediction_log_level"},
+        InvalidDocument{"[debug]\ncorrection_history_count = 0", "debug.correction_history_count"},
+        InvalidDocument{"[debug]\ncorrection_history_count = 65", "debug.correction_history_count"},
         InvalidDocument{"[debug]\nghost = true", "debug.ghost"},
         InvalidDocument{"[colors]\nplayer = \"#12345Z\"", "colors.player"},
         InvalidDocument{"[colors]\nplayer_growth = \"gold\"", "colors.player_growth"},

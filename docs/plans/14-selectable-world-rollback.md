@@ -1,111 +1,331 @@
-# Feature 14: Selectable World Rollback
+# Feature 14: Engine Rollback Programming Model and Predicted Dots World
 
-## Purpose
+## Problem
 
-Replace Feature 11's position-only predictor with a Dots-owned rollback kernel capable of
-restoring and resimulating complete gameplay state. Use split/merge, cooldowns, predicted spawns,
-food, and player absorption as the proving vertical slice.
+Before Feature 14, Feature 11 predicted only the controlled position. The server alone stepped
+the complete Dots World, while remote presentation used Feature 12 delayed interpolation. That model cannot
+speculate structural mechanics such as food consumption, player absorption, split, or merge, and
+its position-specific history cannot become a clean shared mechanism by adding more special
+cases.
 
-The durable contracts live in `../rollback_prediction_design.md`. This plan sequences their
-implementation and must not redefine them independently.
+Feature 14 must establish a reusable programming model for:
 
-The implemented authoritative spawn-search contract lives in `authoritative-spawn-search.md`.
-Its active-player-count starting point is derived from World state and adds no checkpoint field.
-If a future implementation introduces a cursor, free list, or random stream, that state must be
-included in the checkpoint and deterministic replay contract below.
+- Capturing and restoring complete game-defined checkpoints.
+- Retaining immutable sampled input plus explicit per-tick authority-derived assumptions.
+- Comparing authority with the corresponding predicted history.
+- Replaying to the current prediction head and committing atomically.
+- Distinguishing authoritative, predicted, interpolated/extrapolated, and presentation state.
+- Regenerating deterministic simulation events without repeating irreversible consequences.
 
-## Scope
+The durable contracts live in `../rollback_prediction_design.md`. This plan sequences them and
+must stay aligned with that document.
 
-Feature 14 includes:
+## Goals
 
-- Complete Dots World checkpoints and fixed-tick history.
-- Selectable prediction sets, defaulting to all replicated entities.
-- Same-frame atomic rollback and hard-resync recovery.
-- Predicted remote movement using recorded assumptions.
-- Predicted split/launch/remerge and cooldown state.
-- Predicted entity lifecycle and authoritative spawn classification.
-- Guarded session/durable consequences and resimulation-aware cues.
-- Adaptive command-buffer timing.
-- Predicted-world presentation, Feature 12 fallback/comparison, debugging, and load metrics.
+- Add a game-neutral, statically typed rollback timeline under `engine/`.
+- Make Dots the first demanding production example rather than embedding Dots policy in the
+  engine API.
+- Run shared Dots movement, food, absorption, split, and merge logic in a closed predicted island.
+- Roll forward retained local commands and recorded assumptions after authoritative correction.
+- Refresh superseded authority-derived assumptions without resampling or rewriting local
+  commands.
+- Demonstrate `PredictOnce`, `PredictCancelable`, and `ConfirmOnce` consequence delivery.
+- Retain same-frame atomic replay while leaving a clean seam for separately justified
+  multi-frame resimulation.
+- Produce clear authority, prediction, and presentation debugging and workload evidence.
 
-Feature 14 does not add AOI, delta snapshots, server-side rewind, client authority, scoring,
-achievements, a general physics engine, a game-neutral rollback library, or multi-frame replay.
+## Non-Goals
 
-## Module and World Boundaries
+Feature 14 does not add AOI, delta snapshots, server rewind, client authority, scoring,
+achievements, a general physics/ECS system, an audio backend, persistent exactly-once effects,
+or a production multi-frame replay scheduler.
 
-Add `Dots::Prediction` under `games/dots/prediction`. Its public include root is
-`dots/prediction/`; it depends on Dots simulation value types and contains no SDL, rendering,
-transport, or application code.
+Feature 12 interpolation remains supported. Feature 14 adds bounded visual extrapolation outside
+the predicted closure, but that extrapolation never runs collision or gameplay rules.
 
-Dots simulation gains complete checkpoint capture/restore and all state required to replay its
-fixed tick. Client runtime owns network validation, command transmission, authoritative
-checkpoint hydration, and kernel lifetime. Presentation reads immutable committed/debug views.
+## Chosen Design and Tradeoffs
 
-The authoritative server continues to step one World once per 30 Hz tick. It never runs client
-rollback.
+### Engine mechanism, game-owned model
 
-## Protocol Version 4 and Complete State
+Earlier planning kept rollback entirely Dots-owned until a second game existed. Feature 11 and
+the complete Dots requirements now expose a clear game-neutral contract: typed state,
+checkpoint, stimulus, deterministic step, history, transactional replay, and post-commit event
+lifecycle. Extract those mechanisms as `MyCore::Rollback`; keep mechanics, data schema, closure,
+event semantics, and presentation in Dots.
 
-Bump the protocol to version 4 with no dual-version negotiation.
+A C++20 concept/template API is chosen over virtual callbacks or a runtime mechanic registry.
+This preserves strong types, makes the engine independent of a universal event/schema model, and
+lets tests instantiate small non-Dots models.
 
-`ServerWelcome` carries immutable server gameplay/prediction configuration required to run the
-same rules. Entity/snapshot state adds:
+### Interaction closure by default
 
-- Owner ID and applied movement.
-- Split launch velocity.
-- Per-piece merge eligibility tick.
-- Per-session split cooldown deadline.
-- Predicted-spawn key when an authoritative entity originated from a predicted action.
-- All session fields retained from Feature 13.
+Predicting every replicated entity is valuable as a correctness oracle but is not the
+1,000-player steady-state. The normal profile is the fixed-point interaction closure seeded from
+owned pieces. `FullReplicated` remains a benchmark/oracle, and `OwnedGameplay` is the safe
+fallback when required closure state is missing.
 
-The client validates configuration before prediction becomes ready. It cannot override the
-server values; local configuration may choose presentation/debug modes only.
+### Event journal before side effects
 
-Remote movement is level state and may be held in prediction. Remote action bits are never held.
-Feature 16 must materialize delta state into the same coherent checkpoint contract.
+Simulation produces deterministic typed event journals. It never invokes audio, particles, UI,
+logs, networking, or analytics during a step or replay. A generic post-commit router compares
+stable keys and applies a policy per typed handler. The occurrence ledger is non-rewindable, so
+restoring the World cannot cause a sound or one-shot effect to happen repeatedly.
 
-## Rollback Kernel
+### Hybrid remote presentation
 
-Implement the public contracts from the design document:
+Entities inside the closure run shared Dots simulation. Entities outside it may use six
+ticks/200 ms of presentation-only movement/launch extrapolation and then hold. Delayed
+interpolation remains the fallback/comparison and selectable delayed-spectator path. Spectators
+default to that authoritative interpolation and invoke the bounded kinematic path only for an
+uncovered underrun tail, without creating a rollback timeline. Neither smoothed nor extrapolated
+state can seed prediction.
 
-- `PredictionKey`
-- `PredictionSetMode`
-- `CuePolicy`
-- `WorldCheckpoint`
-- `RollbackFrameRecord`
-- `ReconcileReport`
-- `RollbackKernel`
+### Diagnostic digest, typed correctness
 
-The initial ring stores 64 fixed ticks. Every accepted authoritative update builds scratch state,
-discards acknowledged commands, replays the suffix, resolves cues, and commits atomically in the
-same client frame.
+Protocol version 4 includes a canonical checkpoint digest for wire validation and debug
+comparison. Full typed validation and differences decide reconciliation; the hash is not treated
+as proof of equality.
 
-The existing 2 ms replay budget becomes a warning and metric. It does not interrupt replay.
-History exhaustion, incompatible checkpoints, or ambiguous predicted identity hard-resync to the
-newest validated authority and clear incompatible speculative state.
+### Same-frame first
 
-## Prediction Set and Remote Presentation
+Reconciliation builds scratch state and publishes once after replay reaches the current
+prediction head. A 2 ms budget is a warning. Only measured p99/frame-overrun thresholds may
+create the separate `spike/multi-frame-resimulation` follow-up.
 
-Modes are:
+## Ownership and Data Flow
 
-- `AllReplicated`: predict the entire full snapshot; default for Feature 14.
-- `OwnerAndInteractionClosure`: predict owned pieces and all possible replay-window interactors.
-- `OwnerOnly`: predict owned pieces and keep remotes on Feature 12 interpolation.
+- `MyCore::Rollback` depends only on Core and Time and owns the generic timeline, frame history,
+  atomic replay transaction, event transitions, occurrence ledger, and static consequence router.
+- `Dots::Simulation` owns complete value checkpoints, owner-command ticking, structural rules,
+  deterministic ordering, and tick journals.
+- `Dots::Prediction` adapts World to the engine model and owns mechanic contracts, closure,
+  stable Dots event keys, typed diffs, and scope rebasing.
+- Dots protocol/replication hydrates validated authoritative checkpoints and repeated
+  authoritative consequence receipts.
+- Dots client runtime owns networking, command sampling, timeline lifetime, and post-commit
+  fanout.
+- Dots presentation owns smoothing, visual cue handler instances, entity remapping,
+  interpolation/extrapolation, and debug drawing.
+- The authoritative server steps one World at 30 Hz and never runs client rollback.
 
-Mode changes occur only at an atomic boundary and rebase incompatible history.
+Normal client flow:
 
-The normal Feature 14 presentation renders the predicted World. Feature 12 interpolation remains
-available as a runtime fallback and A/B comparison. Debug views can draw authoritative-known,
-predicted, interpolated, pre-correction, and smoothed presentation layers simultaneously.
+```text
+sample devices/network
+        |
+        v
+immutable Dots TickStimulus ---> Timeline::advance
+                                      |
+                                      v
+                            committed predicted World
+                                      |
+                     Commit observers / consequence router
+                                      |
+                                      v
+                              presentation World
 
-Unknown remote input holds the replicated movement vector. Its source snapshot and held tick
-range are recorded in rollback history and metrics.
+validated snapshot ---> AuthorityFrame ---> scratch restore/replay ---> atomic Commit
+```
 
-## Split, Launch, and Merge Rules
+## Public Interfaces
 
-Split is an edge-triggered action associated with its input sequence.
+`MyCore::Rollback` exposes:
 
-Defaults, all server-owned and immutable for a session:
+- `Timeline<Model>` with `initialize`, `advance`, `reconcile`, `rebase_scope`, `hard_resync`, and
+  immutable history/state/statistics access.
+- `HistorySettings`, initially fixed to 64 ticks for Dots.
+- `AuthorityFrame<Model>`, `FrameRecord<Model>`, `Commit<Model>`, and
+  `CommitResult<Model>`.
+- `CommitKind::{Initialize, Advance, Reconcile, ScopeRebase, HardResync}`; initialization is a
+  commit so first-frame authoritative events are observable.
+- `EventTransition::{FirstPredicted, Revised, Retracted, Confirmed, AuthorityOnly}`.
+- `ConsequencePolicy::{PredictOnce, PredictCancelable, ConfirmOnce}`.
+- `StaticConsequenceRouter<Model, Handlers...>` with a separate ledger for each typed handler.
+- Commit retirement information that lets routers prune inactive keys only after retained replay
+  can no longer regenerate them and the authority-receipt watermark proves duplicates cannot
+  return. The first kernel increment retains session tombstones until receipt integration can
+  provide both proofs.
+
+A rollback model supplies `State`, `Checkpoint`, `Stimulus`, opaque game-defined `Scope`, an
+event variant, stable event-key variant, typed diff/digest, checkpoint restore/capture, one atomic
+fixed step, exact checkpoint equality for same-tick scope rebases, and event identity validation.
+
+The engine never defines a Dots entity, component, command, protocol field, or cue.
+
+## Complete Dots Checkpoint and Tick
+
+Add value types for immutable `WorldRules`, complete `WorldCheckpoint`, owner state,
+`PredictionKey`, `TickCommand`, typed `SimulationEvent`, and `TickJournal`.
+
+Checkpoint state includes:
+
+- Tick and allocator state.
+- Sorted owners, players, and food.
+- Entity identity/kind/owner, position, mass, applied movement, launch velocity, and relevant
+  command identity.
+- Owner-local split cooldown, owned-piece membership/count, last non-zero movement, merge
+  eligibility, and predicted-spawn association; immutable piece-cap policy lives in
+  `WorldRules`.
+- Any deterministic cursor/RNG/order state before it is introduced.
+
+Radius and spatial-grid storage are rebuilt. Confirmed Playing/Spectating and respawn results
+remain session authority outside speculative World state.
+
+The implemented [authoritative spawn search](authoritative-spawn-search.md) remains derived from
+World state and adds no cursor. If it later introduces a cursor, free list, or random stream,
+that value must enter the checkpoint before replay uses it. Join and respawn placement remain
+server-only.
+
+Replace separate input application and stepping composition with one shared tick:
+
+1. Install level movement and consume edge actions once.
+2. Split.
+3. Movement, launch decay, and cohesion.
+4. Enemy absorption.
+5. Same-owner merge.
+6. Food consumption.
+7. Topology/resource commit and tick journal.
+
+The server, offline client, and predictor call this same operation.
+
+## Prediction Set
+
+Each Dots `PredictionMechanic` statically declares state read/write domains, dependencies,
+closure expansion, event identity, and presentation projection.
+
+Initial mechanics:
+
+- Movement.
+- Food consumption.
+- Player absorption.
+- Split/merge.
+
+`InteractionClosure` is a causal state closure, not only a spatial radius. Its Dots scope records
+enabled mechanics, included entities/owners, required global state domains, causal authority
+subscriptions, replay horizon, and scope epoch.
+
+The fixed-point builder expands through:
+
+- Ownership dependencies such as split cooldown, owned-piece membership/count, last movement,
+  and owned aggregates.
+- Conservative swept spatial bounds for movement, growth, split reach, food, and recursive
+  player interaction.
+- Mechanic dependencies and every state domain they read.
+- Non-spatial causal/global dependencies that can change a predicted result.
+
+Before advancing, the client recomputes the closure using the greater of a five-tick operating
+floor and the next retained unacknowledged-input depth, not the 256-entry history capacity. The
+current scope can continue while its selected causal membership and subscriptions contain that
+fresh result; a smaller result retains the safe existing superset instead of oscillating
+presentation ownership as ACK depth changes. Newly required membership or a changed causal
+subscription forces an atomic scope rebase from latest authority and replay. Excluded entities
+cannot interact with the predicted island. Missing required entity, owner, global, or causal
+state falls back to `OwnedGameplay` and reports `IncompleteClosure`.
+
+State policy is:
+
+| State class | Feature 14 behavior |
+|---|---|
+| Owner-local deterministic state | Predict from retained commands; split cooldown and owned-piece count are the Dots proof. |
+| Global deterministic baseline | Replicate immutable rules and checkpoint/advance the World tick; reject incompatible rules. |
+| Mutable global aggregate | Predict only with every causal contribution; otherwise retain authority plus an explicitly speculative local delta. |
+| Durable session/economy/match result | Authority-confirmed only. |
+
+Score remains a non-goal. If added later, presentation may compose
+`confirmed score + speculative local delta` and reconcile that delta by event key. Winning,
+unlocking an ability, or any other score-driven gameplay consequence remains confirmed unless
+the scope contains all score-affecting causes.
+
+Feature 15 must provide a conservative AOI margin sufficient to build the same closure.
+
+## Replay, Rollforward, and Recovery
+
+Each retained frame records the exact Dots `TickStimulus`, checkpoint, scope epoch, diagnostic
+digest, and generated event journal. It does not retain device callbacks. Sampled local fields
+remain exact; the explicit engine refresh transaction may replace authority-derived assumption
+fields before retained replay.
+
+For authority at tick `T`:
+
+1. Validate checkpoint/schema/digest, ACK, scope, identities, and receipts.
+2. Compare with the predicted record at `T` for diagnostics.
+3. Restore authority to scratch.
+4. Drop acknowledged commands.
+5. Refresh superseded authority-derived assumptions and replay the retained suffix through the
+   previous prediction head.
+6. Regenerate events, calculate typed differences, and resolve predicted identities.
+7. Atomically publish World/history/event transitions/metrics/presentation correction data.
+
+Stale or invalid authority does not mutate committed state. Missing history, capacity exhaustion,
+incompatible checkpoint/scope, or ambiguous identity hard-resyncs to newest validated authority.
+The explicit hard-resync recovery may accept a validated ACK beyond timeline history because it
+discards that history; normal replay transactions may not. Duration alone never chooses an
+incorrect partial state.
+
+When speculative local elimination leaves no owner to step, Dots continues retaining and sending
+input outside the temporarily deferred timeline. A session-validated ACK through that retained
+range selects hard resync, then the client replays the remaining unacknowledged suffix. The
+operation is permitted only when the exact ACK is still covered by the outer ring. If an owner
+exists at the replay base but an earlier retained interaction removes it, later immutable owned
+commands remain in history and execute as no-ops until authority restores that owner; this is an
+expected speculative topology transition, not a model-step failure.
+
+The [Feature 14 prediction-stutter postmortem](../feature14_prediction_stutter_postmortem.md)
+records why the storage bound, causal horizon, immutable input, and refreshable assumption must
+remain separate concepts.
+
+## Consequence Demonstration Matrix
+
+The physical mechanic is always replayed independently of how a presentation consequence is
+delivered.
+
+| Mechanic | Predicted gameplay | Dots demonstration | Mode | Rollback/confirmation behavior |
+|---|---|---|---|---|
+| Movement | Position and movement vectors | Avatar transform and motion trail | State-derived commit observer | Correct immediately; smooth only the rendered correction |
+| Split | Mass division, child topology, launch, cooldown | Short split flash | `PredictOnce` | Appears immediately once; resimulation and later confirmation cannot repeat it |
+| Split | Same split | Child launch ring/trail | `PredictCancelable` | Keyed to the predicted child; cancel on rejection and remap on confirmation |
+| Food consumption | Food removal and mass gain | Food-pop particle group | `PredictCancelable` | Remove/fade if rollback restores the food |
+| Player absorption | Victim removal and mass transfer | Immediate consume flash | `PredictOnce` | Makes the eat responsive; a rejected prediction may leave one brief false positive |
+| Player absorption | Same absorption | Victim collapse/consume pulse | `PredictCancelable` | Cancel and restore presentation when the victim returns |
+| Authoritative absorption/defeat | Confirmed durable result | Kill/defeat banner and stinger hook | `ConfirmOnce` | Deliver once from an authority receipt; prediction alone never announces it |
+| Merge | Combined topology and mass | Blob geometry and motion | State-derived commit observer | Rebuild from committed pieces and smooth structural correction |
+
+Dots currently has no audio backend. The feature uses Dots-owned render cues and fake test
+handlers to prove the same API an audio handler will consume later.
+
+## Consequence and Receipt Semantics
+
+Policy is per handler, not per event type:
+
+- `PredictOnce` records exposure before later replay can revisit the key. The same key never
+  starts that handler twice in the session.
+- `PredictCancelable` owns a typed token and receives predict/revise/cancel/confirm lifecycle
+  calls. A one-shot sound must use `PredictOnce`, not this mode.
+- `ConfirmOnce` receives only a published authoritative receipt batch and deduplicates repeated
+  snapshots.
+
+The router stages ledger changes before handler invocation. Handler errors are surfaced and not
+automatically retried. A timeline retirement hint does not by itself prune an at-most-once
+tombstone. Pruning becomes safe only when no retained stimulus can replay the key and the
+authority-receipt watermark proves it cannot be repeated; game event keys are never reused.
+
+Dots stable keys are explicit variants:
+
+- Split: owner, input sequence, child ordinal.
+- Food consume: stable food identity.
+- Absorption: stable victim identity.
+- Merge: sorted consumed-piece identities.
+
+Protocol version 4 adds per-session monotonic authority-receipt sequences. Snapshots repeat up to
+16 unacknowledged receipts, input packets ACK the highest contiguous published sequence, and the
+server retains up to 256. Snapshots echo server retirement so the bounded client inbox can prune
+payloads and live-key records. Overflow is an explicit session failure rather than silent cue
+loss. Session state remains repeated snapshot state; receipts exist only to deliver transient
+confirmed consequences once.
+
+## Split and Merge Rules
+
+Immutable server defaults:
 
 - Split recast: 15 ticks/0.5 seconds.
 - Merge delay: 150 ticks/5 seconds.
@@ -115,188 +335,365 @@ Defaults, all server-owned and immutable for a session:
 - Linear launch-speed decay: 18 world units/second squared.
 - Post-deadline cohesion speed: 3 world units/second.
 
-On a valid split:
+On a valid split, process pieces by stable identity, divide mass evenly, select current
+movement/last movement/positive X for launch direction, create
+`PredictionKey{owner, input sequence, ordinal}`, apply launch/deadlines, and set owner cooldown.
+A rejected split still consumes and acknowledges its command.
 
-1. Iterate owned pieces by ascending authoritative/predicted stable identity.
-2. Split every eligible piece until the owner reaches the cap.
-3. Divide parent mass equally and update both radii.
-4. Use current non-zero movement direction, then last non-zero direction, then positive X.
-5. Create each child with `PredictionKey{client, input sequence, ordinal}`.
-6. Apply launch velocity to the child and assign the merge deadline to both results.
-7. Set the session split-cooldown deadline.
+After eligibility, pieces cohere toward the mass-weighted owner centroid and touching pieces
+merge in stable order with mass-weighted position/velocity. Same-owner pieces never absorb each
+other. Feature 13 enemy-absorption ordering remains unchanged. Authority alone confirms
+last-piece defeat and Spectating.
 
-A rejected split still consumes and ACKs its input sequence; authoritative topology/deadlines
-cause rollback to remove the prediction.
+## Protocol Version 4
 
-After merge eligibility, add cohesion toward the owner's mass-weighted centroid. Same-owner
-pieces never absorb one another. Eligible touching/overlapping pieces merge automatically in
-stable-ID order, preserve mass, and use mass-weighted position and velocity. A session enters
-confirmed defeat only when authority removes its last piece.
+Make one protocol bump after checkpoint, split, and event schemas are stable; do not implement
+dual-version negotiation.
 
-Enemy absorption consumes individual pieces through Feature 13's ordering. Player mass and
-piece count remain conserved across split and merge apart from food/enemy transfer.
+`ServerWelcome` carries immutable `WorldRules`. Snapshots add:
 
-## Predicted Spawn Classification
+- Checkpoint schema ID and canonical 64-bit FNV-1a digest.
+- Next authoritative entity ID and complete owner state.
+- Applied movement, launch velocity, cooldown/merge deadlines, and optional `PredictionKey`.
+- Bounded repeated authoritative receipt batches.
 
-Replay recreates the same temporary child for the same prediction key. Authority includes the
-key on the permanent entity.
+Input packets add the authority-receipt ACK. The client validates all fields and reconstructs a
+typed checkpoint before timeline mutation.
 
-- Match: remap the temporary presentation/entity association without replaying cues.
-- Reject: remove the temporary entity during reconciliation and cancel eligible cues.
-- Authority-only spawn: create normally.
-- Ambiguous key: hard-resync and report a correctness failure.
+## Presentation
 
-Client temporary handles are never accepted by the server as entity authority.
+The normal playing view composes:
 
-## Guarded Consequences and Cues
+- Predicted World entities inside the interaction closure.
+- Fixed-tick render interpolation and 100 ms correction smoothing for committed predicted state.
+- Bounded movement/launch extrapolation outside the closure for six ticks/200 ms, then hold.
+- Feature 12 delayed interpolation for both spectator modes, with bounded movement/launch
+  extrapolation only for a live spectator's uncovered underrun tail; delayed spectators hold.
 
-Predict reversible World state, including movement, food, mass, absorption, split/merge, and
-entity topology.
+Extrapolated state cannot collide, consume, split, merge, seed closure, or become a checkpoint.
+Entering the closure restores from authority and replays; presentation smooths from the prior
+visual pose.
 
-Keep these confirmed-only:
+Predicted identity matching preserves a presentation association. Rejection removes/cancels it,
+authority-only state creates normally, and ambiguity hard-resyncs.
 
-- Playing/spectating transition.
-- Respawn success and placement.
-- Score, kill feed, and achievements.
+## Adaptive Timing
 
-When the predicted World removes the local player's last piece before authority confirms defeat,
-presentation retains a pending-elimination control/camera proxy and client runtime continues
-capturing input. Confirmation transitions to spectator mode; rollback restores the predicted
-piece and cancels the proxy.
-
-Every speculative effect declares `Resimulated`, `Deduplicated`, `Cancelable`, or
-`ConfirmedOnly`. Reconciliation never blindly fires all step events again.
-
-## Adaptive Command Timing
-
-The server remains fixed at 30 Hz and consumes at most one ordered command per session each tick.
-
-Feature 14 targets a pending server depth of two commands. On prediction readiness, submit two
-neutral commands to seed the lead without moving the player.
-
-For each accepted snapshot:
+The server stays at 30 Hz and consumes at most one ordered command per session tick. Prediction
+targets two queued commands and begins with two neutral samples.
 
 ```text
 smoothed depth = EWMA(latest server pending depth, alpha = 1/8)
-```
-
-Depth 1.5 through 2.5 is a deadband. Outside it:
-
-```text
 rate scale = clamp(1 + 0.025 * (2 - smoothed depth), 0.95, 1.05)
 ```
 
-Apply the scale only to client prediction/input cadence. Server tick rate, cooldown deadlines,
-and client session wall time do not change. An empty queue holds movement but clears edge
-actions.
+Depth 1.5 through 2.5 is a deadband. Apply the scale only to client command/prediction cadence.
+An empty server queue holds movement and clears edge actions.
 
-Expose target/latest/smoothed depth, cadence scale, empty/high events, and accumulated phase
-correction. Validate convergence under step changes in latency and modest clock drift.
+## Debugging and Faults
 
-## Same-Frame Replay and Deferred Time-Slicing
+Add a **Rollback** view with:
 
-Replay completes and atomically commits in the snapshot's client frame. Do not implement a
-second time-sliced scheduler in this feature.
+- Prediction profile, scope epoch, included mechanics/domains, closure count, and fallback.
+- Authority/prediction ticks and digests, command ACK/replay range, history occupancy, and
+  hard-resync reason.
+- Continuous and structural differences.
+- Event transition and per-consequence-policy counts.
+- Authority receipt pending/ACK/duplicate/conflict counts.
+- Replay p50/p95/p99/max and command-buffer health.
+- Independently toggled authoritative, predicted, interpolated/extrapolated, pre-correction, and
+  presentation layers.
 
-Phase 14.6 collects the metrics specified by the design document across 10, 100, 500, and 1,000
-entities and 100, 200, and 400 ms RTT. If the documented p99/overrun thresholds are crossed after
-cheaper mitigations are evaluated, stop and write a separate multi-frame resimulation plan.
+Faults cover position/mass divergence, split rejection, predicted identity mismatch, action loss,
+remote assumption divergence, repeated rollback of one event key, receipt duplication, and
+receipt conflict. Fault receipts remain separate from transport statistics.
 
-## Debugging and Fault Injection
+## Implementation Sequence
 
-Add a **Rollback** tab rather than overloading Feature 11's Prediction tab. Display:
+Keep commits focused and reviewable, but do not add approval gates between these steps:
 
-- Prediction-set mode and predicted/interpolated/confirmed entity counts.
-- Authoritative snapshot/tick, predicted tick, prediction lead, ACK, and replayed input range.
-- History occupancy, replay ticks, duration distribution, and hard-resync reason.
-- Continuous corrections and structural create/remove/ownership corrections.
-- Predicted-spawn pending/matched/rejected/ambiguous counts.
-- Cue replay/deduplication/cancellation/confirmation counts.
-- Command-buffer target/latest/EWMA depth, cadence scale, and drift corrections.
+1. Add `MyCore::Rollback`, including the timeline, scratch transaction, event transitions,
+   consequence router, and non-Dots toy-model tests.
+2. Refactor Dots World around complete checkpoints, owner state, atomic tick commands, stable
+   event journals, and prediction identity while preserving current behavior.
+3. Add `Dots::Prediction`, static mechanic contracts, causal interaction closure, prediction
+   profiles, typed differences/digests, and offline rollback for movement, food, and absorption.
+4. Add split/launch/cooldown/cohesion/merge rules, predicted identity, and offline consequence
+   demonstrations.
+5. Add protocol version 4 checkpoint fields, immutable rules, digest, prediction keys, sequenced
+   authority receipts, and hostile validation.
+6. Replace the client position ring with the complete Dots timeline and integrate
+   interaction-closed prediction, split input, identity mapping, and confirmed session guarding.
+6.5. Close the audit findings documented in
+   [`../feature14_rollback_prediction_audit.md`](../feature14_rollback_prediction_audit.md):
+   replace the incomplete fallback with owned gameplay, separate event subscriptions from state
+   closure, publish every client timeline commit, use the kernel scope-rebase transaction, and
+   install a bounded accepted/published/retired authority-receipt lifecycle.
+7. Add persistent presentation composition, consequence handlers, correction smoothing, bounded
+   extrapolation, interpolation fallback, and every consequence-matrix example.
+8. Add adaptive command timing, complete Rollback diagnostics/faults, impairment scenarios,
+   entity-scale workloads, documentation updates, and the measured same-frame/multi-frame
+   decision. Measure cross-tick predicted-closure corrections as part of that work; if they need
+   a residual beyond fixed-tick interpolation, carry an explicit correction generation rather
+   than inferring one from source revision. The headless bot now discards periodic-producer
+   backlog after a replay overrun so it cannot turn local scheduling debt into a server input
+   flood; adaptive queue-depth convergence remains part of this step.
+9. Bound honest-client authority lead with a protocol receive grant and retained unsent outbox,
+   add hysteresis pause/resume, status heartbeats, first-class direct spectator roles, server
+   catch-up limits, and spectator-heavy stress tooling.
 
-World-space tools show the selected entity's authoritative-known, predicted, interpolated,
-pre-correction, and smoothed state. Structural replay markers label predicted spawns, removals,
-and classifications.
+Steps 1 through 9 are implemented on `feature/14`. The optimized workload and native soak
+evidence are recorded in
+[`../feature14_rollback_workload_results.md`](../feature14_rollback_workload_results.md).
+The target 200 ms, 1,000-entity result remains below both research thresholds, so atomic
+same-frame replay stays the sole production path and the conditional multi-frame spike is not
+activated.
+`MyCore::Rollback` now provides the generic
+timeline and consequence machinery. Dots Simulation now provides immutable `WorldRules`, sorted
+complete checkpoints, atomic restore, one owner-scoped command batch per tick, typed food and
+absorption, split, and merge journals, stable keys, and predicted identity storage. Its scratch
+tick implements stable split ordering/cap/cooldown, child launch and decay, post-deadline
+cohesion, stable mass-weighted merge, and the existing absorption/food ordering. Radius and
+spatial indexes are rebuilt on restore. `Dots::Prediction` now provides static mechanic
+contracts, the three prediction profiles, conservative causal/spatial closure, safe
+incomplete-state fallback, predicted-child admission by unique owned `PredictionKey`, scope
+projection, exact retained local/remote movement causes, canonical digests, typed differences,
+and the complete-World adapter to `MyCore::Rollback`. Offline tests cover structural correction
+and exercise `PredictOnce`, `PredictCancelable`, and `ConfirmOnce` with Dots events.
 
-Add deliberate client-only faults for position/mass divergence, predicted split rejection,
-spawn-classification mismatch, action packet loss, and remote held-input divergence. Fault state
-must have a durable receipt and remain distinct from transport metrics.
+Protocol v5 now carries requested/accepted join roles, status heartbeats, the authority input
+receive grant, immutable rules, the schema-1 canonical checkpoint and digest, allocator
+and complete owner/entity state, optional prediction keys, the split action bit, and monotonic
+typed authority receipts. Replication builds and exactly rehydrates `WorldCheckpoint`, rejecting
+restore or digest failures. The server retains at most 256 relevant receipts per session, repeats
+at most 16 from the unacknowledged frontier, accepts only issued ACKs, and fails only a session
+that exhausts retention. Protocol, replication, and in-memory session tests cover malformed
+checkpoint state, all receipt event variants, duplicate/conflicting/gapped receipts, batching,
+ACK retirement, split identity, and overflow.
 
-## Implementation Checkpoints
+The production network client now hydrates each validated protocol checkpoint into a complete
+Dots World, selects `InteractionClosure`, and advances that scope through the engine timeline
+with retained local commands and explicit held remote-movement assumptions. Authority is installed
+and the unacknowledged suffix replayed in scratch state before the replicated view, timeline, and
+presentation projection commit together. Retained local commands remain immutable, while the
+engine's transactional stimulus-refresh hook replaces held remote-movement assumptions with the
+newest authoritative values before replay; refreshed history commits only if the entire replay
+succeeds. The closure horizon follows the actual retained suffix with a five-tick operating
+floor; the fixed 256-entry ring is only a recovery bound. Before each input, a fresh closure check
+rebases only when the existing causal membership/subscriptions do not cover the new requirement.
+Safe supersets are retained across smaller ACK-driven horizons. A changed closure rebuilds from
+the newest authority under a new scope epoch because older frames did not record causes for newly
+admitted entities.
 
-Do not start a checkpoint until the preceding checkpoint is reviewed and approved.
+Graphical input now submits an edge-triggered split on Space. Predicted topology, mass, launch,
+food, absorption, merge, and owner state are rendered from the predicted interaction island.
+Outside it, Playing clients advance only newest-authority movement and launch for at most six
+ticks/200 ms and then hold. Spectating clients use Feature 12 interpolation normally; live mode
+advances only an uncovered underrun tail for at most another six ticks, while delayed mode holds
+immediately. Neither spectator mode runs rollback or gameplay mechanics.
+Predicted children retain their `PredictionKey` across replay and through an authoritative
+entity-ID remap. Predicted removal of the final local piece does not enter Spectating or stop
+input capture; only the confirmed replicated session can do that. The client converts new
+authority receipts into confirmed timeline events and ACKs their contiguous published sequence.
+Remote interpolation endpoint ghosts remain visible for in-scope players when enabled so the
+predicted and authoritative presentation layers can still be compared. Local and comparable
+common-tick remote corrections emit entity-specific runtime records into a configurable bounded
+presentation history. The history keeps the magenta pre-correction hue stable, fades opacity
+over two seconds, and excludes ordinary forward movement when no retained common checkpoint
+exists. Predicted presentation residuals carry an explicit correction generation and
+displacement instead of inferring correction from source revision.
 
-### Phase 14.1: Complete checkpoint schema
+The step 6.5 audit remediation makes the fallback transition-closed as `OwnedGameplay`, separates
+causal state membership from owner-participant event subscriptions, and routes every observable
+initialize/advance/reconcile/authority-refresh/scope-rebase/hard-resync result through a bounded
+post-commit `EventBatch`. Replicated World state no longer accumulates receipts. A separate
+bounded inbox tracks accepted, published, and server-retired frontiers, rejects sequence gaps,
+conflicting retransmissions, and live stable-key reuse, and ACKs only after a batch is queued.
+Pre-welcome receipts remain pending; terminal Spectating receipts publish before prediction is
+cleared. Same-tick authority refinement and explicit hard resync preserve their distinct history
+semantics.
 
-- [ ] Add protocol version 4 and immutable server simulation configuration.
-- [ ] Capture, validate, hydrate, and restore complete Dots World state.
-- [ ] Prove checkpoint round trips and deterministic ticks without networking.
-- [ ] Phase 14.1 approved.
+A follow-up command-frontier audit closed the predicted-elimination ACK gap. Dots now tracks and
+displays sent, authoritative-ACK, timeline-submitted, and deferred-outer-input frontiers
+separately. If coherent authority acknowledges a command that was sent and retained while the
+predicted owner was absent, the client selects the engine's explicit hard-resync exception and
+rolls any newer retained commands forward. Fatal timeline operation failures log all frontiers,
+and the regression test covers authority acknowledging inside a multi-input deferred range with
+an unacknowledged suffix.
 
-### Phase 14.2: Atomic rollback kernel
+### Step 7 Decision Record
 
-- [ ] Add `Dots::Prediction` and its public contracts.
-- [ ] Add the 64-frame ring, selectable set, transactional reconciliation, and hard recovery.
-- [ ] Replace the position-only scratch replay without exposing partial state.
-- [ ] Phase 14.2 approved.
+Step 7 installs one Dots-owned rollback-aware presentation adapter in both offline and networked
+composition roots. It does not add game presentation policy to `MyCore::Rollback`. The adapter
+consumes the engine's post-commit `EventBatch`, owns a session-lifetime
+`StaticConsequenceRouter`, and projects persistent state and transient cues into Dots
+presentation data.
 
-### Phase 14.3: All-replicated prediction
+The concrete policy demonstration is:
 
-- [ ] Predict remote held movement and every full-snapshot entity.
-- [ ] Make predicted World presentation the default.
-- [ ] Preserve Feature 12 interpolation as fallback and comparison.
-- [ ] Phase 14.3 approved.
+| Mechanic | Dots presentation | Delivery |
+|---|---|---|
+| Movement | Fixed-tick avatar interpolation and an eight-sample/300 ms motion trail | State-derived |
+| Split | 180 ms expanding flash | `PredictOnce` |
+| Split | Child launch ring/trail for up to one second | `PredictCancelable` |
+| Food consumption | 250 ms food-pop group | `PredictCancelable` |
+| Player absorption | 150 ms immediate consume flash | `PredictOnce` |
+| Player absorption | 300 ms victim-collapse pulse | `PredictCancelable` |
+| Confirmed absorption | 1.5 second kill/defeat HUD banner and monotonic stinger hook | `ConfirmOnce` |
+| Merge | Smoothed survivor geometry and a 100 ms consumed-piece fade | State-derived |
 
-### Phase 14.4: Structural gameplay and cues
+Cancelable split and absorption cues fade for 100 ms on rejection; a canceled food pop fades for
+80 ms. Confirmation updates the active token and any predicted-child entity-ID association
+without restarting it. Handler failure is counted and logged but is not retried and does not fail
+the authoritative session. The router survives respawn and lives until the client session ends.
+Hard resync clears presentation residuals and trails but not consequence tombstones.
 
-- [ ] Add split/launch/remerge and server-owned cooldown validation.
-- [ ] Add predicted spawn identity/classification and structural replay.
-- [ ] Add guarded session consequences and resimulation-aware cue policies.
-- [ ] Phase 14.4 approved.
+Simulation events carry the occurrence geometry required after topology has changed:
+`FoodConsumed` carries the food position, `PlayerAbsorbed` carries absorber and victim positions,
+and `PlayerSplit` carries its origin and initial launch velocity. Stable keys do not change.
+The receipt encoding added in protocol v4 includes this geometry; protocol v5 preserves it while
+adding flow control and spectator roles.
 
-### Phase 14.5: Adaptive timing
+Network presentation owns persistent semantic tracks keyed by `PredictionKey` when present and
+by entity ID otherwise. The selected source order while Playing is predicted closure, latest
+snapshot extrapolation, then delayed interpolation fallback. Predicted fixed-tick samples use the
+client accumulator alpha. Same-tick correction, predicted/remote source handoff, and structural
+replacement preserve the prior visual pose and decay only their presentation offset over 100 ms.
+Already-smoothed local `State` and delayed `Interpolated` samples pass through; a newer
+`Extrapolated` revision still smooths because it replaces a guessed remote future. The
+[persistent presentation audit](../feature14_persistent_presentation_audit.md) records the
+double-smoothing finding and complete source-policy matrix.
 
-- [ ] Add neutral prefill, queue EWMA/deadband, and bounded cadence control.
-- [ ] Add dynamic latency/drift tests and timing metrics.
-- [ ] Document predicted tick, session time, and server-time relationships.
-- [ ] Phase 14.5 approved.
+Outside the prediction closure, presentation advances only known owner movement and per-entity
+launch velocity from the newest accepted snapshot. It executes the same Dots kinematic step for
+at most six ticks/200 ms and then holds. It never runs cohesion, collision, food consumption,
+absorption, split, merge, closure construction, or checkpoint logic. Spectators continue to use
+Feature 12 delayed interpolation. The debug-selectable remote modes are `Extrapolated` (default),
+`Interpolated`, and `Comparison`; comparison renders extrapolation normally and overlays the
+delayed interpolated position.
 
-### Phase 14.6: Observability and exit validation
+The confirmed-only cue uses a noninteractive Dear ImGui HUD banner because Dots has no production
+font or audio backend. The ImGui frame may therefore render the HUD even when debug panes are
+disabled, but the banner never captures input. Its monotonic stinger sequence is the future audio
+hook; Feature 14 does not add audio or a general text renderer.
 
-- [ ] Add Rollback tab, state/topology overlays, and deliberate faults.
-- [ ] Run two-client impairment scenarios and entity-scale workloads.
-- [ ] Record the same-frame versus deferred multi-frame research decision from metrics.
-- [ ] Update Feature 15's AOI entry/exit and collision-margin obligations.
-- [ ] Feature 14 completion approved before Feature 15 implementation.
+Step 7 added game-neutral per-handler/policy dispatch statistics to the consequence report.
+The production Dots adapter exercises every row above in both offline and networked composition
+roots, including a noninteractive confirmed-only HUD banner and a monotonic future-audio hook.
+Step 8 added adaptive command timing, complete fault controls, workload measurement, and router
+tombstone pruning. Its evidence did not justify adding a multi-frame replay scheduler.
+
+### Step 8 Decision Record
+
+Step 8 closes Feature 14 with four bounded increments:
+
+1. Add a Dots-owned adaptive command-timing controller shared by graphical and bot composition
+   roots. It starts with two neutral prefill commands, targets two queued server commands, filters
+   accepted snapshot depths with EWMA `alpha = 1/8`, uses a `1.5..2.5` deadband, and clamps
+   command cadence to `0.95..1.05`. It changes neither the authoritative 30 Hz tick nor fixed
+   gameplay durations. Existing producer-overrun guards continue discarding scheduling debt.
+2. Bound consequence storage through two independent proofs. Timeline retirement proves an event
+   is no longer reachable from retained replay; game integration separately proves no external
+   receipt can redeliver it. The generic router prunes only after both proofs, in either order.
+   Dots uses server-retired confirmed receipts and complete unsaturated receipt batches for this
+   external proof. Offline Dots has no external receipt source and may pair replay retirement
+   immediately.
+3. Complete the Rollback diagnostics and fault contract. Report prediction/scope coordinates,
+   typed divergence, replay distributions, command-buffer state, event/ledger state, receipt
+   rejection categories, remote-assumption provenance, and explicit correction generations.
+   Faults have typed, bounded `Armed`, `Triggered`, and `Completed` receipts and remain separate
+   from transport measurements. Hostile receipt checks run through scratch candidate validation
+   rather than corrupting a live session.
+4. Add deterministic recorded replay workloads and bounded native impairment soaks. Release
+   measurements cover 10, 100, 500, and 1,000 entities at RTT-equivalent replay depths for 100,
+   200, and 400 ms. Same-frame replay remains the sole production path. Only an optimized
+   200 ms workload exceeding 4 ms at p99 or causing rollback-attributable frame overruns in more
+   than 1% of reconciliations creates the separately reviewed multi-frame spike plan.
+
+The adaptive formula is a fixed networking contract rather than a TOML tuning surface. Step 8
+may eliminate redundant checkpoint/digest/difference passes, reserve or reuse scratch storage,
+and skip disabled debug artifacts, but it may not weaken interaction closure, atomic commit,
+event order, or authority validation. The bounded soak support does not replace Feature 17's
+load orchestration and operational reporting.
+
+All four increments are implemented. `EventBatch::externally_retired_keys` is the generic
+external-proof boundary; the router exposes bounded-ledger statistics and refuses to prune a live
+cancelable token. Dots remembers replay-retired keys with occurrence ticks, consumes explicit
+server-retired receipt keys, and treats only a receipt batch smaller than the per-snapshot maximum
+as complete negative evidence. Saturated batches intentionally defer pruning. The Rollback tab
+now exposes profile/scope/digest/replay/difference/spawn/receipt/assumption state, current
+interactive faults produce bounded typed receipts, hostile receipt candidates validate against
+scratch state, and predicted compositor corrections require explicit generations. The workload
+target verifies deterministic split replay across the full entity/RTT-equivalent matrix without
+flaky timing assertions in CTest. Timed headless native sessions provide bounded impairment
+soaks. Release measurements at the target 200 ms case reached 0.738 ms p99 at 1,000 entities and
+0% rollback-only 30 Hz frame overruns, so the multi-frame trigger was not crossed.
+
+### Step 9 Decision Record
+
+Step 9 closes the overload gap exposed by long many-client Debug sessions. Protocol v5 adds
+requested/accepted Player and Spectator roles, a 5 Hz status heartbeat, and an exact 32-sequence
+authority receive grant. Playing clients retain grant-blocked commands separately from transport,
+pause production at eight unsent commands, resume at two, and never convert paused wall time into
+a catch-up burst. The server retains its 64-entry queue only as a hostile-peer invariant and
+isolates a peer that sends fresh input beyond its grant.
+
+Permanent spectators create no owner or player, receive full snapshots without participant-only
+receipts, and produce no gameplay commands. Defeated Players likewise use status heartbeats
+except for an explicit respawn edge. The graphical client, bot, and session launcher expose these
+roles, and the Rollback overlay separates input ACK, receive grant, transmit frontier, unsent
+depth, and production pause state.
+
+The standalone server bounds immediate catch-up to five ticks, then rebases wall time without
+fabricating or skipping simulation ticks. The implementation and stress contract are recorded in
+[`14-input-flow-control-spectator-stress.md`](14-input-flow-control-spectator-stress.md).
 
 ## Test Plan
 
-Kernel tests cover matching and mismatching complete replay, stale authority, ACK monotonicity,
-mode changes, no partial commit, history capacity, checkpoint incompatibility, and hard resync.
+Engine tests with a small deterministic model cover:
 
-Gameplay tests cover deterministic split order, cap/minimum/cooldown rejection, launch/decay,
-merge eligibility/cohesion, mass conservation, same-owner immunity, enemy piece absorption, and
-last-piece defeat.
+- Matching/mismatching authority, long replay suffixes, ACK trimming, stale authority, scope
+  rebase, history exhaustion, hard resync, refreshed derived stimuli, refresh failure, and no
+  partial commit.
+- Repeated replay of one key invokes `PredictOnce` once.
+- Retraction cancels `PredictCancelable` once; revision updates its existing token; confirmation
+  does not duplicate it.
+- `ConfirmOnce` ignores prediction/retraction and fires once across repeated receipts.
+- Multiple handlers with different policies subscribe to the same event type.
+- Conflicting event identities fail without invoking handlers.
+- Ledger retirement bounds storage without allowing an old retained event to fire again.
 
-Lifecycle tests cover accepted/rejected/authority-only/ambiguous spawns, stable replay identity,
-and cue replay/deduplication/cancellation/confirmation.
+Dots tests cover:
 
-Timing tests cover neutral prefill, EWMA/deadband math, 0.95/1.05 clamps, empty queues, edge-action
-non-repetition, latency step changes, loss/reordering, and clock drift.
+- Checkpoint round-trip and deterministic replay for movement, food, absorption, split, and merge.
+- Closure expansion through ownership/cooldown, mechanic/global dependencies, movement, growth,
+  split reach, and recursive player interaction.
+- Owner-local cooldown correction without spatial expansion, immutable-rule incompatibility,
+  missing causal-state fallback, and full-world oracle agreement.
+- Split order/cap/mass/cooldown, launch/decay, merge eligibility/cohesion, mass conservation, and
+  last-piece defeat.
+- Predicted spawn match/reject/authority-only/ambiguity and presentation remapping.
+- Every consequence-matrix row under repeated rollback and rejection.
+- Receipt ACK, loss, duplication, reordering, conflict, and capacity behavior.
 
-Integration scenarios run two clients at 100-200 ms artificial latency with jitter/loss and
-verify eventual convergence to identical authority. Performance workloads record the design
-document's metrics at 10, 100, 500, and 1,000 predicted entities without making wall-clock timing
-a flaky unit-test assertion.
+Integration scenarios use two clients at 100--200 ms latency with jitter/loss and verify eventual
+structural convergence, responsive predicted eat/split, no duplicate consequence delivery,
+confirmed session lifecycle, and coherent debug layers.
+
+Performance workloads record 10, 100, 500, and 1,000 entities at 100, 200, and 400 ms RTT without
+making wall-clock thresholds flaky unit-test assertions.
 
 ## Exit Criteria
 
-- The client restores and resimulates complete Dots gameplay state from validated authority.
-- All-replicated prediction is the normal view and Feature 12 remains a working fallback.
-- Split/merge, cooldowns, absorption, and predicted lifecycle converge after rejection or remote
-  disagreement.
-- Durable session consequences never occur from speculation alone.
-- Every rollback is atomic, bounded, measurable, and recoverable.
-- Dynamic command timing remains bounded and does not alter server authority or session clocks.
-- Metrics produce an explicit evidence-based decision on whether multi-frame replay warrants a
-  separate future plan.
+- The client runs shared Dots gameplay inside a provably closed predicted island.
+- Authoritative correction restores complete state and rolls retained stimuli forward to the
+  previous prediction head atomically.
+- Movement, food, absorption, split, and merge converge structurally.
+- Dots exercises every generic consequence policy and repeated replay does not duplicate
+  one-shot feedback.
+- Outside-closure extrapolation remains presentation-only and bounded.
+- Durable session state and confirmed consequences never derive from speculation alone.
+- `MyCore::Rollback` contains no Dots, protocol, transport, rendering, or audio policy.
+- Debugging clearly distinguishes authoritative, predicted, interpolated/extrapolated, and
+  presentation state.
+- Metrics make the conditional multi-frame spike decision explicit.

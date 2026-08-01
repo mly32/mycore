@@ -14,6 +14,8 @@ Read only the documentation relevant to the task:
 - `docs/cpp_style_guide.md`: C++ conventions and engine boundary rules.
 - `docs/server_authoritative_networking_guide.md`: protocol, transport, server authority,
   replication, and the prediction/interpolation mental model.
+- `docs/rollback_library_guide.md`: new-game integration with the rollback timeline, model
+  contract, consequence handlers, failure recovery, and validation checklist.
 - `docs/rollback_prediction_design.md`: checkpoint/replay contracts, selectable prediction,
   predicted lifecycle, consequence policy, and rollback recovery.
 - `docs/debugging_and_observability.md`: overlay fields, metric meanings, debug visuals,

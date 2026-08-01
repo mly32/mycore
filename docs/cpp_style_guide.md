@@ -61,7 +61,7 @@ enum class ConnectionState {
 ```cpp
 #include "world.hpp"
 
-#include "dots/simulation/input_command.hpp"
+#include "dots/simulation/tick.hpp"
 
 #include <algorithm>
 #include <span>
