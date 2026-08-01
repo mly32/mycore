@@ -16,16 +16,31 @@ enum class MessageKind : std::uint8_t {
     ServerWelcome = 2,
     InputPacket = 3,
     FullSnapshot = 4,
+    ClientStatus = 5,
 };
 
 inline constexpr std::size_t kMaximumInputSamplesPerPacket = 3;
 inline constexpr std::uint8_t kMaximumPendingInputCount = 64;
+inline constexpr std::uint8_t kInputReceiveWindow = 32;
 inline constexpr std::size_t kMaximumAuthorityReceiptsPerSnapshot = 16;
 inline constexpr std::size_t kMaximumPendingAuthorityReceipts = 256;
 inline constexpr std::uint16_t kCheckpointSchemaId = 1;
 inline constexpr std::uint16_t kRespawnActionBit = 1U << 0U;
 inline constexpr std::uint16_t kSplitActionBit = 1U << 1U;
 inline constexpr std::uint16_t kKnownInputActionBits = kRespawnActionBit | kSplitActionBit;
+
+[[nodiscard]] constexpr InputSequenceId
+input_receive_through_for(InputSequenceId last_processed_input_id) noexcept {
+    const auto first_unprocessed =
+        last_processed_input_id.is_valid()
+            ? static_cast<std::uint64_t>(last_processed_input_id.value()) + 1U
+            : std::uint64_t{};
+    const auto requested_end =
+        first_unprocessed + static_cast<std::uint64_t>(kInputReceiveWindow) - 1U;
+    const auto maximum_valid = static_cast<std::uint64_t>(InputSequenceId::kInvalidValue) - 1U;
+    return InputSequenceId{
+        static_cast<std::uint32_t>(requested_end < maximum_valid ? requested_end : maximum_valid)};
+}
 
 enum class EntityKind : std::uint8_t {
     Player = 1,
@@ -37,6 +52,11 @@ enum class SessionMode : std::uint8_t {
     Spectating = 2,
 };
 
+enum class JoinRole : std::uint8_t {
+    Player = 1,
+    Spectator = 2,
+};
+
 enum class RespawnResult : std::uint8_t {
     None = 0,
     Accepted = 1,
@@ -46,6 +66,8 @@ enum class RespawnResult : std::uint8_t {
 };
 
 struct ClientHello {
+    JoinRole requested_role{JoinRole::Player};
+
     auto operator<=>(const ClientHello&) const = default;
 };
 
@@ -67,6 +89,7 @@ struct WorldRules {
 
 struct ServerWelcome {
     ClientId client_id;
+    JoinRole accepted_role{JoinRole::Player};
     std::uint32_t server_tick{};
     std::uint32_t respawn_cooldown_ticks{};
     WorldRules world_rules;
@@ -90,6 +113,13 @@ struct InputPacket {
     std::vector<InputSample> samples;
 
     auto operator<=>(const InputPacket&) const = default;
+};
+
+struct ClientStatus {
+    SnapshotId last_received_snapshot_id;
+    AuthorityReceiptSequenceId last_received_authority_receipt_sequence;
+
+    auto operator<=>(const ClientStatus&) const = default;
 };
 
 struct PredictionKey {
@@ -211,6 +241,7 @@ struct FullSnapshot {
     SnapshotId snapshot_id;
     std::uint32_t server_tick{};
     InputSequenceId last_processed_input_id;
+    InputSequenceId input_receive_through;
     std::uint8_t pending_input_count{};
     std::uint16_t checkpoint_schema_id{kCheckpointSchemaId};
     std::uint64_t checkpoint_digest{};
@@ -224,6 +255,6 @@ struct FullSnapshot {
     bool operator==(const FullSnapshot&) const = default;
 };
 
-using Message = std::variant<ClientHello, ServerWelcome, InputPacket, FullSnapshot>;
+using Message = std::variant<ClientHello, ServerWelcome, InputPacket, FullSnapshot, ClientStatus>;
 
 } // namespace dots::protocol

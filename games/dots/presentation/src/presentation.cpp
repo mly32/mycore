@@ -1114,17 +1114,20 @@ void append_interpolated_remote_comparison(
     }
 }
 
-FrameData
-extract_remote_interpolated_spectator_frame(const RemotePresentationFrame& remotes,
-                                            std::span<const RemoteEntityEndpoints> remote_endpoints,
-                                            mycore::math::Vector2 camera) {
+namespace {
+
+FrameData extract_remote_spectator_frame(std::span<const RemoteEntitySample> entities,
+                                         std::span<const RemoteEntityEndpoints> remote_endpoints,
+                                         mycore::math::Vector2 camera,
+                                         PresentationSource source,
+                                         std::uint64_t source_revision) {
     if (!finite(camera)) {
         throw std::runtime_error{"Dots spectator presentation encountered invalid camera geometry"};
     }
 
     FrameData frame{.camera = camera, .circles = {}};
-    frame.circles.reserve(remotes.entities.size() + (remote_endpoints.size() * 5U));
-    for (const auto& entity : remotes.entities) {
+    frame.circles.reserve(entities.size() + (remote_endpoints.size() * 5U));
+    for (const auto& entity : entities) {
         if (!finite(entity.position) || !std::isfinite(entity.mass) || entity.mass <= 0.0F) {
             throw std::runtime_error{
                 "Dots spectator presentation encountered invalid remote geometry"};
@@ -1139,8 +1142,8 @@ extract_remote_interpolated_spectator_frame(const RemotePresentationFrame& remot
             .owner_id = entity.owner_id,
             .opacity = 1.0F,
             .prediction_key = entity.prediction_key,
-            .source = PresentationSource::Interpolated,
-            .source_revision = remotes.bracket ? remotes.bracket->newer_snapshot_id.value() : 0,
+            .source = source,
+            .source_revision = source_revision,
         });
     }
 
@@ -1199,6 +1202,31 @@ extract_remote_interpolated_spectator_frame(const RemotePresentationFrame& remot
         }
     }
     return frame;
+}
+
+} // namespace
+
+FrameData
+extract_remote_interpolated_spectator_frame(const RemotePresentationFrame& remotes,
+                                            std::span<const RemoteEntityEndpoints> remote_endpoints,
+                                            mycore::math::Vector2 camera) {
+    return extract_remote_spectator_frame(
+        remotes.entities,
+        remote_endpoints,
+        camera,
+        PresentationSource::Interpolated,
+        remotes.bracket ? remotes.bracket->newer_snapshot_id.value() : 0);
+}
+
+FrameData
+extract_remote_extrapolated_spectator_frame(const RemoteExtrapolationFrame& remotes,
+                                            std::span<const RemoteEntityEndpoints> remote_endpoints,
+                                            mycore::math::Vector2 camera) {
+    return extract_remote_spectator_frame(remotes.entities,
+                                          remote_endpoints,
+                                          camera,
+                                          PresentationSource::Extrapolated,
+                                          remotes.snapshot_id.value());
 }
 
 mycore::render_2d::DrawList build_draw_list(const FrameData& frame, const Settings& settings) {

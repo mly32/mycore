@@ -37,6 +37,7 @@ TEST_CASE("Full snapshots map and sort authoritative entities", "[dots][replicat
     REQUIRE(snapshot != nullptr);
     REQUIRE(snapshot->snapshot_id == dots::protocol::SnapshotId{7});
     REQUIRE(snapshot->last_processed_input_id == dots::protocol::InputSequenceId{5});
+    REQUIRE(snapshot->input_receive_through == dots::protocol::InputSequenceId{37});
     REQUIRE(snapshot->pending_input_count == 4);
     REQUIRE(snapshot->entities.size() == 2);
     CHECK(snapshot->entities[0].entity_id == dots::replication::to_protocol(*food));
@@ -51,7 +52,7 @@ TEST_CASE("Full snapshots map and sort authoritative entities", "[dots][replicat
     CHECK(snapshot->next_entity_id == dots::protocol::EntityId{2});
 }
 
-TEST_CASE("Version 4 snapshots hydrate exact rollback checkpoints and verify their digest",
+TEST_CASE("Version 5 snapshots hydrate exact rollback checkpoints and verify their digest",
           "[dots][replication][rollback]") {
     dots::simulation::World world;
     const auto food = world.spawn_food({30.0F, 30.0F});
@@ -319,6 +320,7 @@ TEST_CASE("Replicated worlds replace newer state and reject stale snapshots",
         .snapshot_id = dots::protocol::SnapshotId{1},
         .server_tick = 2,
         .last_processed_input_id = dots::protocol::InputSequenceId{3},
+        .input_receive_through = dots::protocol::InputSequenceId{35},
         .pending_input_count = 2,
         .recipient = playing_session(dots::protocol::EntityId{9}),
         .owners = {{

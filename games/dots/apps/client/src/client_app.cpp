@@ -110,6 +110,7 @@ struct DebugWorldStats {
         std::uint32_t server_tick{};
         std::uint32_t local_input_tick{};
         dots::client_runtime::PredictionStatistics prediction;
+        dots::client_runtime::InputFlowStatistics input_flow;
         dots::client_runtime::CommandTimingStatistics command_timing;
         dots::presentation::RemotePresentationStatistics remote_presentation;
         dots::presentation::RemoteExtrapolationStatistics remote_extrapolation;
@@ -117,6 +118,10 @@ struct DebugWorldStats {
         dots::presentation::PersistentPresentationStatistics persistent_presentation;
         std::span<const dots::client_runtime::DebugFaultReceipt> fault_receipts;
         RemotePresentationMode remote_presentation_mode{RemotePresentationMode::Extrapolated};
+        SpectatorPresentationMode spectator_presentation_mode{SpectatorPresentationMode::Live};
+        bool spectator_live_fallback_active{};
+        double spectator_live_fallback_ticks{};
+        bool spectator_live_fallback_holding{};
         std::optional<dots::protocol::EntityId> representative_remote_entity;
         dots::presentation::RemoteEntityEndpoints representative_remote_endpoints;
         std::optional<Vector2> latest_authoritative_sample;
@@ -232,6 +237,17 @@ session_mode_name(dots::protocol::SessionMode mode) noexcept {
         return "PLAYING";
     case SessionMode::Spectating:
         return "SPECTATING";
+    }
+    return "UNKNOWN";
+}
+
+[[nodiscard]] constexpr std::string_view join_role_name(dots::protocol::JoinRole role) noexcept {
+    using dots::protocol::JoinRole;
+    switch (role) {
+    case JoinRole::Player:
+        return "PLAYER";
+    case JoinRole::Spectator:
+        return "SPECTATOR";
     }
     return "UNKNOWN";
 }
@@ -575,6 +591,34 @@ void draw_prediction_debug_tab(const DebugWorldStats& world) {
 
     const auto& session = *world.network_session;
     const auto& prediction = session.prediction;
+    const auto& input_flow = session.input_flow;
+    const auto requested_role = join_role_name(input_flow.requested_role);
+    ImGui::Text("Join role requested: %.*s",
+                static_cast<int>(requested_role.size()),
+                requested_role.data());
+    if (input_flow.accepted_role) {
+        const auto accepted_role = join_role_name(*input_flow.accepted_role);
+        ImGui::Text("Join role accepted: %.*s",
+                    static_cast<int>(accepted_role.size()),
+                    accepted_role.data());
+    } else {
+        ImGui::TextUnformatted("Join role accepted: pending");
+    }
+    draw_input_sequence("Input ACK", input_flow.acknowledged_through);
+    draw_input_sequence("Receive grant", input_flow.receive_through);
+    draw_input_sequence("Transmitted through", input_flow.transmitted_through);
+    ImGui::Text("Unsent / high-water: %zu / %zu",
+                input_flow.unsent_count,
+                input_flow.unsent_high_water_mark);
+    if (input_flow.production_paused) {
+        ImGui::TextColored({1.0F, 0.55F, 0.2F, 1.0F}, "Input production: PAUSED");
+    } else {
+        ImGui::TextColored({0.35F, 0.9F, 0.45F, 1.0F}, "Input production: RUNNING");
+    }
+    ImGui::Text("Pauses / paused time / status: %llu / %lld ms / %llu",
+                static_cast<unsigned long long>(input_flow.pause_count),
+                static_cast<long long>(input_flow.accumulated_paused_time.count()),
+                static_cast<unsigned long long>(input_flow.status_count));
     const auto requested_profile = prediction_profile_name(prediction.requested_profile);
     const auto active_profile = prediction_profile_name(prediction.active_profile);
     const auto fallback = prediction_fallback_name(prediction.fallback_reason);
@@ -660,7 +704,7 @@ void draw_prediction_debug_tab(const DebugWorldStats& world) {
     ImGui::Separator();
     ImGui::TextUnformatted("Input history and rollback");
     ImGui::Text("Redundancy: %s", prediction.input_redundancy_enabled ? "ENABLED" : "DISABLED");
-    draw_input_sequence("Last input sent", prediction.last_input_sent);
+    draw_input_sequence("Last input accepted", prediction.last_input_sent);
     draw_input_sequence("Last input acknowledged", prediction.last_input_acknowledged);
     draw_input_sequence("Timeline input submitted", prediction.last_timeline_input_submitted);
     ImGui::Text("Command lead: %zu", prediction.unacknowledged_input_count);
@@ -824,6 +868,17 @@ void draw_interpolation_debug_tab(const DebugWorldStats& world) {
     const auto& remote = session.remote_presentation;
     const auto remote_mode = remote_presentation_mode_name(session.remote_presentation_mode);
     ImGui::Text("Playing mode: %.*s", static_cast<int>(remote_mode.size()), remote_mode.data());
+    const auto spectator_mode =
+        spectator_presentation_mode_name(session.spectator_presentation_mode);
+    ImGui::Text(
+        "Spectator mode: %.*s", static_cast<int>(spectator_mode.size()), spectator_mode.data());
+    if (session.spectator_live_fallback_active) {
+        ImGui::Text("Live underrun fallback: %.2f ticks%s",
+                    session.spectator_live_fallback_ticks,
+                    session.spectator_live_fallback_holding ? " (HELD AT CAP)" : "");
+    } else {
+        ImGui::TextUnformatted("Live underrun fallback: inactive");
+    }
     const auto& extrapolation = session.remote_extrapolation;
     ImGui::Text("Extrapolation age / ticks: %.1f ms / %.2f",
                 extrapolation.sample_age_milliseconds,
@@ -870,6 +925,20 @@ void draw_interpolation_debug_tab(const DebugWorldStats& world) {
     ImGui::Text("Hold maximum / total: %lld / %lld ms",
                 static_cast<long long>(remote.maximum_hold_duration.count()),
                 static_cast<long long>(remote.total_hold_duration.count()));
+    ImGui::Text("Observed / underrun share: %lld ms / %.2f%%",
+                static_cast<long long>(remote.observation_duration.count()),
+                remote.hold_time_percentage);
+    ImGui::Text("Live displayed pause: %s", remote.post_cap_holding ? "YES" : "NO");
+    ImGui::Text("Live pause episodes / recoveries: %llu / %llu",
+                static_cast<unsigned long long>(remote.post_cap_hold_episode_count),
+                static_cast<unsigned long long>(remote.post_cap_hold_recovery_count));
+    ImGui::Text("Live pause current / last: %lld / %lld ms",
+                static_cast<long long>(remote.current_post_cap_hold_duration.count()),
+                static_cast<long long>(remote.last_post_cap_hold_duration.count()));
+    ImGui::Text("Live pause maximum / total / share: %lld / %lld ms / %.2f%%",
+                static_cast<long long>(remote.maximum_post_cap_hold_duration.count()),
+                static_cast<long long>(remote.total_post_cap_hold_duration.count()),
+                remote.post_cap_hold_time_percentage);
     ImGui::Text("Rate corrections / rebases: %llu / %llu",
                 static_cast<unsigned long long>(remote.rate_correction_count),
                 static_cast<unsigned long long>(remote.hard_rebase_count));
@@ -884,6 +953,8 @@ void draw_interpolation_debug_tab(const DebugWorldStats& world) {
                         older.position.x,
                         older.position.y,
                         older.mass);
+        } else {
+            ImGui::TextUnformatted("Older endpoint: unavailable");
         }
         if (session.representative_remote_endpoints.newer) {
             const auto& newer = *session.representative_remote_endpoints.newer;
@@ -891,13 +962,18 @@ void draw_interpolation_debug_tab(const DebugWorldStats& world) {
                         newer.position.x,
                         newer.position.y,
                         newer.mass);
+        } else {
+            ImGui::TextUnformatted("Newer endpoint: unavailable");
         }
     } else {
         ImGui::TextUnformatted("Example remote entity: unavailable");
+        ImGui::TextUnformatted("Older endpoint: unavailable");
+        ImGui::TextUnformatted("Newer endpoint: unavailable");
     }
     mycore::debug_ui::description(
         "Playing extrapolation advances only known movement and launch for six ticks, then "
-        "holds. Spectators and the comparison layer use delayed known authority.");
+        "holds. Spectators normally interpolate known authority; live covers underruns for six "
+        "ticks before the displayed world pauses.");
 }
 
 void draw_prediction_tools_tab(const DebugWorldStats& world,
@@ -1215,11 +1291,13 @@ int run_networked_game(
     const dots::presentation::Settings& render_settings,
     mycore::net_transport::Endpoint& endpoint,
     dots::server::Runtime* embedded_server,
+    dots::protocol::JoinRole join_role,
     std::optional<std::chrono::milliseconds> graceful_disconnect_drain = std::nullopt) {
     using namespace std::chrono_literals;
     dots::client_runtime::Runtime client{
         endpoint,
         {
+            .requested_role = join_role,
             .input_redundancy = config.network.input_redundancy,
             .log_prediction_scope_changes =
                 config.debug.prediction_log_level != PredictionLogLevel::Off,
@@ -1319,11 +1397,14 @@ int run_networked_game(
     drain_consequence_batches(std::chrono::steady_clock::now());
 
     std::uint32_t client_tick{};
-    for (std::size_t index = 0; index < command_timing.initial_prefill_count(); ++index) {
-        if (client.send_input(client_tick++, {}) != dots::client_runtime::InputSendResult::Sent) {
-            throw StartupError{"Could not prefill the authoritative input queue"};
+    if (join_role == dots::protocol::JoinRole::Player) {
+        for (std::size_t index = 0; index < command_timing.initial_prefill_count(); ++index) {
+            if (client.submit_input(client_tick++, {}) !=
+                dots::client_runtime::InputSendResult::Sent) {
+                throw StartupError{"Could not prefill the authoritative input queue"};
+            }
+            command_timing.record_prefill_inputs(1);
         }
-        command_timing.record_prefill_inputs(1);
     }
     if (embedded_server != nullptr && embedded_server->process_events()) {
         throw StartupError{"The embedded authoritative server rejected input prefill"};
@@ -1410,7 +1491,12 @@ int run_networked_game(
         frame_metrics.add_sample(frame_duration);
         const auto bounded_elapsed = std::min(frame_duration, maximum_frame_delta);
         const auto discarded_frame_time = frame_duration - bounded_elapsed;
-        const auto elapsed = command_timing.scale_accumulator_elapsed(bounded_elapsed);
+        const auto cadence_control_active =
+            client.session_mode() == dots::protocol::SessionMode::Playing &&
+            !client.input_production_paused();
+        const auto elapsed = cadence_control_active
+                                 ? command_timing.scale_accumulator_elapsed(bounded_elapsed)
+                                 : bounded_elapsed;
         previous_time = now;
         const auto step_result =
             accumulator.advance(elapsed, config.simulation.max_steps_per_frame);
@@ -1431,7 +1517,8 @@ int run_networked_game(
         if (playing_before_steps) {
             respawn_request_pending = false;
             split_request_pending = split_request_pending || player_control_intent.request_split;
-        } else if (spectator_control_intent.request_respawn) {
+        } else if (join_role == dots::protocol::JoinRole::Player &&
+                   spectator_control_intent.request_respawn) {
             split_request_pending = false;
             respawn_request_pending = true;
         }
@@ -1487,14 +1574,19 @@ int run_networked_game(
                 if (!playing && respawn_request_pending) {
                     action_bits |= dots::protocol::kRespawnActionBit;
                 }
-                if (client.send_input(client_tick++, movement, action_bits) !=
-                    dots::client_runtime::InputSendResult::Sent) {
-                    throw StartupError{"The networked client could not send input"};
+                const auto may_submit_playing = playing && !client.input_production_paused();
+                const auto may_submit_respawn =
+                    !playing && join_role == dots::protocol::JoinRole::Player &&
+                    respawn_request_pending && !client.input_production_paused();
+                if ((may_submit_playing || may_submit_respawn) &&
+                    client.submit_input(client_tick++, movement, action_bits) !=
+                        dots::client_runtime::InputSendResult::Sent) {
+                    throw StartupError{"The networked client could not submit input"};
                 }
-                if ((action_bits & dots::protocol::kSplitActionBit) != 0U) {
+                if (may_submit_playing && (action_bits & dots::protocol::kSplitActionBit) != 0U) {
                     split_request_pending = false;
                 }
-                if ((action_bits & dots::protocol::kRespawnActionBit) != 0U) {
+                if (may_submit_respawn && (action_bits & dots::protocol::kRespawnActionBit) != 0U) {
                     respawn_request_pending = false;
                 }
                 if (embedded_server != nullptr &&
@@ -1503,6 +1595,17 @@ int run_networked_game(
                 }
                 if (process_client_events(now)) {
                     throw StartupError{"The networked authoritative session failed"};
+                }
+                if (!playing && client.session_mode() == dots::protocol::SessionMode::Playing) {
+                    for (std::size_t index = 0; index < command_timing.initial_prefill_count();
+                         ++index) {
+                        if (client.submit_input(client_tick++, {}) !=
+                            dots::client_runtime::InputSendResult::Sent) {
+                            throw StartupError{
+                                "Could not prefill inputs after authoritative respawn"};
+                        }
+                        command_timing.record_prefill_inputs(1);
+                    }
                 }
                 if (client.session_mode() == dots::protocol::SessionMode::Playing) {
                     controlled = client.world().find(client.primary_entity_id());
@@ -1554,6 +1657,21 @@ int run_networked_game(
             remote_extrapolation_buffer.sample(now, sampled_local_entity);
         const auto remote_presentation_statistics = remote_snapshot_buffer.statistics(now);
         const auto remote_extrapolation_statistics = remote_extrapolation_buffer.statistics(now);
+        const auto spectator_live_fallback_active =
+            !playing && config.spectator.presentation_mode == SpectatorPresentationMode::Live &&
+            remote_frame.ready && remote_frame.holding;
+        const auto spectator_live_fallback_ticks =
+            spectator_live_fallback_active
+                ? std::chrono::duration<double>{remote_presentation_statistics
+                                                    .current_hold_duration}
+                          .count() *
+                      static_cast<double>(dots::simulation::kTickRateHz)
+                : 0.0;
+        const auto spectator_live_fallback_frame =
+            spectator_live_fallback_active
+                ? remote_extrapolation_buffer.sample_offset(spectator_live_fallback_ticks,
+                                                            sampled_local_entity)
+                : dots::presentation::RemoteExtrapolationFrame{};
         auto prediction_statistics = client.prediction_statistics(now);
         prediction_debug_controls.observe_input_drop_burst(prediction_statistics, now);
         const auto update_local_prediction_presentation = [&] {
@@ -1607,24 +1725,10 @@ int run_networked_game(
             last_camera_position = local_prediction_presentation.presentation_position();
         } else {
             if (!spectator_camera_active) {
-                spectator_camera.enter(last_camera_position,
-                                       render_settings.pixels_per_world_unit,
-                                       client.follow_entity_id(),
-                                       remote_frame);
-                spectator_camera_active = true;
                 local_prediction_presentation.reset();
                 prediction_correction_history.clear();
                 persistent_world_presentation.reset();
             }
-            spectator_camera.update(remote_frame,
-                                    client.follow_entity_id(),
-                                    {
-                                        .pan = spectator_control_intent.pan,
-                                        .zoom_steps = spectator_control_intent.zoom_steps,
-                                        .toggle_follow = spectator_control_intent.toggle_follow,
-                                    },
-                                    std::chrono::duration<float>{elapsed}.count());
-            last_camera_position = spectator_camera.position();
             prediction_debug_controls.requested_prediction_error.reset();
             prediction_debug_controls.drop_input_packets_requested = false;
             prediction_debug_controls.clear_correction_visuals_requested = false;
@@ -1680,6 +1784,7 @@ int run_networked_game(
                             .server_tick = client.world().server_tick(),
                             .local_input_tick = client_tick,
                             .prediction = prediction_statistics,
+                            .input_flow = client.input_flow_statistics(now),
                             .command_timing = command_timing.statistics(),
                             .remote_presentation = remote_presentation_statistics,
                             .remote_extrapolation = remote_extrapolation_statistics,
@@ -1687,6 +1792,14 @@ int run_networked_game(
                             .persistent_presentation = persistent_world_presentation.statistics(),
                             .fault_receipts = client.debug_fault_receipts(),
                             .remote_presentation_mode = config.debug.remote_presentation_mode,
+                            .spectator_presentation_mode = config.spectator.presentation_mode,
+                            .spectator_live_fallback_active = spectator_live_fallback_active,
+                            .spectator_live_fallback_ticks =
+                                spectator_live_fallback_frame.ready
+                                    ? spectator_live_fallback_frame.extrapolation_ticks
+                                    : 0.0,
+                            .spectator_live_fallback_holding =
+                                spectator_live_fallback_frame.holding,
                             .representative_remote_entity = representative_remote_entity,
                             .representative_remote_endpoints = representative_remote_endpoints,
                             .latest_authoritative_sample =
@@ -1829,10 +1942,36 @@ int run_networked_game(
                                                           predicted_primary,
                                                           now);
         } else {
+            if (spectator_live_fallback_active && spectator_live_fallback_frame.ready) {
+                frame = dots::presentation::extract_remote_extrapolated_spectator_frame(
+                    spectator_live_fallback_frame,
+                    remote_endpoint_layers,
+                    spectator_camera.position());
+            } else {
+                frame = dots::presentation::extract_remote_interpolated_spectator_frame(
+                    remote_frame, remote_endpoint_layers, spectator_camera.position());
+            }
+            frame = persistent_world_presentation.compose(
+                frame, 1.0F, prediction_statistics.hard_resync_count, {}, now);
+            if (!spectator_camera_active) {
+                spectator_camera.enter(last_camera_position,
+                                       render_settings.pixels_per_world_unit,
+                                       client.follow_entity_id(),
+                                       frame);
+                spectator_camera_active = true;
+            }
+            spectator_camera.update(frame,
+                                    client.follow_entity_id(),
+                                    {
+                                        .pan = spectator_control_intent.pan,
+                                        .zoom_steps = spectator_control_intent.zoom_steps,
+                                        .toggle_follow = spectator_control_intent.toggle_follow,
+                                    },
+                                    std::chrono::duration<float>{elapsed}.count());
             current_render_settings.pixels_per_world_unit =
                 spectator_camera.pixels_per_world_unit();
-            frame = dots::presentation::extract_remote_interpolated_spectator_frame(
-                remote_frame, remote_endpoint_layers, spectator_camera.position());
+            frame.camera = spectator_camera.position();
+            last_camera_position = frame.camera;
         }
         consequence_presentation.append_cues(frame, now);
         draw_confirmed_notice(consequence_presentation.confirmed_notice(now));
@@ -1852,7 +1991,8 @@ int run_in_memory_game(const ClientConfig& config,
                        mycore::platform_sdl::Window& window,
                        mycore::render_2d::Renderer& renderer,
                        mycore::debug_ui::Context& debug_ui,
-                       const dots::presentation::Settings& render_settings) {
+                       const dots::presentation::Settings& render_settings,
+                       dots::protocol::JoinRole join_role) {
     dots::simulation::World authoritative_world;
     if (!dots::simulation::spawn_default_food_field(authoritative_world)) {
         throw StartupError{"Could not spawn the authoritative food field"};
@@ -1861,7 +2001,7 @@ int run_in_memory_game(const ClientConfig& config,
     dots::server::Runtime server{network.server_endpoint(), std::move(authoritative_world)};
     auto& endpoint = network.connect_client();
     return run_networked_game(
-        config, window, renderer, debug_ui, render_settings, endpoint, &server);
+        config, window, renderer, debug_ui, render_settings, endpoint, &server, join_role);
 }
 
 int run_native_game(const ClientConfig& config,
@@ -1893,6 +2033,7 @@ int run_native_game(const ClientConfig& config,
                               render_settings,
                               endpoint,
                               nullptr,
+                              options.join_role,
                               std::chrono::milliseconds{drain_milliseconds});
 }
 
@@ -1938,7 +2079,9 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
     const auto render_settings = presentation_settings(config);
     const auto presentation_label =
         mode == ClientRunMode::InMemoryGame || mode == ClientRunMode::NativeGame
-            ? std::string_view{"NETWORKED PREDICTED"}
+            ? options.join_role == dots::protocol::JoinRole::Spectator
+                  ? std::string_view{"NETWORKED SPECTATOR"}
+                  : std::string_view{"NETWORKED PREDICTED"}
             : presentation_mode_name(config.debug.presentation_mode);
     mycore::debug::log_info("dots.client",
                             "Started SDL_GPU renderer '{}' with {}, {} presentation, and {} input",
@@ -1949,7 +2092,8 @@ int run_client(const ClientConfig& config, const ClientRunOptions& options) {
     window.show();
 
     if (mode == ClientRunMode::InMemoryGame) {
-        return run_in_memory_game(config, window, renderer, debug_ui, render_settings);
+        return run_in_memory_game(
+            config, window, renderer, debug_ui, render_settings, options.join_role);
     }
     if (mode == ClientRunMode::NativeGame) {
         return run_native_game(config, window, renderer, debug_ui, render_settings, options);

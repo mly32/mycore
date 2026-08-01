@@ -318,6 +318,19 @@ RemotePresentationMode parse_remote_presentation_mode(std::string_view value,
     fail(source, field, "expected extrapolated, interpolated, or comparison");
 }
 
+SpectatorPresentationMode parse_spectator_presentation_mode(std::string_view value,
+                                                            const std::filesystem::path& source,
+                                                            std::string_view field) {
+    const auto normalized = uppercase(value);
+    if (normalized == "LIVE") {
+        return SpectatorPresentationMode::Live;
+    }
+    if (normalized == "DELAYED") {
+        return SpectatorPresentationMode::Delayed;
+    }
+    fail(source, field, "expected live or delayed");
+}
+
 void validate_binding_conflicts(const ClientConfig& config, const std::filesystem::path& source) {
     struct BindingView {
         std::string_view name;
@@ -541,11 +554,18 @@ void parse_spectator(const toml::table& table,
                      ClientConfig& config,
                      const std::filesystem::path& source) {
     validate_keys(table,
-                  {"pan_speed_world_units_per_second",
+                  {"presentation_mode",
+                   "pan_speed_world_units_per_second",
                    "minimum_pixels_per_world_unit",
                    "maximum_pixels_per_world_unit"},
                   source,
                   "spectator");
+    if (table.contains("presentation_mode")) {
+        config.spectator.presentation_mode = parse_spectator_presentation_mode(
+            read_string(table, "presentation_mode", source, "spectator.presentation_mode"),
+            source,
+            "spectator.presentation_mode");
+    }
     if (table.contains("pan_speed_world_units_per_second")) {
         config.spectator.pan_speed_world_units_per_second =
             read_positive_float(table,

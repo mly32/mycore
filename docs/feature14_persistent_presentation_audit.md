@@ -97,7 +97,8 @@ There is no single remote-player mode:
 | Playing, outside the closure, default `extrapolated` mode | `RemoteExtrapolationBuffer` using shared player movement/launch kinematics | No | Advances the newest accepted snapshot for at most six ticks/200 ms, then holds |
 | Playing, outside the closure, `interpolated` mode | Feature 12 snapshot interpolation buffer | No | Renders six ticks behind newest authority and holds on underrun |
 | Playing, `comparison` mode | Extrapolated filled pose plus delayed interpolation outline | No outside the closure | Shows both policies |
-| Spectating | Feature 12 delayed interpolation | No | Always interpolates behind authority and holds on underrun |
+| Spectating, default `live` mode | Feature 12 interpolation, then `RemoteExtrapolationBuffer` and persistent semantic tracks only during underrun | No | Interpolates six ticks behind authority; after exhausting the newest endpoint, advances only that uncovered tail for at most another six ticks/200 ms, then holds |
+| Spectating, `delayed` mode | Feature 12 delayed interpolation through persistent semantic tracks | No | Interpolates six ticks behind authority and holds immediately on underrun |
 
 The extrapolation layer is presentation-only. It does not make collision, eating, splitting,
 merging, closure, or checkpoint decisions. Remote gameplay that can causally affect an owned
@@ -142,8 +143,8 @@ remote inputs can require correction.
 - Preserve the rule that presentation residuals never feed rollback, collision, authority,
   checkpoint, or event decisions.
 
-One limitation remains explicit: a predicted-closure correction that also advances the predicted
-head is rendered as fixed-tick progress because `source_revision` contains a tick, not a separate
-correction generation. Same-head corrections are identified and smoothed today. If measured
-cross-tick closure corrections need a longer residual, the extractor must carry an explicit
-correction generation; source/tick heuristics must not be extended to guess one.
+The later correction-history hardening closed the remaining cross-tick limitation. Reconciliation
+now supplies an explicit per-entity correction generation and displacement to presentation, so a
+predicted-closure correction does not have to be inferred from `source_revision`. The revision
+continues to identify ordinary fixed-tick source progress; only the explicit correction signal
+creates a residual. Source/tick heuristics must not be reintroduced to guess one.

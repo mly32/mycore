@@ -78,6 +78,7 @@ TEST_CASE("Client configuration defaults match the playable client", "[dots][cli
     REQUIRE(config.simulation.max_steps_per_frame == 5);
     REQUIRE(config.view.pixels_per_world_unit == 20.0F);
     REQUIRE(config.view.draw_grid);
+    REQUIRE(config.spectator.presentation_mode == dots::client::SpectatorPresentationMode::Live);
     REQUIRE(config.spectator.pan_speed_world_units_per_second == 12.0F);
     REQUIRE(config.spectator.minimum_pixels_per_world_unit == 5.0F);
     REQUIRE(config.spectator.maximum_pixels_per_world_unit == 80.0F);
@@ -113,6 +114,10 @@ TEST_CASE("Presentation modes have display labels", "[dots][client][config]") {
                 dots::client::RemotePresentationMode::Interpolated) == "INTERPOLATED");
     REQUIRE(dots::client::remote_presentation_mode_name(
                 dots::client::RemotePresentationMode::Comparison) == "COMPARISON");
+    REQUIRE(dots::client::spectator_presentation_mode_name(
+                dots::client::SpectatorPresentationMode::Live) == "LIVE");
+    REQUIRE(dots::client::spectator_presentation_mode_name(
+                dots::client::SpectatorPresentationMode::Delayed) == "DELAYED");
 }
 
 TEST_CASE("Client configuration accepts complete TOML", "[dots][client][config]") {
@@ -156,6 +161,7 @@ draw_grid = false
 grid_spacing_world_units = 4.0
 
 [spectator]
+presentation_mode = "delayed"
 pan_speed_world_units_per_second = 18.0
 minimum_pixels_per_world_unit = 6.0
 maximum_pixels_per_world_unit = 70.0
@@ -195,6 +201,7 @@ food = "#FEDCBA"
     REQUIRE(config.view.pixels_per_world_unit == 32.0F);
     REQUIRE_FALSE(config.view.draw_grid);
     REQUIRE(config.view.grid_spacing_world_units == 4.0F);
+    REQUIRE(config.spectator.presentation_mode == dots::client::SpectatorPresentationMode::Delayed);
     REQUIRE(config.spectator.pan_speed_world_units_per_second == 18.0F);
     REQUIRE(config.spectator.minimum_pixels_per_world_unit == 6.0F);
     REQUIRE(config.spectator.maximum_pixels_per_world_unit == 70.0F);
@@ -220,6 +227,9 @@ width = 900
 [input]
 mode = "HyBrId"
 
+[spectator]
+presentation_mode = "LiVe"
+
 [debug]
 enabled = false
 presentation_mode = "FiXeD"
@@ -239,6 +249,7 @@ quit = ["eScApE"]
     REQUIRE(config.window.height == 720);
     REQUIRE(config.window.title == "Dots");
     REQUIRE(config.controls.mode == dots::client::InputMode::Hybrid);
+    REQUIRE(config.spectator.presentation_mode == dots::client::SpectatorPresentationMode::Live);
     REQUIRE_FALSE(config.debug.enabled);
     REQUIRE(config.debug.presentation_mode == dots::client::PresentationMode::Fixed);
     REQUIRE(config.debug.remote_presentation_mode ==
@@ -337,6 +348,8 @@ TEST_CASE("Invalid client TOML reports the source and field", "[dots][client][co
         InvalidDocument{"[view]\ngrid_spacing_world_units = -2", "view.grid_spacing_world_units"},
         InvalidDocument{"[spectator]\npan_speed_world_units_per_second = 0",
                         "spectator.pan_speed_world_units_per_second"},
+        InvalidDocument{"[spectator]\npresentation_mode = \"future\"",
+                        "spectator.presentation_mode"},
         InvalidDocument{"[spectator]\nminimum_pixels_per_world_unit = 90\n"
                         "maximum_pixels_per_world_unit = 80",
                         "spectator.minimum_pixels_per_world_unit"},

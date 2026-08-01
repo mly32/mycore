@@ -333,6 +333,11 @@ extract_remote_interpolated_spectator_frame(const RemotePresentationFrame& remot
                                             std::span<const RemoteEntityEndpoints> remote_endpoints,
                                             mycore::math::Vector2 camera);
 
+[[nodiscard]] FrameData
+extract_remote_extrapolated_spectator_frame(const RemoteExtrapolationFrame& remotes,
+                                            std::span<const RemoteEntityEndpoints> remote_endpoints,
+                                            mycore::math::Vector2 camera);
+
 [[nodiscard]] mycore::render_2d::DrawList build_draw_list(const FrameData& frame,
                                                           const Settings& settings);
 

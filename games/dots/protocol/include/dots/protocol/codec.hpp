@@ -11,7 +11,7 @@
 
 namespace dots::protocol {
 
-inline constexpr std::uint16_t kProtocolVersion = 4;
+inline constexpr std::uint16_t kProtocolVersion = 5;
 inline constexpr std::size_t kPacketHeaderBytes = 12;
 inline constexpr std::size_t kMaximumEncodedInputPacketBytes = 75;
 inline constexpr std::size_t kTargetTransportPayloadBytes = 1'200;

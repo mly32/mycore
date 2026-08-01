@@ -80,6 +80,11 @@ void complete_protocol_fixture(dots::protocol::Message& message) {
     if (value == nullptr) {
         return;
     }
+    if (value->recipient.mode == dots::protocol::SessionMode::Playing &&
+        !value->input_receive_through.is_valid()) {
+        value->input_receive_through =
+            dots::protocol::input_receive_through_for(value->last_processed_input_id);
+    }
     for (const auto& entity : value->entities) {
         if (entity.kind != dots::protocol::EntityKind::Player ||
             std::any_of(value->owners.begin(),
@@ -187,6 +192,7 @@ void complete_protocol_fixture(dots::protocol::Message& message) {
         .snapshot_id = dots::protocol::SnapshotId{snapshot_id},
         .server_tick = server_tick,
         .last_processed_input_id = acknowledgement,
+        .input_receive_through = dots::protocol::input_receive_through_for(acknowledgement),
         .pending_input_count = pending_input_count,
         .recipient =
             {
@@ -358,21 +364,25 @@ TEST_CASE("Client returns every accepted snapshot from one poll in delivery orde
     CHECK(client.world().snapshot_id() == dots::protocol::SnapshotId{2});
 }
 
-TEST_CASE("Transport send failure does not advance prediction or history",
-          "[dots][prediction][send]") {
+TEST_CASE("Temporary transport queue pressure retains accepted prediction and input",
+          "[dots][prediction][send][flow]") {
     ManualEndpoint endpoint;
     dots::client_runtime::Runtime client{endpoint};
     complete_handshake(endpoint, client, mycore::net_transport::ConnectionHandle{11});
     endpoint.fail_next_send = true;
 
-    REQUIRE(client.send_input(0, {1.0F, 0.0F}) ==
-            dots::client_runtime::InputSendResult::TransportFailure);
-    REQUIRE(client.state() == dots::client_runtime::State::Disconnected);
-    check_position(client.predicted_position(), 0.0F, 0.0F);
+    REQUIRE(client.send_input(0, {1.0F, 0.0F}) == dots::client_runtime::InputSendResult::Sent);
+    REQUIRE(client.state() == dots::client_runtime::State::Ready);
+    check_position(client.predicted_position(), 0.2F, 0.0F);
     const auto statistics = client.prediction_statistics(clock_time(10s));
-    CHECK_FALSE(statistics.last_input_sent.is_valid());
-    CHECK(statistics.history_count == 0);
-    CHECK(endpoint.disconnect_called);
+    CHECK(statistics.last_input_sent == dots::protocol::InputSequenceId{0});
+    CHECK(statistics.history_count == 1);
+    CHECK(client.input_flow_statistics(clock_time(10s)).unsent_count == 1);
+    CHECK_FALSE(endpoint.disconnect_called);
+
+    REQUIRE_FALSE(client.process_events(clock_time(10s + 1ms)).has_value());
+    CHECK(client.input_flow_statistics(clock_time(10s + 1ms)).unsent_count == 0);
+    REQUIRE(endpoint.sent_payloads.size() == 1);
 }
 
 TEST_CASE("Matching reconciliation discards acknowledged input and replays the remainder",
@@ -1105,39 +1115,31 @@ TEST_CASE("Client rejects a corrupt checkpoint without replacing committed predi
     check_position(client.predicted_position(), 0.2F, 0.0F);
 }
 
-TEST_CASE("Prediction history capacity hard-resyncs before recording new input",
-          "[dots][prediction][capacity]") {
+TEST_CASE("Input flow control pauses before prediction history can overflow",
+          "[dots][prediction][capacity][flow]") {
     ManualEndpoint endpoint;
     dots::client_runtime::Runtime client{endpoint};
     complete_handshake(endpoint, client, mycore::net_transport::ConnectionHandle{19});
 
-    for (std::uint32_t tick = 0; tick < dots::client_runtime::kPredictionHistoryCapacity; ++tick) {
+    constexpr auto accepted_before_pause =
+        std::uint32_t{dots::protocol::kInputReceiveWindow} +
+        static_cast<std::uint32_t>(dots::client_runtime::kInputPauseThreshold);
+    for (std::uint32_t tick = 0; tick < accepted_before_pause; ++tick) {
         REQUIRE(client.send_input(tick, {1.0F, 0.0F}) ==
                 dots::client_runtime::InputSendResult::Sent);
     }
     auto statistics = client.prediction_statistics(clock_time(11s));
-    CHECK(statistics.history_count == dots::client_runtime::kPredictionHistoryCapacity);
-    CHECK(statistics.history_high_water_mark == dots::client_runtime::kPredictionHistoryCapacity);
+    CHECK(statistics.history_count == accepted_before_pause);
+    CHECK(statistics.history_high_water_mark == accepted_before_pause);
     CHECK(statistics.hard_resync_count == 0);
-    check_position(client.predicted_position(), 51.2F, 0.0F);
-
-    REQUIRE(client.send_input(dots::client_runtime::kPredictionHistoryCapacity, {1.0F, 0.0F}) ==
-            dots::client_runtime::InputSendResult::Sent);
-    statistics = client.prediction_statistics(clock_time(11s));
-    CHECK(statistics.history_count == 1);
-    CHECK(statistics.history_high_water_mark == dots::client_runtime::kPredictionHistoryCapacity);
-    CHECK(statistics.hard_resync_count == 1);
-    CHECK(statistics.last_input_sent == dots::protocol::InputSequenceId{256});
-    check_position(client.predicted_position(), 0.2F, 0.0F);
-    CHECK_FALSE(client.pre_correction_position().has_value());
-    CHECK(client.latest_replay_path().empty());
-
-    REQUIRE_FALSE(endpoint.sent_payloads.empty());
-    auto message = decode_bytes(endpoint.sent_payloads.back());
-    const auto* packet = std::get_if<dots::protocol::InputPacket>(&message);
-    REQUIRE(packet != nullptr);
-    REQUIRE(packet->samples.size() == 1);
-    CHECK(packet->samples.front().sequence_id == dots::protocol::InputSequenceId{256});
+    check_position(client.predicted_position(), 8.0F, 0.0F);
+    const auto flow = client.input_flow_statistics(clock_time(11s));
+    CHECK(flow.unsent_count == dots::client_runtime::kInputPauseThreshold);
+    CHECK(flow.production_paused);
+    CHECK(flow.pause_count == 1);
+    REQUIRE(client.send_input(accepted_before_pause, {1.0F, 0.0F}) ==
+            dots::client_runtime::InputSendResult::Backpressured);
+    CHECK(client.prediction_statistics(clock_time(11s)).history_count == accepted_before_pause);
 }
 
 TEST_CASE("Injected input drops suppress transport while preserving prediction",

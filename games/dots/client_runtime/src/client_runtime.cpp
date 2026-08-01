@@ -143,6 +143,48 @@ private:
     std::size_t size_{};
 };
 
+class CommandOutbox {
+public:
+    [[nodiscard]] std::size_t size() const noexcept {
+        return size_;
+    }
+
+    [[nodiscard]] bool full() const noexcept {
+        return size_ == entries_.size();
+    }
+
+    [[nodiscard]] const protocol::InputSample& front() const noexcept {
+        return entries_[begin_];
+    }
+
+    [[nodiscard]] bool push_back(protocol::InputSample sample) noexcept {
+        if (full()) {
+            return false;
+        }
+        entries_[(begin_ + size_) % entries_.size()] = sample;
+        ++size_;
+        return true;
+    }
+
+    void pop_front() noexcept {
+        if (size_ == 0) {
+            return;
+        }
+        begin_ = (begin_ + 1) % entries_.size();
+        --size_;
+    }
+
+    void clear() noexcept {
+        begin_ = 0;
+        size_ = 0;
+    }
+
+private:
+    std::array<protocol::InputSample, kPredictionHistoryCapacity> entries_{};
+    std::size_t begin_{};
+    std::size_t size_{};
+};
+
 struct SnapshotProcessResult {
     std::optional<RuntimeError> error;
     bool applied{};
@@ -490,7 +532,8 @@ public:
                 mycore::debug::log_info("dots.client.session",
                                         "Transport connection {} opened; starting handshake",
                                         connection_.value());
-                if (!transmit(protocol::ClientHello{}, DeliveryMode::Reliable)) {
+                if (!transmit(protocol::ClientHello{.requested_role = settings_.requested_role},
+                              DeliveryMode::Reliable)) {
                     result.error = fail(RuntimeError::TransportSendFailed);
                     return result;
                 }
@@ -518,7 +561,12 @@ public:
                     result.error = fail(RuntimeError::UnexpectedMessage);
                     return result;
                 }
+                if (welcome->accepted_role != settings_.requested_role) {
+                    result.error = fail(RuntimeError::UnexpectedMessage);
+                    return result;
+                }
                 client_id_ = welcome->client_id;
+                accepted_role_ = welcome->accepted_role;
                 respawn_cooldown_ticks_ = welcome->respawn_cooldown_ticks;
                 world_rules_ = welcome->world_rules;
                 if (latest_authority_snapshot_) {
@@ -562,17 +610,39 @@ public:
             result.error = fail(RuntimeError::UnexpectedMessage);
             return result;
         }
+        if (state_ == State::Ready) {
+            if (const auto error = flush_pending_inputs(now)) {
+                result.error = fail(*error);
+                return result;
+            }
+            if (const auto error = maybe_send_status(now)) {
+                result.error = fail(*error);
+                return result;
+            }
+        }
         return result;
     }
 
-    [[nodiscard]] InputSendResult send_input(std::uint32_t client_tick,
-                                             mycore::math::Vector2 movement,
-                                             std::uint16_t action_bits) {
+    [[nodiscard]] InputSendResult submit_input(std::uint32_t client_tick,
+                                               mycore::math::Vector2 movement,
+                                               std::uint16_t action_bits) {
         if (state_ != State::Ready) {
             return InputSendResult::NotReady;
         }
+        if (accepted_role_ != protocol::JoinRole::Player) {
+            return InputSendResult::SpectatorOnly;
+        }
+        if (input_production_paused_) {
+            return InputSendResult::Backpressured;
+        }
         if ((action_bits & static_cast<std::uint16_t>(~protocol::kKnownInputActionBits)) != 0U) {
             return InputSendResult::InvalidAction;
+        }
+        const auto movement_length_squared = (movement.x * movement.x) + (movement.y * movement.y);
+        if (!std::isfinite(movement.x) || !std::isfinite(movement.y) || movement.x < -1.0F ||
+            movement.x > 1.0F || movement.y < -1.0F || movement.y > 1.0F ||
+            movement_length_squared > 1.0001F) {
+            return InputSendResult::InvalidMovement;
         }
         const auto playing = world_.recipient().mode == protocol::SessionMode::Playing;
         if (playing && (!timeline_ || !confirmed_owner_id_.is_valid())) {
@@ -599,23 +669,10 @@ public:
             .movement_y = movement.y,
             .action_bits = action_bits,
         };
-        auto packet = make_input_packet(sample);
-        auto encoded = protocol::encode(packet);
-        auto* bytes = std::get_if<protocol::EncodedMessage>(&encoded);
-        if (bytes == nullptr) {
-            return InputSendResult::InvalidMovement;
-        }
-
         if (playing && input_history_.full()) {
             if (!hard_resync(std::chrono::steady_clock::now())) {
                 static_cast<void>(fail(RuntimeError::MissingControlledEntity));
                 return InputSendResult::NotReady;
-            }
-            packet = make_input_packet(sample);
-            encoded = protocol::encode(packet);
-            bytes = std::get_if<protocol::EncodedMessage>(&encoded);
-            if (bytes == nullptr) {
-                return InputSendResult::InvalidMovement;
             }
         }
         if (playing) {
@@ -632,59 +689,40 @@ public:
             }
         }
 
-        if (pending_injected_input_drop_count_ > 0) {
-            --pending_injected_input_drop_count_;
-            ++injected_input_drop_count_;
-            ++active_input_drop_observed_count_;
-            if (!active_input_drop_triggered_) {
-                append_debug_fault_receipt({
-                    .id = active_input_drop_fault_id_,
-                    .kind = DebugFaultKind::InputPacketLoss,
-                    .phase = DebugFaultPhase::Triggered,
-                    .requested_count = active_input_drop_requested_count_,
-                    .observed_count = active_input_drop_observed_count_,
-                });
-                active_input_drop_triggered_ = true;
-            }
-            if (pending_injected_input_drop_count_ == 0) {
-                append_debug_fault_receipt({
-                    .id = active_input_drop_fault_id_,
-                    .kind = DebugFaultKind::InputPacketLoss,
-                    .phase = DebugFaultPhase::Completed,
-                    .requested_count = active_input_drop_requested_count_,
-                    .observed_count = active_input_drop_observed_count_,
-                });
-                active_input_drop_fault_id_ = 0;
-                active_input_drop_requested_count_ = 0;
-                active_input_drop_observed_count_ = 0;
-                active_input_drop_triggered_ = false;
-            }
-        } else if (endpoint_.send(connection_, *bytes, DeliveryMode::Unreliable) !=
-                   SendStatus::Sent) {
-            static_cast<void>(endpoint_.disconnect(connection_));
-            state_ = State::Disconnected;
-            return InputSendResult::TransportFailure;
+        if (command_outbox_.full() || !command_outbox_.push_back(sample)) {
+            return InputSendResult::Backpressured;
         }
 
         last_sent_client_tick_ = client_tick;
         ++next_input_id_;
-        if (!playing) {
-            return InputSendResult::Sent;
+        if (playing) {
+            if (!input_history_.push_back({
+                    .sample = sample,
+                    .resulting_position = predicted_position_.value_or(mycore::math::Vector2{}),
+                })) {
+                static_cast<void>(fail(RuntimeError::MissingControlledEntity));
+                return InputSendResult::NotReady;
+            }
+            if (const auto error = advance_prediction(sample)) {
+                static_cast<void>(fail(*error));
+                return InputSendResult::NotReady;
+            }
+            history_high_water_mark_ = std::max(history_high_water_mark_, input_history_.size());
+            report_history_health(std::chrono::steady_clock::now());
         }
-        if (!input_history_.push_back({
-                .sample = sample,
-                .resulting_position = predicted_position_.value_or(mycore::math::Vector2{}),
-            })) {
-            static_cast<void>(fail(RuntimeError::MissingControlledEntity));
-            return InputSendResult::NotReady;
-        }
-        if (const auto error = advance_prediction(sample)) {
+        unsent_high_water_mark_ = std::max(unsent_high_water_mark_, command_outbox_.size());
+        update_input_pause_state(std::chrono::steady_clock::now());
+        if (const auto error = flush_pending_inputs(std::chrono::steady_clock::now())) {
             static_cast<void>(fail(*error));
-            return InputSendResult::NotReady;
+            return InputSendResult::TransportFailure;
         }
-        history_high_water_mark_ = std::max(history_high_water_mark_, input_history_.size());
-        report_history_health(std::chrono::steady_clock::now());
         return InputSendResult::Sent;
+    }
+
+    [[nodiscard]] InputSendResult send_input(std::uint32_t client_tick,
+                                             mycore::math::Vector2 movement,
+                                             std::uint16_t action_bits) {
+        return submit_input(client_tick, movement, action_bits);
     }
 
     [[nodiscard]] bool disconnect() {
@@ -720,6 +758,14 @@ public:
 
     [[nodiscard]] protocol::ClientId client_id() const noexcept {
         return client_id_;
+    }
+
+    [[nodiscard]] std::optional<protocol::JoinRole> accepted_role() const noexcept {
+        return accepted_role_;
+    }
+
+    [[nodiscard]] bool input_production_paused() const noexcept {
+        return input_production_paused_;
     }
 
     [[nodiscard]] protocol::EntityId controlled_entity_id() const noexcept {
@@ -1080,6 +1126,28 @@ public:
         return result;
     }
 
+    [[nodiscard]] InputFlowStatistics
+    input_flow_statistics(std::chrono::steady_clock::time_point now) const noexcept {
+        auto paused_time = accumulated_input_pause_time_;
+        if (input_pause_started_at_ && now > *input_pause_started_at_) {
+            paused_time += now - *input_pause_started_at_;
+        }
+        return {
+            .requested_role = settings_.requested_role,
+            .accepted_role = accepted_role_,
+            .acknowledged_through = world_.last_processed_input_id(),
+            .receive_through = world_.input_receive_through(),
+            .transmitted_through = last_transmitted_input_id_,
+            .unsent_count = command_outbox_.size(),
+            .unsent_high_water_mark = unsent_high_water_mark_,
+            .production_paused = input_production_paused_,
+            .pause_count = input_pause_count_,
+            .accumulated_paused_time =
+                std::chrono::duration_cast<std::chrono::milliseconds>(paused_time),
+            .status_count = status_count_,
+        };
+    }
+
 private:
     [[nodiscard]] protocol::InputSequenceId timeline_submission_frontier() const noexcept {
         if (!timeline_) {
@@ -1145,21 +1213,157 @@ private:
         };
         packet.samples.reserve(protocol::kMaximumInputSamplesPerPacket);
         if (settings_.input_redundancy) {
-            constexpr auto kPriorSampleCount = protocol::kMaximumInputSamplesPerPacket - 1;
-            const auto first = input_history_.size() > kPriorSampleCount
-                                   ? input_history_.size() - kPriorSampleCount
-                                   : 0;
-            for (auto index = first; index < input_history_.size(); ++index) {
-                packet.samples.push_back(input_history_.at(index).sample);
+            for (const auto& previous : recently_transmitted_inputs_) {
+                if (previous.sequence_id < current_sample.sequence_id &&
+                    (!world_.last_processed_input_id().is_valid() ||
+                     previous.sequence_id > world_.last_processed_input_id()) &&
+                    current_sample.sequence_id.value() - previous.sequence_id.value() <=
+                        protocol::kMaximumInputSamplesPerPacket - 1U) {
+                    packet.samples.push_back(previous);
+                }
             }
         }
         packet.samples.push_back(current_sample);
         return packet;
     }
 
+    void record_injected_input_drop() {
+        --pending_injected_input_drop_count_;
+        ++injected_input_drop_count_;
+        ++active_input_drop_observed_count_;
+        if (!active_input_drop_triggered_) {
+            append_debug_fault_receipt({
+                .id = active_input_drop_fault_id_,
+                .kind = DebugFaultKind::InputPacketLoss,
+                .phase = DebugFaultPhase::Triggered,
+                .requested_count = active_input_drop_requested_count_,
+                .observed_count = active_input_drop_observed_count_,
+            });
+            active_input_drop_triggered_ = true;
+        }
+        if (pending_injected_input_drop_count_ == 0) {
+            append_debug_fault_receipt({
+                .id = active_input_drop_fault_id_,
+                .kind = DebugFaultKind::InputPacketLoss,
+                .phase = DebugFaultPhase::Completed,
+                .requested_count = active_input_drop_requested_count_,
+                .observed_count = active_input_drop_observed_count_,
+            });
+            active_input_drop_fault_id_ = 0;
+            active_input_drop_requested_count_ = 0;
+            active_input_drop_observed_count_ = 0;
+            active_input_drop_triggered_ = false;
+        }
+    }
+
+    [[nodiscard]] std::optional<RuntimeError>
+    flush_pending_inputs(std::chrono::steady_clock::time_point now) {
+        if (accepted_role_ != protocol::JoinRole::Player) {
+            return std::nullopt;
+        }
+        const auto receive_through = world_.input_receive_through();
+        auto flushed = std::size_t{};
+        while (command_outbox_.size() > 0 && flushed < kMaximumInputPacketsPerFlush &&
+               receive_through.is_valid() &&
+               command_outbox_.front().sequence_id <= receive_through) {
+            const auto sample = command_outbox_.front();
+            const auto packet = make_input_packet(sample);
+            const auto encoded = protocol::encode(packet);
+            const auto* bytes = std::get_if<protocol::EncodedMessage>(&encoded);
+            if (bytes == nullptr) {
+                return RuntimeError::ProtocolEncodeFailed;
+            }
+            if (pending_injected_input_drop_count_ > 0) {
+                record_injected_input_drop();
+            } else {
+                const auto send_status =
+                    endpoint_.send(connection_, *bytes, DeliveryMode::Unreliable);
+                if (send_status == SendStatus::QueueFull) {
+                    break;
+                }
+                if (send_status != SendStatus::Sent) {
+                    return RuntimeError::TransportSendFailed;
+                }
+            }
+            command_outbox_.pop_front();
+            last_transmitted_input_id_ = sample.sequence_id;
+            recently_transmitted_inputs_.push_back(sample);
+            while (recently_transmitted_inputs_.size() >
+                   protocol::kMaximumInputSamplesPerPacket - 1U) {
+                recently_transmitted_inputs_.pop_front();
+            }
+            ++flushed;
+        }
+        update_input_pause_state(now);
+        return std::nullopt;
+    }
+
+    void update_input_pause_state(std::chrono::steady_clock::time_point now) {
+        if (!input_production_paused_ && command_outbox_.size() >= kInputPauseThreshold) {
+            input_production_paused_ = true;
+            input_pause_started_at_ = now;
+            ++input_pause_count_;
+            mycore::debug::log_warning(
+                "dots.client.input",
+                "Paused command production with {} unsent inputs; authority grant is {} and "
+                "transmitted frontier is {}",
+                command_outbox_.size(),
+                sequence_name(world_.input_receive_through()),
+                sequence_name(last_transmitted_input_id_));
+            return;
+        }
+        if (input_production_paused_ && command_outbox_.size() <= kInputResumeThreshold) {
+            input_production_paused_ = false;
+            if (input_pause_started_at_) {
+                accumulated_input_pause_time_ += now - *input_pause_started_at_;
+                input_pause_started_at_.reset();
+            }
+            mycore::debug::log_info(
+                "dots.client.input",
+                "Resumed command production with {} unsent inputs; authority grant is {}",
+                command_outbox_.size(),
+                sequence_name(world_.input_receive_through()));
+        }
+    }
+
+    [[nodiscard]] std::optional<RuntimeError>
+    maybe_send_status(std::chrono::steady_clock::time_point now) {
+        const auto needs_status = accepted_role_ == protocol::JoinRole::Spectator ||
+                                  world_.recipient().mode == protocol::SessionMode::Spectating ||
+                                  input_production_paused_;
+        if (!needs_status ||
+            (last_status_time_ && now - *last_status_time_ < kClientStatusInterval)) {
+            return std::nullopt;
+        }
+        const protocol::ClientStatus status{
+            .last_received_snapshot_id = world_.snapshot_id(),
+            .last_received_authority_receipt_sequence = authority_receipts_.published_through(),
+        };
+        const auto encoded = protocol::encode(status);
+        const auto* bytes = std::get_if<protocol::EncodedMessage>(&encoded);
+        if (bytes == nullptr) {
+            return RuntimeError::ProtocolEncodeFailed;
+        }
+        const auto send_status = endpoint_.send(connection_, *bytes, DeliveryMode::Unreliable);
+        if (send_status == SendStatus::QueueFull) {
+            return std::nullopt;
+        }
+        if (send_status != SendStatus::Sent) {
+            return RuntimeError::TransportSendFailed;
+        }
+        last_status_time_ = now;
+        ++status_count_;
+        return std::nullopt;
+    }
+
     [[nodiscard]] SnapshotProcessResult
     process_snapshot(const protocol::FullSnapshot& snapshot,
                      std::chrono::steady_clock::time_point now) {
+        const auto role = accepted_role_.value_or(settings_.requested_role);
+        if ((role == protocol::JoinRole::Player && !snapshot.input_receive_through.is_valid()) ||
+            (role == protocol::JoinRole::Spectator && snapshot.input_receive_through.is_valid())) {
+            return {.error = RuntimeError::InvalidSnapshot};
+        }
         auto candidate_world = world_;
         auto candidate_receipts = authority_receipts_;
         const auto apply_result = candidate_world.apply(snapshot);
@@ -1290,6 +1494,15 @@ private:
 
     [[nodiscard]] bool
     valid_respawn_deadline(const protocol::RecipientSessionState& session) const noexcept {
+        const auto role = accepted_role_.value_or(settings_.requested_role);
+        if (role == protocol::JoinRole::Spectator) {
+            return session.mode == protocol::SessionMode::Spectating &&
+                   session.owned_entity_ids.empty() && !session.primary_entity_id.is_valid() &&
+                   !session.follow_entity_id.is_valid() && !session.defeat_tick &&
+                   !session.respawn_available_tick &&
+                   !session.latest_respawn_request_id.is_valid() &&
+                   session.latest_respawn_result == protocol::RespawnResult::None;
+        }
         if (session.mode != protocol::SessionMode::Spectating) {
             return true;
         }
@@ -2430,7 +2643,8 @@ private:
     }
 
     [[nodiscard]] std::optional<RuntimeError> update_ready_state() {
-        if (!client_id_.is_valid() || !world_rules_ || !world_.snapshot_id().is_valid()) {
+        if (!client_id_.is_valid() || !accepted_role_ || !world_rules_ ||
+            !world_.snapshot_id().is_valid()) {
             return std::nullopt;
         }
         const auto session_mode = world_.recipient().mode;
@@ -2446,10 +2660,16 @@ private:
         }
         if (state_ != State::Ready) {
             state_ = State::Ready;
-            mycore::debug::log_info("dots.client.session",
-                                    "Session ready as client {} with primary entity {}",
-                                    client_id_.value(),
-                                    primary_entity_id.value());
+            if (*accepted_role_ == protocol::JoinRole::Spectator) {
+                mycore::debug::log_info("dots.client.session",
+                                        "Spectator session ready as client {}",
+                                        client_id_.value());
+            } else {
+                mycore::debug::log_info("dots.client.session",
+                                        "Session ready as client {} with primary entity {}",
+                                        client_id_.value(),
+                                        primary_entity_id.value());
+            }
         }
         return std::nullopt;
     }
@@ -2474,6 +2694,7 @@ private:
     mycore::net_transport::ConnectionHandle connection_;
     State state_{State::Connecting};
     protocol::ClientId client_id_;
+    std::optional<protocol::JoinRole> accepted_role_;
     std::uint32_t respawn_cooldown_ticks_{};
     std::optional<protocol::WorldRules> world_rules_;
     replication::ReplicatedWorld world_;
@@ -2481,6 +2702,16 @@ private:
     std::optional<protocol::FullSnapshot> latest_authority_snapshot_;
     std::uint32_t next_input_id_{};
     std::optional<std::uint32_t> last_sent_client_tick_;
+    CommandOutbox command_outbox_;
+    std::deque<protocol::InputSample> recently_transmitted_inputs_;
+    protocol::InputSequenceId last_transmitted_input_id_;
+    std::size_t unsent_high_water_mark_{};
+    bool input_production_paused_{};
+    std::uint64_t input_pause_count_{};
+    std::optional<std::chrono::steady_clock::time_point> input_pause_started_at_;
+    std::chrono::steady_clock::duration accumulated_input_pause_time_{};
+    std::optional<std::chrono::steady_clock::time_point> last_status_time_;
+    std::uint64_t status_count_{};
     PredictionHistory input_history_;
     std::optional<prediction::Timeline> timeline_;
     std::deque<PredictionEventBatch> prediction_event_batches_;
@@ -2571,6 +2802,12 @@ ProcessEventsResult Runtime::process_events(std::chrono::steady_clock::time_poin
     return impl_->process_events(now);
 }
 
+InputSendResult Runtime::submit_input(std::uint32_t client_tick,
+                                      mycore::math::Vector2 movement,
+                                      std::uint16_t action_bits) {
+    return impl_->submit_input(client_tick, movement, action_bits);
+}
+
 InputSendResult Runtime::send_input(std::uint32_t client_tick,
                                     mycore::math::Vector2 movement,
                                     std::uint16_t action_bits) {
@@ -2595,6 +2832,14 @@ const replication::ReplicatedWorld& Runtime::world() const noexcept {
 
 protocol::ClientId Runtime::client_id() const noexcept {
     return impl_->client_id();
+}
+
+std::optional<protocol::JoinRole> Runtime::accepted_role() const noexcept {
+    return impl_->accepted_role();
+}
+
+bool Runtime::input_production_paused() const noexcept {
+    return impl_->input_production_paused();
 }
 
 protocol::EntityId Runtime::controlled_entity_id() const noexcept {
@@ -2710,6 +2955,11 @@ Runtime::prediction_statistics(std::chrono::steady_clock::time_point now) const 
 ReplicationStatistics
 Runtime::replication_statistics(std::chrono::steady_clock::time_point now) const noexcept {
     return impl_->replication_statistics(now);
+}
+
+InputFlowStatistics
+Runtime::input_flow_statistics(std::chrono::steady_clock::time_point now) const noexcept {
+    return impl_->input_flow_statistics(now);
 }
 
 } // namespace dots::client_runtime

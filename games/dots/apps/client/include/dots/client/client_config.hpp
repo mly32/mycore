@@ -24,6 +24,11 @@ enum class RemotePresentationMode : std::uint8_t {
     Comparison,
 };
 
+enum class SpectatorPresentationMode : std::uint8_t {
+    Live,
+    Delayed,
+};
+
 enum class NetworkMode : std::uint8_t {
     Offline,
     InMemory,
@@ -73,6 +78,17 @@ remote_presentation_mode_name(RemotePresentationMode mode) noexcept {
     return "UNKNOWN";
 }
 
+[[nodiscard]] constexpr std::string_view
+spectator_presentation_mode_name(SpectatorPresentationMode mode) noexcept {
+    switch (mode) {
+    case SpectatorPresentationMode::Live:
+        return "LIVE";
+    case SpectatorPresentationMode::Delayed:
+        return "DELAYED";
+    }
+    return "UNKNOWN";
+}
+
 class StartupError : public std::runtime_error {
 public:
     explicit StartupError(const std::string& message);
@@ -114,6 +130,7 @@ struct ViewSettings {
 };
 
 struct SpectatorSettings {
+    SpectatorPresentationMode presentation_mode{SpectatorPresentationMode::Live};
     float pan_speed_world_units_per_second{12.0F};
     float minimum_pixels_per_world_unit{5.0F};
     float maximum_pixels_per_world_unit{80.0F};

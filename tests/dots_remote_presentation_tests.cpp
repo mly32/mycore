@@ -110,6 +110,13 @@ TEST_CASE("Remote extrapolation advances movement and launch but keeps food stat
     CHECK(frame.entities[1].position.x == Catch::Approx(9.0F));
     CHECK(frame.entities[1].position.y == Catch::Approx(8.0F));
 
+    const auto offset_frame = buffer.sample_offset(1.5);
+    REQUIRE(offset_frame.ready);
+    REQUIRE_FALSE(offset_frame.holding);
+    CHECK(offset_frame.extrapolation_ticks == Catch::Approx(1.5));
+    CHECK(offset_frame.entities[0].position.x == Catch::Approx(3.0F));
+    CHECK_FALSE(buffer.sample_offset(-1.0).ready);
+
     const auto statistics = buffer.statistics(clock_time(116666667ns));
     CHECK(statistics.extrapolated_player_count == 1);
     CHECK(statistics.static_entity_count == 1);
@@ -132,6 +139,37 @@ TEST_CASE("Remote extrapolation holds after its six-tick horizon",
     const auto statistics = buffer.statistics(clock_time(500ms));
     CHECK(statistics.extrapolated_player_count == 0);
     CHECK(statistics.held_player_count == 1);
+}
+
+TEST_CASE("Live spectator extrapolates only the interpolation underrun tail",
+          "[dots][remote-presentation][spectator]") {
+    dots::presentation::RemoteSnapshotBuffer interpolation;
+    interpolation.insert(snapshot(1, 0, 0.0F, 0ms));
+    interpolation.insert(snapshot(2, 2, 2.0F, 67ms));
+    interpolation.insert(snapshot(3, 4, 4.0F, 133ms));
+    interpolation.insert(snapshot(4, 6, 6.0F, 200ms));
+    interpolation.advance(clock_time(200ms));
+    interpolation.advance(clock_time(400ms));
+    REQUIRE(interpolation.sample({}).holding);
+    interpolation.advance(clock_time(450ms));
+
+    const auto statistics = interpolation.statistics(clock_time(450ms));
+    REQUIRE(statistics.holding);
+    REQUIRE(statistics.current_hold_duration == 50ms);
+    const auto underrun_ticks =
+        std::chrono::duration<double>{statistics.current_hold_duration}.count() *
+        static_cast<double>(dots::simulation::kTickRateHz);
+
+    dots::presentation::RemoteExtrapolationBuffer extrapolation;
+    REQUIRE(extrapolation.insert(kinematic_snapshot(1, 6, 0ms)));
+    const auto fallback = extrapolation.sample_offset(underrun_ticks);
+    const auto project_to_now = extrapolation.sample(clock_time(450ms));
+
+    REQUIRE(fallback.ready);
+    CHECK(fallback.extrapolation_ticks == Catch::Approx(1.5));
+    CHECK(fallback.entities[0].position.x == Catch::Approx(3.0F));
+    REQUIRE(project_to_now.holding);
+    CHECK(project_to_now.entities[0].position.x == Catch::Approx(12.0F));
 }
 
 TEST_CASE("Remote extrapolation rejects invalid and stale authoritative samples",
@@ -248,6 +286,46 @@ TEST_CASE("Remote presentation holds on an underrun and does not extrapolate",
     CHECK(statistics.cursor_rate == Catch::Approx(0.0));
     CHECK(statistics.hard_rebase_count == 0);
     CHECK(statistics.holding);
+}
+
+TEST_CASE("Remote presentation measures underrun and post-cap pause time",
+          "[dots][remote-presentation][spectator]") {
+    dots::presentation::RemoteSnapshotBuffer buffer;
+    buffer.insert(snapshot(1, 0, 0.0F, 0ms));
+    buffer.insert(snapshot(2, 2, 2.0F, 67ms));
+    buffer.insert(snapshot(3, 4, 4.0F, 133ms));
+    buffer.insert(snapshot(4, 6, 6.0F, 200ms));
+    buffer.advance(clock_time(200ms));
+    buffer.advance(clock_time(400ms));
+    buffer.advance(clock_time(600ms));
+
+    auto statistics = buffer.statistics(clock_time(700ms));
+    REQUIRE(statistics.holding);
+    CHECK(statistics.observation_duration == 500ms);
+    CHECK(statistics.total_hold_duration == 300ms);
+    CHECK(statistics.hold_time_percentage == Catch::Approx(60.0));
+    REQUIRE(statistics.post_cap_holding);
+    CHECK(statistics.post_cap_hold_episode_count == 1);
+    CHECK(statistics.post_cap_hold_recovery_count == 0);
+    CHECK(statistics.current_post_cap_hold_duration == 100ms);
+    CHECK(statistics.maximum_post_cap_hold_duration == 100ms);
+    CHECK(statistics.total_post_cap_hold_duration == 100ms);
+    CHECK(statistics.post_cap_hold_time_percentage == Catch::Approx(20.0));
+
+    buffer.insert(snapshot(5, 8, 8.0F, 701ms));
+    buffer.insert(snapshot(6, 10, 10.0F, 702ms));
+    buffer.insert(snapshot(7, 12, 12.0F, 703ms));
+    buffer.insert(snapshot(8, 14, 14.0F, 704ms));
+    buffer.advance(clock_time(710ms));
+
+    statistics = buffer.statistics(clock_time(710ms));
+    CHECK_FALSE(statistics.holding);
+    CHECK_FALSE(statistics.post_cap_holding);
+    CHECK(statistics.post_cap_hold_episode_count == 1);
+    CHECK(statistics.post_cap_hold_recovery_count == 1);
+    CHECK(statistics.last_post_cap_hold_duration == 110ms);
+    CHECK(statistics.maximum_post_cap_hold_duration == 110ms);
+    CHECK(statistics.total_post_cap_hold_duration == 110ms);
 }
 
 TEST_CASE("Remote presentation recovers monotonically through late snapshots",

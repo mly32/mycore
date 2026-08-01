@@ -8,7 +8,7 @@ future mechanics outlined in feature plans. The server is authoritative for ever
 Dots is an early Agar.io-like movement and growth slice. Players move through a shared field,
 consume food, and can absorb smaller opponents. The shared deterministic World and offline
 rollback model also implement split, launch, cohesion, and merge rules. The graphical client
-submits split as an edge-triggered action on Space; protocol v4 carries it to authority while the
+submits split as an edge-triggered action on Space; protocol v5 carries it to authority while the
 complete client rollback timeline predicts its immediate topology and motion.
 There is no score, win condition, or separate energy system. Food is the current resource that
 fills the role an energy pickup might later fill.
@@ -68,10 +68,17 @@ server-assigned spawns.
 
 ## Movement and connection loss
 
-Clients submit normalized movement intent at 30 Hz. A player moves at 6 world units per second.
+Playing clients normally submit normalized movement intent at 30 Hz. A player moves at 6 world
+units per second.
 The server consumes at most one queued input sample per owner per tick. The simulation installs
 at most one owner command and applies its held movement to every piece owned by that owner. A live
 graphical network session may own up to eight pieces through edge-triggered split input.
+
+Each player snapshot advertises the exact 32-sequence input frontier authority currently accepts.
+The client predicts and retains locally accepted commands even when they cannot yet cross that
+frontier. At eight unsent commands it pauses new command sampling; after snapshots advance the
+grant and drain the suffix to two commands it resumes without replaying missed wall-clock time.
+The server's 64-entry queue remains a hostile-peer guard rather than normal overload control.
 
 Brief missing input does not immediately stop a player: the server holds the last applied movement
 for five ticks. On the following missing-input tick it neutralizes movement, while keeping the
@@ -94,6 +101,12 @@ handshake. A respawn action before the deadline is consumed and acknowledged but
 uses the same safe server-owned spawn search and records `Accepted` or `RejectedNoSafeSpawn`.
 An input acknowledgement means only that the sample was consumed—the repeated result field
 communicates whether the gameplay action succeeded.
+
+A client may instead request the permanent `Spectator` join role. A direct spectator receives
+full world snapshots but creates no owner or player, has no defeat or respawn deadline, cannot
+submit gameplay input or respawn, and receives no participant-only authority receipts. Direct
+spectators and defeated players keep their sessions live with a 5 Hz status heartbeat while
+ordinary 30 Hz neutral gameplay commands are stopped.
 
 ## What each client sees
 
@@ -124,11 +137,13 @@ confirms survival and acknowledges inside that deferred range, the client hard-r
 checkpoint, discards the acknowledged prefix, and rolls every newer retained input forward.
 
 The network client runtime accepts confirmed spectating snapshots without requiring a permanent
-controlled entity and continues sending session input/heartbeats. The graphical client enters
+controlled entity and continues sending status heartbeats. A defeated player sends gameplay
+input only for an explicit respawn edge. The graphical client enters
 spectator presentation only from that confirmed mode. It follows the confirmed killer by default,
-using the same delayed interpolated sample for the camera and the killer's circle. `F` toggles a
-free camera when that target is available. If the killer disappears, the client switches to free
-camera at the last valid presentation position rather than choosing another entity.
+using the same selected and composed presentation sample for the camera and the killer's circle.
+`F` toggles a free camera when that target is available. If the killer disappears, the client
+switches to free camera at the last valid presentation position rather than choosing another
+entity.
 
 In free-camera mode, WASD or the arrows pan at 12 world units per second by default. The mouse
 wheel or PageUp/PageDown changes zoom in 10 percent steps, clamped to the configured 5--80
@@ -150,7 +165,13 @@ from the newest accepted authoritative movement and launch velocity. The client 
 movement/launch integrator for at most six ticks (200 ms), then holds; it does not run cohesion,
 collision, consumption, absorption, split, merge, or other gameplay there. A config switch can
 instead use six-tick delayed interpolation or overlay that delayed position for comparison.
-Spectators always use delayed interpolation and hold on underrun. See the
+Spectators default to `live`: six-tick buffered interpolation remains the normal source, and Dots
+advances movement and launch for at most another six ticks/200 ms only when the presentation
+cursor exhausts its newest authoritative endpoint. Replacement authority is smoothed through
+persistent semantic tracks. Food stays at authority and no collision, consumption, absorption,
+split, merge, lifecycle, or other gameplay mechanic runs in this presentation layer. The
+`delayed` option uses the same buffered interpolation but holds immediately on underrun. This is
+a Dots presentation choice, not rollback prediction or an engine-kernel policy. See the
 [networked prediction and time reference](networked_prediction_reference.md) for state ownership
 and timing terminology.
 

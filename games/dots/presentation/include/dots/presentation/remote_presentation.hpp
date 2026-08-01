@@ -74,7 +74,17 @@ struct RemotePresentationStatistics {
     std::chrono::milliseconds last_hold_duration{};
     std::chrono::milliseconds maximum_hold_duration{};
     std::chrono::milliseconds total_hold_duration{};
+    std::chrono::milliseconds observation_duration{};
+    double hold_time_percentage{};
     std::uint64_t hold_recovery_count{};
+    std::uint64_t post_cap_hold_episode_count{};
+    bool post_cap_holding{};
+    std::chrono::milliseconds current_post_cap_hold_duration{};
+    std::chrono::milliseconds last_post_cap_hold_duration{};
+    std::chrono::milliseconds maximum_post_cap_hold_duration{};
+    std::chrono::milliseconds total_post_cap_hold_duration{};
+    double post_cap_hold_time_percentage{};
+    std::uint64_t post_cap_hold_recovery_count{};
     std::uint64_t rate_correction_count{};
     std::uint64_t hard_rebase_count{};
     std::uint64_t delayed_entity_create_count{};
@@ -118,10 +128,17 @@ public:
     [[nodiscard]] RemoteExtrapolationFrame
     sample(std::chrono::steady_clock::time_point now,
            protocol::EntityId controlled_entity_id = {}) const;
+    // Advances from newest authority by an explicit presentation-cursor underrun rather than by
+    // the full local age of that authority. The same bounded Dots kinematic policy applies.
+    [[nodiscard]] RemoteExtrapolationFrame
+    sample_offset(double extrapolation_ticks, protocol::EntityId controlled_entity_id = {}) const;
     [[nodiscard]] RemoteExtrapolationStatistics
     statistics(std::chrono::steady_clock::time_point now) const noexcept;
 
 private:
+    [[nodiscard]] RemoteExtrapolationFrame
+    sample_ticks(double extrapolation_ticks, protocol::EntityId controlled_entity_id) const;
+
     std::optional<RemoteKinematicSnapshot> latest_;
     std::uint64_t accepted_snapshot_count_{};
     std::uint64_t rejected_snapshot_count_{};
@@ -152,10 +169,14 @@ private:
     std::vector<RemoteSnapshotSample> samples_;
     std::vector<PresentedEntityIdentity> last_presented_entities_;
     std::optional<std::chrono::steady_clock::time_point> last_advance_time_;
+    std::optional<std::chrono::steady_clock::time_point> observation_started_at_;
     std::optional<std::chrono::steady_clock::time_point> hold_started_at_;
     std::chrono::steady_clock::duration last_hold_duration_{};
     std::chrono::steady_clock::duration maximum_hold_duration_{};
     std::chrono::steady_clock::duration total_hold_duration_{};
+    std::chrono::steady_clock::duration last_post_cap_hold_duration_{};
+    std::chrono::steady_clock::duration maximum_post_cap_hold_duration_{};
+    std::chrono::steady_clock::duration total_post_cap_hold_duration_{};
     double presentation_tick_{};
     double cursor_rate_{1.0};
     double cursor_error_{};
@@ -164,6 +185,7 @@ private:
     std::uint64_t late_snapshot_count_{};
     std::uint64_t hold_episode_count_{};
     std::uint64_t hold_recovery_count_{};
+    std::uint64_t post_cap_hold_recovery_count_{};
     std::uint64_t rate_correction_count_{};
     std::uint64_t hard_rebase_count_{};
     std::uint64_t delayed_entity_create_count_{};

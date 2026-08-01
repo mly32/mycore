@@ -48,6 +48,8 @@ enum class RuntimeError : std::uint8_t {
 enum class InputSendResult : std::uint8_t {
     Sent,
     NotReady,
+    Backpressured,
+    SpectatorOnly,
     InvalidMovement,
     InvalidAction,
     InvalidClientTick,
@@ -62,10 +64,30 @@ struct ReplicationStatistics {
 };
 
 struct Settings {
+    protocol::JoinRole requested_role{protocol::JoinRole::Player};
     bool input_redundancy{true};
     bool log_prediction_scope_changes{};
     bool log_prediction_frontier_changes{};
     bool log_prediction_reconciliation_details{};
+};
+
+inline constexpr std::size_t kInputPauseThreshold = 8;
+inline constexpr std::size_t kInputResumeThreshold = 2;
+inline constexpr std::size_t kMaximumInputPacketsPerFlush = 4;
+inline constexpr auto kClientStatusInterval = std::chrono::milliseconds{200};
+
+struct InputFlowStatistics {
+    protocol::JoinRole requested_role{protocol::JoinRole::Player};
+    std::optional<protocol::JoinRole> accepted_role;
+    protocol::InputSequenceId acknowledged_through;
+    protocol::InputSequenceId receive_through;
+    protocol::InputSequenceId transmitted_through;
+    std::size_t unsent_count{};
+    std::size_t unsent_high_water_mark{};
+    bool production_paused{};
+    std::uint64_t pause_count{};
+    std::chrono::milliseconds accumulated_paused_time{};
+    std::uint64_t status_count{};
 };
 
 struct AcceptedSnapshot {
@@ -255,6 +277,10 @@ public:
 
     [[nodiscard]] ProcessEventsResult
     process_events(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
+    [[nodiscard]] InputSendResult submit_input(std::uint32_t client_tick,
+                                               mycore::math::Vector2 movement,
+                                               std::uint16_t action_bits = 0);
+    // Compatibility spelling for callers written before local submission could be buffered.
     [[nodiscard]] InputSendResult send_input(std::uint32_t client_tick,
                                              mycore::math::Vector2 movement,
                                              std::uint16_t action_bits = 0);
@@ -264,6 +290,8 @@ public:
     [[nodiscard]] State state() const noexcept;
     [[nodiscard]] const replication::ReplicatedWorld& world() const noexcept;
     [[nodiscard]] protocol::ClientId client_id() const noexcept;
+    [[nodiscard]] std::optional<protocol::JoinRole> accepted_role() const noexcept;
+    [[nodiscard]] bool input_production_paused() const noexcept;
     [[nodiscard]] protocol::EntityId controlled_entity_id() const noexcept;
     [[nodiscard]] protocol::SessionMode session_mode() const noexcept;
     [[nodiscard]] std::span<const protocol::EntityId> owned_entity_ids() const noexcept;
@@ -299,6 +327,9 @@ public:
     [[nodiscard]] ReplicationStatistics
     replication_statistics(std::chrono::steady_clock::time_point now =
                                std::chrono::steady_clock::now()) const noexcept;
+    [[nodiscard]] InputFlowStatistics
+    input_flow_statistics(std::chrono::steady_clock::time_point now =
+                              std::chrono::steady_clock::now()) const noexcept;
 
 private:
     class Impl;

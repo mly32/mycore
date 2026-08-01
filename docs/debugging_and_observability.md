@@ -20,9 +20,12 @@ This document uses three status labels:
   presentation, consequence handlers, bounded outside-closure extrapolation, adaptive command
   timing, bounded consequence retirement, Rollback diagnostics, explicit correction generations,
   typed receipts for interactive position/loss faults, deterministic scale workloads, bounded
-  native impairment soaks, and the measured same-frame replay decision are implemented. Feature
-  12 delayed interpolation remains the spectator/fallback/comparison path, and Feature 13's
-  authoritative lifecycle and spectator presentation remain implemented.
+  native impairment soaks, receive-window input backpressure, direct spectator stress roles,
+  server overload timing, and the measured same-frame replay decision are implemented. Feature
+  12 delayed interpolation remains the fallback/comparison and selectable delayed-spectator
+  path, while live spectators use bounded Dots kinematic extrapolation only for its uncovered
+  underrun tail. Feature 13's authoritative lifecycle and spectator presentation remain
+  implemented.
 
 When a feature phase is approved, change its entries to **Current** as part of that phase's
 documentation update.
@@ -138,7 +141,7 @@ the Gameplay tab. It labels a zero estimate `eligible`; the server still decides
 | Label | Source and units | Meaning |
 |---|---|---|
 | `Input` | Client configuration | Active mouse, keyboard, or hybrid input mapping mode. |
-| `Presentation` | Client mode | Offline presentation mode, `NETWORKED PREDICTED` while playing, or `NETWORKED SPECTATOR` after a confirmed spectator transition. Playing remotes use the configured extrapolated/interpolated source; spectators use Feature 12 delayed interpolation. |
+| `Presentation` | Client mode | Offline presentation mode, `NETWORKED PREDICTED` while playing, or `NETWORKED SPECTATOR` after a confirmed spectator transition. Playing remotes use the configured extrapolated/interpolated source. Both spectator modes normally interpolate buffered authority; live alone extrapolates a bounded underrun tail. |
 | `Tick` | Offline world tick or latest replicated server tick | In offline play this is the local world tick. In networked play it is the tick stored in the latest accepted server snapshot. |
 | `Players` | Current offline or replicated entity collection | Number of player entities visible to this client state. It is not the server's total connected-client count. |
 | `Food` | Current offline or replicated entity collection | Number of food entities visible to this client state. |
@@ -157,13 +160,17 @@ RTT, interpolation delay, or server tick health.
 
 ### Input scheduling telemetry — Current
 
-Protocol-v2 full snapshots carry `pending_input_count`, the number of distinct samples left in
-this client's bounded authoritative input queue after the snapshot tick. `ReplicatedWorld`
-stores the newest value, and the **Rollback** overlay shows its current and runtime high-water
-values. This value is not transport queue depth, RTT, or total input across all clients.
+Protocol-v5 full snapshots carry `pending_input_count`, the number of distinct samples left in
+this client's bounded authoritative input queue after the snapshot tick, and
+`input_receive_through`, the highest fresh input sequence authority currently accepts.
+`ReplicatedWorld` stores both. These values are not transport queue depth, RTT, or total input
+across all clients.
 
-The queue capacity is 64 samples. The server consumes at most one sample per client before each
-authoritative tick and continues the last installed movement when the queue is empty. With
+The advertised receive window is 32 samples and the defensive queue capacity is 64. A conforming
+client cannot reach the latter. It keeps grant-blocked commands in a fixed unsent outbox, pauses
+production at eight unsent entries, and resumes at two. The server consumes at most one sample
+per client before each authoritative tick and continues the last installed movement when the
+queue is empty. With
 `[network].input_redundancy = true` (the default), each outgoing packet includes the current
 sample and up to two prior unacknowledged samples. Setting it to `false` sends only the current
 sample. Overlapping samples are deduplicated by sequence ID.
@@ -195,7 +202,7 @@ An unavailable measurement is shown as `unavailable`, never fabricated as zero.
 | `Average` | Bounded rolling client frame average | Recent mean frame duration. |
 | `FPS` | Rolling client frame rate | Derived from client frame samples. |
 | `Simulation health` | Latest fixed-step overload flags | `OVERLOAD` when the latest frame hit its step cap, missed its deadline, or discarded time. |
-| `Tick rate` | Rolling completed fixed steps / target | Offline simulation steps, or networked client input-send steps. In native mode this is not the server's measured tick rate. |
+| `Tick rate` | Rolling completed fixed steps / target | Offline simulation steps, or networked client scheduling steps. Paused and spectator steps need not produce input. In native mode this is not the server's measured tick rate. |
 | `Steps` | Current frame | Fixed steps executed in this render frame. |
 | `Excess` | Fixed-step accumulator | Whole steps left pending when the per-frame step limit was reached. |
 | `Simulation` | Current frame, milliseconds | Time spent executing the client fixed-step work. In current networked mode this primarily covers input send/poll work. |
@@ -222,8 +229,13 @@ the fixed-step simulation position.
 ## Current Spectator Presentation
 
 The graphical network client enters spectator presentation only after replicated session mode is
-`Spectating`. It follows the confirmed killer from the same delayed remote sample used to draw
-that player. Free-camera position and zoom are local presentation state. Missing follow geometry
+`Spectating`. `[spectator].presentation_mode` defaults to `live`. Both modes normally use the
+six-tick authoritative interpolation buffer. When that cursor exhausts its newest endpoint,
+`live` extrapolates only the uncovered movement/launch tail for at most another six ticks/200 ms;
+`delayed` holds immediately. Neither mode runs spectator rollback or gameplay mechanics. A
+defeated Player follows the confirmed killer from the same selected, persistently composed sample
+used to draw that player. A direct Spectator joins with no killer/deadline and begins in free
+camera. Free-camera position and zoom are local presentation state. Missing follow geometry
 switches the camera to free mode at its last valid position; it never selects an unconfirmed
 replacement.
 
@@ -278,7 +290,8 @@ The graphical client draws all predicted food and player topology inside that in
 duplicates are removed from the selected outside-closure frame. The controlled primary and
 camera use corrected prediction plus the current visual-only smoothing offset. Remote entities
 outside the island default to latest-snapshot movement/launch extrapolation capped at six ticks
-and then hold. Delayed interpolation remains selectable and is always used by spectators.
+and then hold. Delayed interpolation remains selectable for playing clients. Both spectator modes
+use it normally; live adds only a bounded underrun-tail fallback.
 
 The runtime exposes `predicted_world()`, `predicted_primary_entity_id()`,
 `predicted_owned_entity_ids()`, `predicted_scope_entity_ids()`,
@@ -298,23 +311,35 @@ The **Network** tab's Session section shows:
 - Controlled entity ID and transport connection handle.
 - Latest snapshot ID/server tick and local input tick.
 
-The server and client tick values are shown separately. Until a future tick-synchronization
-feature defines their mapping, subtracting them does not produce a meaningful latency value.
+The server and client tick values are shown separately. `Local input tick` is the contiguous
+client fixed-step sampling ordinal placed in `InputSample::client_tick`; the current server
+schedules by per-session input sequence and arrival, not by that value. Until a future
+tick-synchronization feature defines a validated mapping, subtracting local input tick from
+server tick does not produce a meaningful latency or queue-delay value.
+
+The current overlay also does not claim an exact sequence-to-server-tick mapping. A snapshot ACK
+proves only that the named cumulative input frontier was processed no later than that snapshot's
+server tick. Per-input receive tick, authoritative application tick, and queue wait are planned
+as bounded server provenance diagnostics rather than inferred from unrelated clocks.
 
 The **Rollback** tab rows are:
 
 | Field | Current meaning and lifetime |
 |---|---|
+| Join role | Requested and server-accepted `Player` or `Spectator` role. |
+| Input ACK / receive grant / transmitted through | Latest authority-processed command, highest fresh command authority permits, and newest command actually handed to transport. A direct spectator shows no grant or transmit frontier. |
+| Unsent / high-water | Commands accepted into local prediction but not yet transmitted, plus their runtime maximum. |
+| Input production | `RUNNING` or hysteresis-controlled `PAUSED`, with lifetime pause count, accumulated pause time, and sent status-heartbeat count. |
 | Authority receipts | Highest contiguous sequence semantically accepted, published into a queued post-commit event batch, and echoed as retired by the server; retained/pending-publication payload counts; queued observable event-batch count; replay/external consequence-retirement evidence; per-policy retained-key counts; and cumulative pruning. These fields remain available while Spectating. |
 | Redundancy | Whether outgoing packets repeat up to two retained unacknowledged samples. |
-| Last sent input | Newest successfully sent and recorded input sequence, or invalid before the first send. |
+| Last accepted input | Newest locally accepted and predicted input sequence, whether already transmitted or still in the unsent outbox. |
 | Last acknowledged input | Newest sequence the latest accepted snapshot says the server processed, or invalid before the first ACK. |
 | Timeline input submitted | Newest command sequence submitted to predicted simulation. This can lag last-sent input while prediction is deliberately deferred after speculative local elimination. |
 | Command lead | Count of successfully sent inputs newer than the latest ACK. It can exceed retained history after a deliberate hard resync. |
 | Deferred outside timeline | Retained outer input count newer than the timeline-submitted frontier. These inputs are still sent and are replayed when an authoritative checkpoint restores a viable predicted owner. |
 | History use/high-water | Current and runtime-maximum occupancy of the fixed 256-entry replay ring. Capacity is a correctness bound, not an adaptive target. |
 | Scope | Current epoch, certified replay horizon, causal owner/player/food counts, separately subscribed event-owner count, and lifetime rebase count. A smaller newly required closure may retain a safe existing superset to prevent presentation ownership from oscillating as ACK depth changes. |
-| Server pending input | Current and runtime-high-water depth of this client's authoritative 64-entry server input queue, as reported by snapshots. |
+| Server pending input | Current and runtime-high-water depth of this client's authoritative input queue, as reported by snapshots. The normal receive window is 32; 64 is only the defensive capacity. |
 | Command buffer | Fixed target, latest and EWMA server depth, bounded cadence scale, accumulated phase correction, low/high observations, two-input prefill count, and discarded producer-overrun count. |
 | Rollback base | Snapshot ID, server tick, and ACK used for the latest successful reconciliation. |
 | Replay count | Latest, lifetime-total, and runtime-maximum numbers of inputs replayed after installing an authoritative base. |
@@ -344,6 +369,12 @@ for short reproduction sessions and does not change prediction or presentation s
 
 `debug.correction_history_count` selects the combined local/remote world-space correction-history
 capacity from 1 through 64 and defaults to 8. This changes diagnostics only.
+
+Input-flow warnings use `dots.client.input` when the unsent outbox pauses at eight and log
+recovery at two. `dots.server.input` reports queue pressure at 24, recovery at eight, and
+out-of-window rejection with processed/grant/queue/packet frontiers.
+`dots.server.simulation` reports standalone-server overload, five-tick catch-up exhaustion,
+discarded wall-time debt, and timing recovery.
 
 ### Current prediction world-space legend
 
@@ -403,7 +434,9 @@ The **Interpolation** tab in the right-hand **Diagnostics** pane reports:
 
 | Field | Meaning |
 |---|---|
-| Playing mode | `EXTRAPOLATED`, `INTERPOLATED`, or `COMPARISON` from `debug.remote_presentation_mode`. Spectator mode always uses delayed interpolation. |
+| Playing mode | `EXTRAPOLATED`, `INTERPOLATED`, or `COMPARISON` from `debug.remote_presentation_mode`. |
+| Spectator mode | `LIVE` or `DELAYED` from `spectator.presentation_mode`; live is the default. |
+| Live underrun fallback | `inactive` while live spectators remain bracketed; otherwise the 0–6 tick movement/launch tail beyond the exhausted authoritative endpoint, including `HELD AT CAP` after 200 ms. Delayed mode never activates it. |
 | Extrapolation age/ticks | Local steady-clock age of the newest accepted authoritative kinematic snapshot and the clamped 0–6 tick advancement applied to movement/launch. |
 | Extrapolating/held/static | Outside-closure players still within the six-tick horizon, players held at the horizon, and non-player entities kept at their authoritative positions. |
 | Extrapolation accepted/rejected | Samples accepted by the monotonic finite/canonical kinematic buffer or rejected by its validation. |
@@ -416,9 +449,12 @@ The **Interpolation** tab in the right-hand **Diagnostics** pane reports:
 | Brackets | Older/newer snapshot IDs and server ticks enclosing the cursor, plus alpha. |
 | Jitter | Latest and EWMA deviation between observed and server-implied snapshot spacing. |
 | Late snapshot | Snapshot arriving at or behind the current presentation cursor. |
-| Hold/underrun | Continuous period with no newer bracket; remotes hold rather than extrapolate. The overlay reports current state, episode/recovery counts, and current/last/maximum/total duration. |
+| Hold/underrun | Continuous period in which the authoritative interpolation cursor has no newer bracket and therefore holds. The overlay reports current state, episode/recovery counts, and current/last/maximum/total duration. A live spectator may cover the displayed tail with the separate bounded fallback above. |
+| Observed/underrun share | Milliseconds since the interpolation buffer first became ready and the percentage of that interval spent underrun. This is the broad network-delivery regression signal; it includes the part a live spectator masks with bounded extrapolation. |
+| Live displayed pause | Whether an underrun has exceeded the live six-tick extrapolation cap. Episode/recovery counts, current/last/maximum/total duration, and percentage of observed time measure actual live-spectator pauses rather than masked underruns. |
 | Hard rebase | Forward-only presentation cursor reset after recoverable bracketing is lost or the cursor falls more than six ticks behind. |
 | Delayed creates/removes | Remote entity lifecycle transitions actually exposed by sampled presentation frames. |
+| Example remote entity/endpoints | Representative entity ID and its older/newer interpolation samples. All three rows remain present with `unavailable` placeholders during startup, holds, and entity turnover so the diagnostics pane does not resize every time a bracket changes. |
 
 ### Feature 12 world-space legend
 
@@ -442,8 +478,12 @@ movement plus each player's launch velocity with the shared Dots kinematic helpe
 launch decay, for at most six ticks/200 ms. Food is static and cohesion, collision, consumption,
 absorption, split, merge, and closure logic never run in this layer. `interpolated` selects the
 Feature 12 delayed frame. `comparison` draws extrapolation normally and adds an outline at the
-delayed interpolated position. A delayed interpolation sample passes through the persistent
-adapter because its cursor is already continuous. New extrapolation authority,
+delayed interpolated position. Both spectator modes select the Feature 12 frame while it has a
+newer bracket. Only after an underrun does spectator `live` use the bounded kinematic helper for
+the uncovered tail; spectator `delayed` holds the endpoint. Food stays at authority and no
+spectator presentation mode runs cohesion, collision, consumption, absorption, split, merge, or
+lifecycle. A delayed interpolation sample passes through the persistent adapter because its
+cursor is already continuous. New extrapolation authority,
 prediction-closure entry, and predicted-child entity-ID remaps hand off through persistent
 semantic tracks; actual visible pose/radius residuals decay over 100 ms. Movement trails retain
 at most eight samples for 300 ms, and removed gameplay circles use a 100 ms structural fade.
@@ -542,13 +582,14 @@ decode/rejection logs, and server health. Transport state alone does not prove r
 ### Command lead and server input queue grow together
 
 The client is producing input faster than the server consumes it, the server is overloaded, or
-clock drift is accumulating. The adaptive controller moves command production by at most five
-percent around the fixed gameplay rate; persistent clamping means the underlying pressure still
-needs investigation.
+clock drift is accumulating. First compare **Input ACK**, **Receive grant**, **Transmitted
+through**, and **Unsent**. The adaptive controller moves command production by at most five
+percent around the fixed gameplay rate. If that is insufficient, production pauses at eight
+unsent commands and resumes at two while networking and rendering continue. Persistent pauses or
+server timing warnings mean the underlying authority/replication cost still needs investigation.
 Headless bots additionally discard missed producer deadlines after a replay or polling overrun.
-If a bot build predating that guard tries to repay the delay with back-to-back sends, the
-server's bounded input queue can reject it even though packet-loss reconciliation itself is
-healthy.
+The server rejects a fresh sequence beyond the advertised receive grant as a peer violation; an
+honest current client should never reach the 64-entry defensive overflow guard.
 
 ### Frequent corrections with low loss
 
@@ -652,6 +693,10 @@ multi-frame scheduler.
 
 Native clients and the session launcher accept outgoing fake lag and loss. Lag is one-way per
 process; applying 50 ms at the server and client produces approximately 100 ms transport RTT.
+Local prediction already advances once per accepted command while that command stream awaits
+authority and its returning ACK, so replay depth normally grows with this complete loop. Do not
+add the RTT again to `Prediction lead`: that field is the exact retained replay extent, not a
+clock-synchronization target.
 
 Use impairment to answer a specific question:
 

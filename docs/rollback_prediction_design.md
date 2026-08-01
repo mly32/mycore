@@ -231,7 +231,8 @@ include piece IDs, movement, last movement, input ID, and split cooldown. Player
 identity, owner, position, mass, launch velocity, merge deadline, and the tagged optional
 prediction key. Food records include identity and position. Counts and ticks use 64 bits; entity,
 owner, and input IDs use 32 bits; the prediction-key ordinal uses 16 bits; floats use their
-32-bit IEEE representation. Protocol version 4 carries the schema identifier and this digest.
+32-bit IEEE representation. Protocol version 4 introduced the schema identifier and this digest;
+the current protocol v5 preserves them while adding session roles and input flow control.
 `Dots::Replication` can rehydrate and restore-validate the exact typed checkpoint before timeline
 mutation, then recomputes the digest to reject wire corruption or schema disagreement. Digest
 equality remains diagnostic during reconciliation; typed validation and differences are the
@@ -478,7 +479,7 @@ loss-tolerant receipt:
   published toward the consequence router only with an accepted authority commit at or beyond
   its server tick.
 
-Protocol v4, the authoritative server queues, and the replicated client inbox implement the
+Protocol v5, the authoritative server queues, and the replicated client inbox implement the
 transport portion of this contract. Receipts are relevant-owner scoped for the current complete
 replication model. The inbox validates a gap-free sequence and rejects live semantic-key reuse,
 but acceptance alone does not advance the ACK. The network client converts pending receipts into
@@ -520,16 +521,21 @@ collision or gameplay logic for at most six ticks/200 ms, then holds. This visua
 
 - Never enters checkpoints, closure construction, collision, or future replay.
 - Smooths when newer authority or closure entry replaces it.
-- Coexists with Feature 12 delayed interpolation as spectator mode, fallback, and A/B comparison.
+- Coexists with Feature 12 delayed interpolation as fallback, selectable spectator mode, and A/B
+  comparison.
 
 Extrapolation makes presentation look newer; it is not more authoritative.
 Playing clients default to this extrapolated source; configuration can select delayed
 interpolation or an A/B mode that draws extrapolation plus an interpolated outline. Spectators
-always use delayed interpolation. Persistent semantic tracks use `PredictionKey` when present
-and entity ID otherwise, interpolate consecutive predicted fixed ticks, and decay correction,
+default to `live`, which normally uses buffered authoritative interpolation and invokes bounded
+kinematic extrapolation only for an uncovered underrun tail; `delayed` holds at the endpoint
+instead. Neither option creates a spectator rollback timeline. Persistent semantic tracks use
+`PredictionKey` when present and
+entity ID otherwise, interpolate consecutive predicted fixed ticks, and decay correction,
 source-handoff, and remap offsets over 100 ms. Predicted correction residuals are keyed by an
-explicit per-entity correction generation and displacement supplied by reconciliation. A source
-revision selects fixed-tick interpolation but cannot by itself create a correction residual.
+explicit per-entity correction generation and displacement supplied by
+reconciliation. A source revision selects fixed-tick interpolation but cannot by itself create a
+correction residual.
 
 ## Adaptive Command Buffer
 
@@ -546,6 +552,27 @@ rate scale = clamp(1 + 0.025 * (2 - smoothed depth), 0.95, 1.05)
 
 Only client command/prediction cadence changes. Server rate, gameplay deadlines, and session wall
 time do not. Empty queues hold level movement but never repeat edge actions.
+
+Prediction lead is not configured from RTT. Every locally accepted 30 Hz command advances one
+rollback frame immediately, and the unacknowledged suffix naturally grows while input travels to
+authority and its acknowledgement returns in a later snapshot. Reconciliation restores the
+snapshot's server tick and replays that exact suffix. Its resulting tick is a replay coordinate,
+not an estimated live-server clock or a requested authoritative application tick. The server
+schedules by per-session sequence and arrival; protocol `client_tick` is local provenance and is
+not used to backdate commands.
+
+Cadence correction is the normal small-error controller, not the overload safety boundary.
+Every Player snapshot also grants exactly 32 fresh sequences beyond its processed frontier. The
+client accepts commands into prediction and a fixed 256-entry unsent outbox, transmits no more
+than four new packets per flush and never beyond that grant, pauses new command production at
+eight unsent commands, and resumes at two. Commands and edge actions already accepted remain
+immutable and replayable. Paused wall time is not converted into a later input burst.
+
+Direct and defeated spectators stop producing neutral gameplay commands and use a 5 Hz
+`ClientStatus` heartbeat for liveness and acknowledgement progress. A defeated Player may still
+submit an explicit respawn edge; a direct Spectator has no input grant or respawn lifecycle.
+Rollback/timeline state remains composition-thread owned, so the outbox and prediction history
+require no shared lock.
 
 This controller is separate from producer-overrun safety. A client that spends longer than one
 period polling or replaying must not repay missed wall-clock deadlines by sending a burst of
@@ -604,6 +631,8 @@ Feature 14 exposes:
 - Per-handler policy plus delivered, suppressed, revised, canceled, confirmed, and failure
   counts, along with aggregate batch and transition totals.
 - Receipt queue/ACK depth and duplicate/conflict counts.
+- Join role; authority ACK, receive grant, transmit frontier; unsent/high-water depth; production
+  pause count/time; and status-heartbeat count.
 - Authoritative, predicted, interpolated/extrapolated, pre-correction, and presentation layers.
 - A bounded recent pre-correction history shared by local and remote predicted entities. Remote
   entries require equal before/after predicted-head ticks so ordinary forward progress is never

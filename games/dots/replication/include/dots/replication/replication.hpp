@@ -80,7 +80,8 @@ build_full_snapshot(const simulation::World& world,
                     std::uint8_t pending_input_count,
                     protocol::RecipientSessionState recipient,
                     std::vector<protocol::AuthorityReceipt> authority_receipts = {},
-                    protocol::AuthorityReceiptSequenceId authority_receipts_retired_through = {});
+                    protocol::AuthorityReceiptSequenceId authority_receipts_retired_through = {},
+                    protocol::InputSequenceId input_receive_through = {});
 
 [[nodiscard]] CheckpointHydrationResult
 hydrate_checkpoint(const protocol::FullSnapshot& snapshot,
@@ -96,6 +97,7 @@ public:
     [[nodiscard]] std::uint32_t server_tick() const noexcept;
     [[nodiscard]] protocol::SnapshotId snapshot_id() const noexcept;
     [[nodiscard]] protocol::InputSequenceId last_processed_input_id() const noexcept;
+    [[nodiscard]] protocol::InputSequenceId input_receive_through() const noexcept;
     [[nodiscard]] std::uint8_t pending_input_count() const noexcept;
     [[nodiscard]] const protocol::RecipientSessionState& recipient() const noexcept;
 
@@ -103,6 +105,7 @@ private:
     protocol::SnapshotId snapshot_id_;
     std::uint32_t server_tick_{};
     protocol::InputSequenceId last_processed_input_id_;
+    protocol::InputSequenceId input_receive_through_;
     std::uint8_t pending_input_count_{};
     protocol::RecipientSessionState recipient_;
     std::vector<protocol::EntityState> entities_;

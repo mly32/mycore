@@ -27,7 +27,9 @@ owned pieces. A verified server checkpoint replaces the rollback base and the cl
 replays unacknowledged input through the previous prediction head. Gameplay state corrects
 immediately; only presentation residuals decay over 100 ms. While Playing, remote players outside
 the closure default to bounded movement/launch extrapolation from newest authority and then hold.
-Spectators use the Feature 12 delayed interpolation buffer.
+Spectators default to the Feature 12 delayed interpolation buffer plus bounded Dots
+movement/launch extrapolation only for its uncovered underrun tail. Delayed spectator mode holds
+immediately at that underrun instead. Neither mode grants authority or runs speculative gameplay.
 
 `dots_client --in-memory` exercises this complete path without opening a socket. Its client and
 server live in one process and communicate through the same abstract transport interface used by
@@ -61,14 +63,15 @@ and server tests run without a window or GPU.
 
 ## Protocol: the meaning of the bytes
 
-The Dots protocol is a game-owned contract. It defines four messages today:
+The Dots protocol is a game-owned contract. It defines five messages today:
 
 | Message | Direction | Delivery | Purpose |
 |---|---|---|---|
-| `ClientHello` | Client to server | Reliable | Request a session using the supported protocol version. |
-| `ServerWelcome` | Server to client | Reliable | Assign the client ID and immutable match/session rules. |
+| `ClientHello` | Client to server | Reliable | Request a Player or Spectator session using the supported protocol version. |
+| `ServerWelcome` | Server to client | Reliable | Assign the client ID, accepted role, and immutable match/session rules. |
 | `InputPacket` | Client to server | Unreliable | Submit one to three sequenced movement/action samples and acknowledge the latest snapshot and contiguous authority receipt. |
-| `FullSnapshot` | Server to client | Unreliable | Carry a complete schema-tagged checkpoint, recipient lifecycle state, repeated authority receipts, and the server-retired receipt frontier. |
+| `FullSnapshot` | Server to client | Unreliable | Carry a complete schema-tagged checkpoint, recipient lifecycle state, input receive grant, repeated authority receipts, and the server-retired receipt frontier. |
+| `ClientStatus` | Client to server | Unreliable | Refresh liveness and acknowledgement progress without producing gameplay input. |
 
 Every encoded message starts with a 12-byte header containing:
 
@@ -76,16 +79,25 @@ Every encoded message starts with a 12-byte header containing:
 magic "DOTS" + protocol version + message kind + flags + payload length
 ```
 
-The current protocol version is 4. Version 1, used by Features 8--10, carried one input sample
+The current protocol version is 5. Version 1, used by Features 8--10, carried one input sample
 and no pending-input depth. Version 2 added one-to-three-sample redundancy and per-client queue
 depth. Version 3 adds player owner IDs, respawn actions/configuration, and a recipient-specific
 session block containing mode, owned/primary/follow entities, defeat/deadline ticks, latest
 absorption, and explicit respawn result. Version 4 adds immutable `WorldRules`, complete
 rollback-checkpoint fields, prediction keys, a canonical schema/digest, the split action bit,
-and sequenced typed authority receipts. There is no dual-version negotiation: older binaries
-receive `UnsupportedVersion` rather than having their payload interpreted as version 4.
+and sequenced typed authority receipts. Version 5 adds requested/accepted join roles, the
+status-only heartbeat, and the exact input receive frontier. There is no dual-version
+negotiation: older binaries receive `UnsupportedVersion` rather than having their payload
+interpreted as version 5.
 Food, absorption, and split receipts include occurrence geometry so presentation does not depend
 on an entity that the same event already removed or transformed.
+
+Each `InputSample` carries both a per-session sequence ID and a `client_tick`. The sequence ID is
+the ordering and acknowledgement coordinate. `client_tick` is the client's contiguous local
+fixed-step sampling ordinal: the client runtime validates it before accepting the command, and it
+is useful as provenance when diagnosing a producer. The current server does **not** compare it
+with `server_tick`, use it to choose an authoritative application tick, or trust it as a client
+timestamp. Subtracting the two values does not measure latency.
 
 Integers and floating-point bit patterns have defined widths and use big-endian network byte
 order. Fields are encoded individually; the implementation never copies a C++ struct directly
@@ -122,7 +134,7 @@ small ordered handshake, but not for a continuous stream of replaceable gameplay
 
 Input and snapshots are time-sensitive. A delayed old movement sample or snapshot is usually
 less useful than the newest one, so they are sent unreliably and carry application sequence IDs.
-The receiver can ignore stale data without waiting for retransmission. Protocol-v4 input packets
+The receiver can ignore stale data without waiting for retransmission. Protocol-v5 input packets
 contain the current sample and, by default, up to two prior unacknowledged samples. The server
 deduplicates overlapping packets before its bounded scheduling queue. The current server also
 sends another full snapshot at 15 Hz, so a lost snapshot is replaced by a newer complete view.
@@ -202,20 +214,23 @@ Before a native graphical client tears down its networking instance, it requests
 transport close and drains endpoint callbacks for a bounded interval. The interval is the
 configured outgoing fake lag plus 50 ms, clamped from 50 ms to two seconds. This lets a delayed
 close notification leave the process; it does not wait indefinitely for an application-level ACK.
-If either Dots runtime cannot enqueue an application message, it closes that connection before
-removing or abandoning its session state; a peer is never intentionally left attached to an
-orphaned session.
+If either Dots runtime encounters a permanent application send failure, it closes that connection
+before removing or abandoning its session state; a peer is never intentionally left attached to
+an orphaned session. A transient client transport `QueueFull` result is different: gameplay
+commands remain in the fixed unsent outbox and status heartbeats retry later.
 
 After a listening endpoint delivers a peer's disconnect event, it releases the server-side
 transport record for that connection. Server code must capture any final statistics before or
 while handling that event rather than treating closed handles as permanent history. A client
 endpoint retains its own single terminal record for post-close diagnostics.
 
-The Dots server also has a gameplay-level liveness fallback. Ready clients normally submit valid
-input packets at 30 Hz; after 90 server ticks (three seconds) without one, the server logs a
-warning, closes the transport session, and removes the player. This prevents a lost connection
-from retaining its last movement forever while still tolerating ordinary packet loss. The timeout
-uses server ticks, not wall-clock sleeps, so it is deterministic in tests.
+The Dots server also has a gameplay-level liveness fallback. Playing clients normally submit
+valid input packets at 30 Hz; paused, defeated, and direct-spectator clients send an unreliable
+`ClientStatus` heartbeat at 5 Hz. After 90 server ticks (three seconds) without either one, the
+server logs a warning, closes the transport session, and removes any owned player. This prevents
+a lost connection from retaining its last movement forever while still tolerating ordinary
+packet loss. The timeout uses server ticks, not wall-clock sleeps, so it is deterministic in
+tests.
 
 A transport connection that does not complete `ClientHello` within 300 server ticks (10 seconds)
 is also closed. Accepting the hello starts the ready-session activity window; time spent waiting
@@ -226,6 +241,10 @@ Separately, Dots holds a player's last applied movement for at most five server 
 per-tick input queue runs dry. On the next missing-input tick it neutralizes movement but retains
 the connection until normal input resumes or the liveness timeout expires. This gameplay policy
 avoids indefinite movement during packet gaps without treating one missing packet as a disconnect.
+
+The standalone server executes at most five immediately due catch-up ticks. If it is still late,
+it rebases the next wall-clock deadline and reports discarded wall-time debt; it does not invent
+or skip an authoritative simulation tick. `dots.server.simulation` reports overload and recovery.
 
 ## Native session startup and lifecycle
 
@@ -244,9 +263,9 @@ open listen socket                     initialize window and renderer
 print DOTS_SERVER_READY                begin transport connection
 receive Connected event       <------> receive Connected event
 create pending session                 send reliable ClientHello
-validate ClientHello
-spawn authoritative player
-assign client and entity IDs
+validate requested join role
+spawn authoritative player only for Player
+assign client ID and optional player/entity IDs
 send reliable ServerWelcome    ------>
 send unreliable FullSnapshot   ------>
 log "Client ... joined"                install identity and snapshot
@@ -284,6 +303,7 @@ After startup, lifecycle events are handled as follows:
 | Server closes | Logs the transport close and stops the networked client. | The server process exits. |
 | Connection fails | Logs the transport failure and stops the networked client. | Removes the session and player when it observes the failure. |
 | Malformed or wrong-direction packet | The offending client is disconnected. | Rejects and removes only the offending session; the server and other clients continue. |
+| Direct spectator joins | Installs `Spectating` with no controlled entity or respawn lifecycle and sends status heartbeats. | Creates no owner/player, sends full snapshots, and sends no participant-only receipts. |
 | Last owned player is absorbed | Installs repeated `Spectating` state without treating the missing primary as a protocol failure, then follows the confirmed killer or uses a local free camera. | Keeps the connection alive and repeats killer, defeat, deadline, and action-result state. |
 | Respawn action | Sends one edge-triggered action and continues spectating until a snapshot reports the authoritative result. An input ACK alone is not success. | Rejects early/non-spectator requests or safely spawns a new owned player after the deadline. |
 | Client process is killed or loses connectivity | Cannot send a graceful request. | Detects the transport failure later, then removes the session and player. |
@@ -292,9 +312,11 @@ The local `dots_session.py` launcher treats an unexpected nonzero client exit or
 as failure of the development session and terminates the remaining child processes. That cleanup
 may be abrupt, so terminating the launcher is not a good test of every client's graceful-leave
 log path. Close one client window while leaving the launcher running to observe that path.
-For automation, the launcher accepts a bot-only session with `--clients 0` and a positive
-`--duration-seconds`. Reaching that deadline with every process healthy returns success and then
-cleans up the children; any earlier failure still returns failure.
+For automation, the launcher accepts player and permanent-spectator counts independently through
+`--clients`, `--bots`, `--spectator-clients`, and `--spectator-bots`. A headless session may use
+`--clients 0` with a positive `--duration-seconds`. Reaching that deadline with every process
+healthy returns success and then cleans up the children; any earlier failure still returns
+failure.
 
 ## Reasoning about simulated lag and packet loss
 
@@ -323,7 +345,8 @@ The current messages behave under impairment like this:
 | --- | --- | --- |
 | Transport connection establishment | Transport-managed | May retry, take much longer, or fail before the Dots handshake starts. |
 | `ClientHello` and `ServerWelcome` | Reliable | Transport retransmits while viable; delay increases, but Dots does not repeatedly call `send`. |
-| `InputPacket` at 30 Hz | Unreliable | The next one or two packets can recover a lost current sample while it remains inside the default two-sample redundancy window. Three consecutive losses, or any loss with redundancy disabled, can skip a sample. |
+| `InputPacket` while Playing | Unreliable | The next one or two packets can recover a lost current sample while it remains inside the default two-sample redundancy window. Three consecutive losses, or any loss with redundancy disabled, can skip a sample. Transmission never exceeds the snapshot-advertised receive grant. |
+| `ClientStatus` at 5 Hz while paused or Spectating | Unreliable | A later heartbeat refreshes liveness and repeats snapshot/receipt acknowledgement state; loss does not create gameplay input. |
 | `FullSnapshot` at 15 Hz | Unreliable | Entity and lifecycle state hold until a newer snapshot. Durable session fields repeat, so a lost defeat/respawn transition is recovered by a later snapshot. Owned movement keeps predicting only while Playing. |
 | Disconnect | Transport lifecycle | Graceful requests are reported promptly when delivered; abrupt loss is reported after failure detection. |
 
@@ -376,14 +399,14 @@ wins whenever the two disagree.
 
 ## One current in-memory session
 
-The handshake establishes both identity and initial state:
+The handshake establishes a requested/accepted role, identity, and initial state:
 
 ```text
 client runtime             transport              server runtime
       |                        |                         |
       |<------ Connected -----|------ Connected ------>|
       |--- ClientHello ------>|------------------------>|
-      |                        |          validate and spawn player
+      |                        |          validate role; maybe spawn player
       |<-- ServerWelcome -----|<------------------------|
       |<-- FullSnapshot ------|<------------------------|
       |                        |                         |
@@ -391,16 +414,19 @@ client runtime             transport              server runtime
 ```
 
 The welcome is reliable. The immediate full snapshot is unreliable. The client tolerates either
-arrival order and becomes ready only after it has an assigned identity and a snapshot containing
-its controlled player.
+arrival order and becomes ready only after it has an assigned identity and a role-consistent
+snapshot. A Player snapshot contains its controlled player; a direct Spectator snapshot contains
+no owner, primary, defeat deadline, or receive grant.
 
 After the handshake, each current in-memory fixed step is composed in this order:
 
 1. The client maps keyboard or mouse state to a normalized movement vector.
-2. It creates the next sequenced input sample and a bounded `InputPacket`, including its latest
-   snapshot ID, highest contiguous authority-receipt sequence, and, when enabled, up to two prior
-   unacknowledged samples.
-3. The protocol encoder produces bytes and the client sends them unreliably.
+2. It accepts the next sequenced input into prediction and a fixed outbox, then transmits only
+   samples at or below the latest authority receive grant in a bounded `InputPacket`, including
+   its latest snapshot ID, highest contiguous authority-receipt sequence, and, when enabled, up
+   to two prior unacknowledged samples.
+3. The protocol encoder produces bytes and the client sends them unreliably. If eight commands
+   remain unsent, command production pauses until the suffix drains to two.
 4. The server polls, decodes, validates, deduplicates, and orders fresh samples in that
    connection's bounded queue.
 5. The server applies at most the oldest queued sample for each client, then advances its
@@ -418,6 +444,7 @@ plus:
 - Its snapshot sequence ID.
 - The authoritative server tick.
 - The last input sequence processed for that client.
+- The highest input sequence the server currently accepts, or `none` for a direct spectator.
 - That client's current pending-input queue depth after the tick.
 - Checkpoint schema `1`, the canonical 64-bit diagnostic digest, and the next entity ID.
 - Complete owner movement, last-movement/input, split-cooldown, per-player launch/merge state,
@@ -444,6 +471,8 @@ conflicting duplicate, live semantic-key reuse, ACK beyond the issued frontier, 
 retirement echo, or retention overflow is an explicit session failure. Repeated
 Playing/Spectating and respawn fields remain ordinary authoritative state rather than
 receipt-driven one-shots.
+Direct spectators are not event participants and therefore receive full snapshots without
+participant-only authority receipts.
 
 `client_runtime::Runtime` retains at most 512 post-commit prediction event batches for its
 presentation/consequence consumer. Every composition root must regularly take that stream.
@@ -482,10 +511,11 @@ remotes smooth by presenting historical known samples rather than guessing remot
 velocity. Inside the prediction closure, the client instead runs shared physics and gameplay
 from explicitly retained last-known movement assumptions.
 
-Input samples have sequence IDs, protocol-v4 packets retain bounded redundancy, the server
+Input samples have sequence IDs, protocol-v5 packets retain bounded redundancy, the server
 schedules at most one queued sample per client per tick, snapshots acknowledge
-`last_processed_input`, and inputs report the latest received snapshot and highest contiguous
-authority receipt. The client runtime retains a fixed 256-entry input history and engine
+`last_processed_input` and advertise a 32-sequence receive window, and inputs report the latest
+received snapshot and highest contiguous authority receipt. The client runtime retains a fixed
+256-entry input history, a fixed unsent outbox, and the engine
 timeline. That capacity is a recovery bound, not the interaction-closure horizon: the horizon is
 the greater of a five-tick operating floor and the actual retained unacknowledged suffix, checked
 before each predicted advance. A safe existing causal superset remains selected when ACKs shrink
@@ -497,6 +527,60 @@ transactionally refreshes those derived assumptions across the retained suffix b
 it; subsequent future inputs also sample that newest authority. This produces one correction for
 an unknowable remote direction edge instead of propagating the stale guess through later
 snapshots. The server does not yet use snapshot acknowledgements for delta baselines.
+
+The receive grant is derived exactly from the processed frontier and caps conforming authority
+queue occupancy at 32. Local prediction does not wait for transport: accepted commands beyond
+the grant remain in the outbox. New command sampling pauses at eight unsent entries and resumes
+at two; snapshots, status, presentation, and reconciliation continue during the pause. The
+server's separate 64-entry queue capacity is a hostile-peer invariant. Sending a fresh sample
+beyond the grant is a protocol violation isolated to that session.
+
+### How far local prediction advances
+
+The client does not choose a prediction duration by multiplying an RTT estimate. It immediately
+advances one predicted fixed tick for each locally accepted 30 Hz command. If snapshot tick `T`
+acknowledges input `N` and the normal retained suffix is `N+1` through `M`, reconciliation
+restores `T` and replays those `M-N` command frames. In that normal case the resulting rollback
+coordinate is `T + (M-N)`, but it is still named by the base and suffix rather than treated as a
+clock estimate.
+
+The suffix naturally grows with the complete input-to-acknowledgement loop: client-to-server
+travel, server poll/tick phase, snapshot phase, and server-to-client travel. At 30 Hz, a longer
+round trip therefore normally produces more retained commands and a larger replay extent. The
+two-command authority-queue target adds small scheduling slack. No second RTT-sized block of
+synthetic commands is added after that suffix; doing so would count elapsed time twice and would
+require inventing player intent or remote actions that were never sampled.
+
+For the session launcher, `--fake-lag-ms 50` configures about 50 ms of outgoing delay at both the
+client and server, so the transport RTT is already approximately 100 ms before tick and snapshot
+phase. It does not mean 50 ms RTT that prediction should multiply again.
+
+This also explains why pushing all remote state farther forward is not a general way to reduce
+mispredictions. Inside the interaction closure, retained frames run shared gameplay using the
+newest known held remote movement and neutral unknown edge actions. Outside it, presentation may
+extrapolate known movement/launch for at most six ticks. A remote turn, split, or collision that
+has not arrived is unknowable; guessing it for more ticks generally increases correction size.
+
+### How authority assigns commands to server ticks
+
+Before each authoritative tick `Z`, the server polls transport and selects at most the oldest
+queued sequence from each ready Player session. Every selected owner command enters the same
+atomic `World::advance()` for tick `Z`. Two clients with different latency can therefore have
+different local prediction coordinates yet both have their oldest available command applied at
+`Z`; a command that arrives after that poll waits for a later server tick.
+
+The server does not backdate a continuous movement, split, or interaction command to the tick
+where the client predicted it. Client clocks are independent and untrusted, and rewriting an old
+shared interaction would require a separately designed server rollback/resimulation policy for
+the affected participants. Shooter-style historical hit validation is likewise a separate
+authority mechanic, not a hidden behavior of client rollback.
+
+A snapshot at server tick `S` with `last_processed_input = N` proves that authority processed
+every sequence through `N` no later than `S`. It does not expose the exact application tick of
+every sequence between snapshots. Authority event receipts do carry the actual server tick of
+their event. Exact receive-tick, application-tick, and queue-wait provenance for every input is
+not currently replicated or retained as a debug stream; that is planned as separate bounded
+observability work and must not change scheduling semantics.
 
 ## There is no single “game frame”
 
@@ -936,8 +1020,11 @@ While Playing, entities outside the closure default to advancing their newest kn
 movement and launch velocity for at most six ticks/200 ms, then hold. This path shares the Dots
 movement/launch integrator and launch decay but never runs cohesion, collision, food consumption,
 absorption, split, merge, or checkpoint logic. New authority and closure entry smooth only the
-visible presentation residual. Delayed interpolation remains the spectator, selectable fallback,
-and comparison path. The persistent adapter passes delayed interpolation and the already-smoothed
+visible presentation residual. Buffered interpolation remains the normal spectator source and the
+selectable playing-client fallback/comparison path. Default `live` spectators stay on that source
+until it exhausts the newest endpoint, then apply the same bounded kinematic helper only to the
+uncovered tail without creating a rollback timeline; `delayed` spectators hold instead. The
+persistent adapter passes delayed interpolation and the already-smoothed
 local primary through directly; only actual extrapolation replacement, source/identity handoff,
 or predicted correction creates another residual. See the
 [persistent presentation audit](feature14_persistent_presentation_audit.md).
@@ -995,6 +1082,8 @@ recovery contracts are in [`rollback_prediction_design.md`](rollback_prediction_
 phased implementation is in
 [`plans/13-authoritative-interactions-spectating.md`](plans/13-authoritative-interactions-spectating.md)
 and [`plans/14-selectable-world-rollback.md`](plans/14-selectable-world-rollback.md).
+The overload-recovery and direct-spectator follow-up is recorded in
+[`plans/14-input-flow-control-spectator-stress.md`](plans/14-input-flow-control-spectator-stress.md).
 
 ## How later replication work fits
 
@@ -1007,7 +1096,7 @@ change what is sent without changing who owns truth:
 | 11: prediction/reconciliation | Input history, replay, and local correction smoothing | Owned movement responds immediately. |
 | 12: remote interpolation | Buffered presentation snapshots | Other players move smoothly under jitter. |
 | 13: authoritative interactions | Absorption, defeat, spectating, and optional respawn | Contested and durable outcomes gain a server-owned baseline. |
-| 14: rollback programming model | Game-neutral typed timeline, interaction-closed Dots replay, structural lifecycle, consequence policies, and adaptive command timing | Reversible gameplay responds immediately while one-shot and durable consequences have explicit delivery semantics. |
+| 14: rollback programming model | Game-neutral typed timeline, interaction-closed Dots replay, structural lifecycle, consequence policies, adaptive command timing, receive-window backpressure, and direct spectator stress | Reversible gameplay responds immediately while one-shot/durable consequences and overload recovery have explicit semantics. |
 | 15: interest management | Per-client area-of-interest filtering | Clients receive only relevant authoritative entities; prediction membership follows coherent AOI entry/exit. |
 | 16: delta snapshots | Baselines, field masks, quantization, and byte budgets | Snapshots describe changes rather than replacing everything on the wire. |
 

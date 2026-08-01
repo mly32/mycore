@@ -76,6 +76,11 @@ void complete_protocol_fixture(dots::protocol::Message& message) {
     if (snapshot == nullptr) {
         return;
     }
+    if (snapshot->recipient.mode == dots::protocol::SessionMode::Playing &&
+        !snapshot->input_receive_through.is_valid()) {
+        snapshot->input_receive_through =
+            dots::protocol::input_receive_through_for(snapshot->last_processed_input_id);
+    }
     for (const auto& entity : snapshot->entities) {
         if (entity.kind != dots::protocol::EntityKind::Player ||
             std::any_of(snapshot->owners.begin(),
@@ -323,6 +328,49 @@ TEST_CASE("Two in-memory clients receive authoritative identities and snapshots"
     REQUIRE(second.world().player_count() == 2);
 }
 
+TEST_CASE("Direct spectator joins without a player and stays live through status heartbeats",
+          "[dots][session][spectator][flow]") {
+    using namespace std::chrono_literals;
+    mycore::net_transport::InMemoryNetwork network;
+    dots::server::Runtime server{
+        network.server_endpoint(),
+        {},
+        {
+            .liveness_timeout_ticks = 3,
+        },
+    };
+    dots::client_runtime::Runtime spectator{
+        network.connect_client(),
+        {.requested_role = dots::protocol::JoinRole::Spectator},
+    };
+    const auto base = std::chrono::steady_clock::now();
+
+    REQUIRE_FALSE(spectator.process_events(base).has_value());
+    REQUIRE_FALSE(server.process_events().has_value());
+    REQUIRE_FALSE(spectator.process_events(base).has_value());
+    REQUIRE_FALSE(server.process_events().has_value());
+
+    REQUIRE(spectator.state() == dots::client_runtime::State::Ready);
+    CHECK(spectator.accepted_role() == dots::protocol::JoinRole::Spectator);
+    CHECK(spectator.session_mode() == dots::protocol::SessionMode::Spectating);
+    CHECK_FALSE(spectator.controlled_entity_id().is_valid());
+    CHECK_FALSE(spectator.primary_entity_id().is_valid());
+    CHECK(server.client_count() == 1);
+    CHECK(server.world().player_count() == 0);
+    CHECK(spectator.send_input(0, {1.0F, 0.0F}) ==
+          dots::client_runtime::InputSendResult::SpectatorOnly);
+
+    for (auto tick = 1; tick <= 12; ++tick) {
+        REQUIRE_FALSE(server.step().has_value());
+        REQUIRE_FALSE(spectator.process_events(base + (tick * 100ms)).has_value());
+        REQUIRE_FALSE(server.process_events().has_value());
+    }
+    CHECK(server.client_count() == 1);
+    CHECK(server.world().player_count() == 0);
+    CHECK(spectator.world().snapshot_id().value() >= 6);
+    CHECK(spectator.input_flow_statistics(base + 1200ms).status_count >= 6);
+}
+
 TEST_CASE("Authoritative input moves only the owning player and is acknowledged",
           "[dots][session]") {
     mycore::net_transport::InMemoryNetwork network;
@@ -432,7 +480,7 @@ TEST_CASE("Complete authority receipt coverage retires rejected predicted conseq
           rejected_batches.front().retired_keys);
 }
 
-TEST_CASE("Protocol version 4 split receipts repeat until the client acknowledges them",
+TEST_CASE("Protocol version 5 split receipts repeat until the client acknowledges them",
           "[dots][session][rollback][receipts]") {
     mycore::net_transport::InMemoryNetwork network;
     dots::server::Runtime server{network.server_endpoint()};
@@ -936,22 +984,21 @@ TEST_CASE("Server queues reordered redundant inputs and consumes one per tick",
     CHECK(drained_snapshot->pending_input_count == 0);
 }
 
-TEST_CASE("Server input queue overflow disconnects only the offending session",
-          "[dots][session][input][queue]") {
+TEST_CASE("Server receive window rejects only an out-of-window peer",
+          "[dots][session][input][flow]") {
     mycore::net_transport::InMemoryNetwork network;
     dots::server::Runtime server{network.server_endpoint()};
     dots::client_runtime::Runtime healthy{network.connect_client()};
-    dots::client_runtime::Runtime offender{network.connect_client()};
+    auto& offender = network.connect_client();
     REQUIRE_FALSE(healthy.process_events().has_value());
-    REQUIRE_FALSE(offender.process_events().has_value());
-    REQUIRE_FALSE(server.process_events().has_value());
+    const auto offender_connection = complete_raw_handshake(offender, server);
     REQUIRE_FALSE(healthy.process_events().has_value());
-    REQUIRE_FALSE(offender.process_events().has_value());
 
-    for (std::uint32_t tick = 0; tick <= dots::protocol::kMaximumPendingInputCount; ++tick) {
-        REQUIRE(offender.send_input(tick, {1.0F, 0.0F}) ==
-                dots::client_runtime::InputSendResult::Sent);
-    }
+    send_input_packet(offender,
+                      offender_connection,
+                      {input_sample(dots::protocol::kInputReceiveWindow,
+                                    dots::protocol::kInputReceiveWindow,
+                                    {1.0F, 0.0F})});
     REQUIRE_FALSE(server.process_events().has_value());
     CHECK(server.rejected_packet_count() == 1);
     CHECK(server.client_count() == 1);
@@ -968,6 +1015,42 @@ TEST_CASE("Server input queue overflow disconnects only the offending session",
     REQUIRE(position.has_value());
     CHECK(position->x == Catch::Approx(healthy_spawn->x));
     CHECK(position->y == Catch::Approx(healthy_spawn->y + 0.2F));
+}
+
+TEST_CASE("Authority stall pauses, drains, and applies a buffered split once",
+          "[dots][session][input][flow][split]") {
+    mycore::net_transport::InMemoryNetwork network;
+    dots::server::Runtime server{network.server_endpoint()};
+    dots::client_runtime::Runtime client{network.connect_client()};
+    complete_handshake(client, server);
+
+    for (std::uint32_t tick = 0; tick < 40; ++tick) {
+        const auto action = tick == 35 ? dots::protocol::kSplitActionBit : std::uint16_t{};
+        REQUIRE(client.submit_input(tick, {1.0F, 0.0F}, action) ==
+                dots::client_runtime::InputSendResult::Sent);
+    }
+    REQUIRE(client.input_production_paused());
+    CHECK(client.input_flow_statistics().unsent_count ==
+          dots::client_runtime::kInputPauseThreshold);
+    REQUIRE(client.predicted_world() != nullptr);
+    CHECK(client.predicted_world()->player_count() == 2);
+
+    REQUIRE_FALSE(server.process_events().has_value());
+    for (auto tick = 0; tick < 48; ++tick) {
+        REQUIRE_FALSE(server.step().has_value());
+        REQUIRE_FALSE(client.process_events().has_value());
+        REQUIRE_FALSE(server.process_events().has_value());
+    }
+
+    CHECK(client.state() == dots::client_runtime::State::Ready);
+    CHECK_FALSE(client.input_production_paused());
+    const auto flow = client.input_flow_statistics();
+    CHECK(flow.unsent_count == 0);
+    CHECK(flow.pause_count == 1);
+    CHECK(flow.unsent_high_water_mark == dots::client_runtime::kInputPauseThreshold);
+    CHECK(server.client_count() == 1);
+    CHECK(server.world().player_count() == 2);
+    CHECK(client.world().last_processed_input_id() == dots::protocol::InputSequenceId{39});
 }
 
 TEST_CASE("Authority receipt retention overflow fails only the affected session",

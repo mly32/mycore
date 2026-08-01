@@ -49,6 +49,8 @@ def run_session(
     server_command: Sequence[str],
     client_commands: Sequence[Sequence[str]],
     bot_commands: Sequence[Sequence[str]] = (),
+    spectator_client_commands: Sequence[Sequence[str]] = (),
+    spectator_bot_commands: Sequence[Sequence[str]] = (),
     readiness_timeout: float = 10.0,
     duration_seconds: float | None = None,
 ) -> int:
@@ -99,8 +101,12 @@ def run_session(
 
         for index, command in enumerate(client_commands, start=1):
             clients.append(start(f"client {index}", command))
+        for index, command in enumerate(spectator_client_commands, start=1):
+            clients.append(start(f"spectator client {index}", command))
         for index, command in enumerate(bot_commands, start=1):
             bots.append(start(f"bot {index}", command))
+        for index, command in enumerate(spectator_bot_commands, start=1):
+            bots.append(start(f"spectator bot {index}", command))
 
         session_deadline = (
             None if duration_seconds is None else time.monotonic() + duration_seconds
@@ -163,6 +169,8 @@ def _parse_arguments(arguments: Sequence[str] | None = None) -> argparse.Namespa
     parser.add_argument("--build-dir", required=True, type=Path)
     parser.add_argument("--clients", type=int, default=2)
     parser.add_argument("--bots", type=int, default=0)
+    parser.add_argument("--spectator-clients", type=int, default=0)
+    parser.add_argument("--spectator-bots", type=int, default=0)
     parser.add_argument(
         "--client-config",
         type=Path,
@@ -181,8 +189,17 @@ def _parse_arguments(arguments: Sequence[str] | None = None) -> argparse.Namespa
         parser.error("--clients must be non-negative")
     if parsed.bots < 0:
         parser.error("--bots must be non-negative")
-    if parsed.clients == 0 and parsed.bots == 0:
-        parser.error("at least one client or bot is required")
+    if parsed.spectator_clients < 0:
+        parser.error("--spectator-clients must be non-negative")
+    if parsed.spectator_bots < 0:
+        parser.error("--spectator-bots must be non-negative")
+    if (
+        parsed.clients == 0
+        and parsed.bots == 0
+        and parsed.spectator_clients == 0
+        and parsed.spectator_bots == 0
+    ):
+        parser.error("at least one player or spectator client/bot is required")
     if parsed.fake_lag_ms < 0:
         parser.error("--fake-lag-ms must be non-negative")
     if not 0.0 <= parsed.fake_loss_percent <= 100.0:
@@ -200,9 +217,15 @@ def _session_commands(arguments: argparse.Namespace) -> tuple[list[str], list[st
     build_directory = arguments.build_dir.resolve()
     server = _executable(build_directory, "dots_server")
     client = (
-        _executable(build_directory, "dots_client") if arguments.clients > 0 else None
+        _executable(build_directory, "dots_client")
+        if arguments.clients + arguments.spectator_clients > 0
+        else None
     )
-    bot = _executable(build_directory, "dots_bot") if arguments.bots > 0 else None
+    bot = (
+        _executable(build_directory, "dots_bot")
+        if arguments.bots + arguments.spectator_bots > 0
+        else None
+    )
     impairment: list[str] = [
         "--fake-lag-ms",
         str(arguments.fake_lag_ms),
@@ -251,6 +274,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         server_command,
         [client_command for _ in range(arguments.clients)],
         [bot_command for _ in range(arguments.bots)],
+        [
+            [*client_command, "--spectate"]
+            for _ in range(arguments.spectator_clients)
+        ],
+        [[*bot_command, "--spectate"] for _ in range(arguments.spectator_bots)],
         duration_seconds=arguments.duration_seconds,
     )
 

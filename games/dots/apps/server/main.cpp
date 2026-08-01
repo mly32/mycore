@@ -112,19 +112,81 @@ int main(int argc, char** argv) {
         std::signal(SIGINT, request_stop);
         std::signal(SIGTERM, request_stop);
         auto next_tick = std::chrono::steady_clock::now();
+        const auto started_at = next_tick;
+        auto last_overload_warning = next_tick - std::chrono::seconds{5};
+        auto overload_active = false;
+        auto healthy_tick_count = std::size_t{};
+        auto catch_up_tick_count = std::size_t{};
+        auto discarded_wall_time = std::chrono::steady_clock::duration::zero();
         std::uint64_t completed_ticks{};
         mycore::debug::log_info(
             "dots.server", "Authoritative 30 Hz server listening on {}", listening.address.value());
         while (stop_requested == 0 && (!options.ticks || completed_ticks < *options.ticks)) {
-            if (server.process_events() || server.step()) {
+            const auto poll_started_at = std::chrono::steady_clock::now();
+            const auto process_error = server.process_events();
+            const auto step_started_at = std::chrono::steady_clock::now();
+            const auto step_error = server.step();
+            const auto work_completed_at = std::chrono::steady_clock::now();
+            if (process_error || step_error) {
                 throw std::runtime_error{
                     "The authoritative Dots server encountered a runtime error"};
             }
             ++completed_ticks;
             next_tick += dots::simulation::kTickDuration;
+            const auto late = work_completed_at >= next_tick;
+            if (late) {
+                ++catch_up_tick_count;
+                healthy_tick_count = 0;
+                const auto lag = work_completed_at - next_tick;
+                if (!overload_active ||
+                    work_completed_at - last_overload_warning >= std::chrono::seconds{5}) {
+                    const auto poll_ms =
+                        std::chrono::duration<double, std::milli>{step_started_at - poll_started_at}
+                            .count();
+                    const auto step_ms =
+                        std::chrono::duration<double, std::milli>{work_completed_at -
+                                                                  step_started_at}
+                            .count();
+                    const auto lag_ms = std::chrono::duration<double, std::milli>{lag}.count();
+                    mycore::debug::log_warning(
+                        "dots.server.simulation",
+                        "Authoritative tick overload: poll {:.2f} ms, step {:.2f} ms, "
+                        "deadline lag {:.2f} ms, catch-up tick {}/5",
+                        poll_ms,
+                        step_ms,
+                        lag_ms,
+                        catch_up_tick_count);
+                    last_overload_warning = work_completed_at;
+                }
+                overload_active = true;
+                if (catch_up_tick_count >= 5) {
+                    discarded_wall_time += lag;
+                    next_tick = work_completed_at + dots::simulation::kTickDuration;
+                    catch_up_tick_count = 0;
+                }
+            } else {
+                catch_up_tick_count = 0;
+                if (overload_active && ++healthy_tick_count >= 30) {
+                    mycore::debug::log_info(
+                        "dots.server.simulation",
+                        "Authoritative tick timing recovered after {} completed ticks",
+                        completed_ticks);
+                    overload_active = false;
+                    healthy_tick_count = 0;
+                }
+            }
             std::this_thread::sleep_until(next_tick);
         }
-        mycore::debug::log_info("dots.server", "Stopped after {} ticks", completed_ticks);
+        const auto elapsed = std::chrono::steady_clock::now() - started_at;
+        const auto elapsed_seconds = std::chrono::duration<double>{elapsed}.count();
+        const auto average_rate =
+            elapsed_seconds > 0.0 ? static_cast<double>(completed_ticks) / elapsed_seconds : 0.0;
+        mycore::debug::log_info(
+            "dots.server",
+            "Stopped after {} ticks at {:.2f} average Hz with {:.2f} ms discarded wall-time debt",
+            completed_ticks,
+            average_rate,
+            std::chrono::duration<double, std::milli>{discarded_wall_time}.count());
         return 0;
     } catch (const std::exception& error) {
         mycore::debug::log_error("dots.server", "{}", error.what());

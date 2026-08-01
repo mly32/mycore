@@ -195,7 +195,8 @@ build_full_snapshot(const simulation::World& world,
                     std::uint8_t pending_input_count,
                     protocol::RecipientSessionState recipient,
                     std::vector<protocol::AuthorityReceipt> authority_receipts,
-                    protocol::AuthorityReceiptSequenceId authority_receipts_retired_through) {
+                    protocol::AuthorityReceiptSequenceId authority_receipts_retired_through,
+                    protocol::InputSequenceId input_receive_through) {
     if (!snapshot_id.is_valid()) {
         return SnapshotBuildError::InvalidSnapshotId;
     }
@@ -207,11 +208,15 @@ build_full_snapshot(const simulation::World& world,
         authority_receipts.size() > protocol::kMaximumAuthorityReceiptsPerSnapshot) {
         return SnapshotBuildError::InvalidWorldState;
     }
+    if (!input_receive_through.is_valid() && recipient.mode == protocol::SessionMode::Playing) {
+        input_receive_through = protocol::input_receive_through_for(last_processed);
+    }
 
     protocol::FullSnapshot snapshot{
         .snapshot_id = snapshot_id,
         .server_tick = static_cast<std::uint32_t>(checkpoint.tick.value()),
         .last_processed_input_id = last_processed,
+        .input_receive_through = input_receive_through,
         .pending_input_count = pending_input_count,
         .checkpoint_schema_id = protocol::kCheckpointSchemaId,
         .checkpoint_digest = prediction::checkpoint_digest(checkpoint).value,
@@ -394,6 +399,7 @@ SnapshotApplyResult ReplicatedWorld::apply(const protocol::FullSnapshot& snapsho
     snapshot_id_ = snapshot.snapshot_id;
     server_tick_ = snapshot.server_tick;
     last_processed_input_id_ = snapshot.last_processed_input_id;
+    input_receive_through_ = snapshot.input_receive_through;
     pending_input_count_ = snapshot.pending_input_count;
     recipient_ = snapshot.recipient;
     entities_ = snapshot.entities;
@@ -439,6 +445,10 @@ protocol::SnapshotId ReplicatedWorld::snapshot_id() const noexcept {
 
 protocol::InputSequenceId ReplicatedWorld::last_processed_input_id() const noexcept {
     return last_processed_input_id_;
+}
+
+protocol::InputSequenceId ReplicatedWorld::input_receive_through() const noexcept {
+    return input_receive_through_;
 }
 
 std::uint8_t ReplicatedWorld::pending_input_count() const noexcept {

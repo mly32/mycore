@@ -505,6 +505,8 @@ Changes:
 - Compose predicted closure state with bounded presentation-only remote extrapolation while
   retaining Feature 12 interpolation as fallback and comparison.
 - Add adaptive command-buffer timing plus Rollback metrics, overlays, and deliberate faults.
+- Add protocol receive-window flow control, retained unsent commands, hysteresis pause/resume,
+  and first-class direct spectator stress roles.
 - Keep outer sent/retained command frontiers distinct from timeline submission so speculative
   local elimination can recover a validated ACK gap and roll the remaining suffix forward.
 
@@ -516,6 +518,8 @@ Tests:
 - Accepted/rejected predicted spawns, stable event identity, every consequence policy, and
   guarded session state.
 - Dynamic latency, loss, reordering, queue-depth convergence, and hard resync.
+- Authority-stall pause/drain with a buffered edge action, malicious out-of-window isolation, and
+  direct-spectator heartbeat liveness.
 - Recorded 10, 100, 500, and 1,000-entity replay workloads.
 
 Exit criterion:
@@ -523,9 +527,10 @@ Exit criterion:
 - Complete interaction-closed Dots gameplay converges atomically to server truth, Dots exercises
   every generic consequence policy, and `MyCore::Rollback` contains no game or protocol policy.
 
-Implementation status: steps 1 through 8 are complete on `feature/14`. Adaptive command timing,
+Implementation status: steps 1 through 9 are complete on `feature/14`. Adaptive command timing,
 expanded fault/diagnostic coverage, bounded router-ledger pruning, explicit correction
-generations, measured scale workloads, and bounded native soaks are implemented. The optimized
+generations, measured scale workloads, bounded native soaks, receive-window overload recovery,
+and direct spectator stress modes are implemented. The optimized
 target 200 ms, 1,000-entity workload measured 0.738 ms p99 with 0% rollback-only 30 Hz frame
 overruns, so the conditional multi-frame spike was not activated. The evidence is recorded in
 [`feature14_rollback_workload_results.md`](feature14_rollback_workload_results.md).
@@ -535,7 +540,9 @@ small enough to review independently; the roadmap does not require separate bran
 gates for each implementation step.
 
 Detailed plan:
-[`plans/14-selectable-world-rollback.md`](plans/14-selectable-world-rollback.md).
+[`plans/14-selectable-world-rollback.md`](plans/14-selectable-world-rollback.md). The step 9
+hardening record is
+[`plans/14-input-flow-control-spectator-stress.md`](plans/14-input-flow-control-spectator-stress.md).
 
 ### `spike/multi-frame-resimulation` — conditional
 
@@ -837,6 +844,40 @@ Exit criterion:
 - A developer can identify the active local bindings, device activity, derived intent, and UI
   capture state in-game without consulting the TOML file or mistaking the display for server
   authority.
+
+### `feature/24-authoritative-input-provenance`
+
+Purpose: make the current arrival-based authoritative input scheduler directly observable without
+turning client-local ticks into trusted server timestamps or changing gameplay scheduling.
+
+Changes:
+
+- Add a bounded, opt-in server diagnostic record for accepted Player inputs containing client ID,
+  input sequence, protocol `client_tick`, receive-side server tick, authoritative application
+  tick, and queue wait in ticks.
+- Preserve current scheduling: each server tick consumes at most the oldest queued sequence per
+  session. Diagnostics must not backdate commands, alter ordering, or implement lag compensation.
+- Choose during detailed planning between rate-limited structured server logs and a developer
+  trace artifact. Do not add a replicated per-input stream to every snapshot without measured
+  need.
+- Summarize counts and queue-wait distributions for many-client soaks so opt-in diagnostics do
+  not flood normal logs.
+- Cross-reference the protocol/networking time model and clearly label `client_tick` as local
+  provenance rather than an authoritative clock.
+
+Tests:
+
+- Controlled arrival schedules prove exact receive/application ticks and queue waits for two
+  clients with different delays, including both commands applied in one shared server tick.
+- Loss, redundancy, reordering, and duplicate packets produce one application record per
+  sequence without changing authoritative results.
+- Diagnostics remain bounded and disabled by default; enabling them produces byte-identical
+  authoritative snapshots and checkpoints for the same input schedule.
+
+Exit criterion:
+
+- A developer can answer when a sequenced input arrived and when authority applied it without
+  subtracting client and server clocks or mistaking the trace for a server-rewind policy.
 
 ## Research Branches
 

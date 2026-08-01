@@ -75,7 +75,9 @@ restoring the World cannot cause a sound or one-shot effect to happen repeatedly
 
 Entities inside the closure run shared Dots simulation. Entities outside it may use six
 ticks/200 ms of presentation-only movement/launch extrapolation and then hold. Delayed
-interpolation remains the spectator/fallback/comparison path. Neither smoothed nor extrapolated
+interpolation remains the fallback/comparison and selectable delayed-spectator path. Spectators
+default to that authoritative interpolation and invoke the bounded kinematic path only for an
+uncovered underrun tail, without creating a rollback timeline. Neither smoothed nor extrapolated
 state can seed prediction.
 
 ### Diagnostic digest, typed correctness
@@ -365,7 +367,8 @@ The normal playing view composes:
 - Predicted World entities inside the interaction closure.
 - Fixed-tick render interpolation and 100 ms correction smoothing for committed predicted state.
 - Bounded movement/launch extrapolation outside the closure for six ticks/200 ms, then hold.
-- Feature 12 delayed interpolation for spectators, fallback, and comparison.
+- Feature 12 delayed interpolation for both spectator modes, with bounded movement/launch
+  extrapolation only for a live spectator's uncovered underrun tail; delayed spectators hold.
 
 Extrapolated state cannot collide, consume, split, merge, seed closure, or become a checkpoint.
 Entering the closure restores from authority and replays; presentation smooths from the prior
@@ -435,8 +438,11 @@ Keep commits focused and reviewable, but do not add approval gates between these
    than inferring one from source revision. The headless bot now discards periodic-producer
    backlog after a replay overrun so it cannot turn local scheduling debt into a server input
    flood; adaptive queue-depth convergence remains part of this step.
+9. Bound honest-client authority lead with a protocol receive grant and retained unsent outbox,
+   add hysteresis pause/resume, status heartbeats, first-class direct spectator roles, server
+   catch-up limits, and spectator-heavy stress tooling.
 
-Steps 1 through 8 are implemented on `feature/14`. The optimized workload and native soak
+Steps 1 through 9 are implemented on `feature/14`. The optimized workload and native soak
 evidence are recorded in
 [`../feature14_rollback_workload_results.md`](../feature14_rollback_workload_results.md).
 The target 200 ms, 1,000-entity result remains below both research thresholds, so atomic
@@ -455,7 +461,8 @@ projection, exact retained local/remote movement causes, canonical digests, type
 and the complete-World adapter to `MyCore::Rollback`. Offline tests cover structural correction
 and exercise `PredictOnce`, `PredictCancelable`, and `ConfirmOnce` with Dots events.
 
-Protocol v4 now carries immutable rules, the schema-1 canonical checkpoint and digest, allocator
+Protocol v5 now carries requested/accepted join roles, status heartbeats, the authority input
+receive grant, immutable rules, the schema-1 canonical checkpoint and digest, allocator
 and complete owner/entity state, optional prediction keys, the split action bit, and monotonic
 typed authority receipts. Replication builds and exactly rehydrates `WorldCheckpoint`, rejecting
 restore or digest failures. The server retains at most 256 relevant receipts per session, repeats
@@ -481,7 +488,9 @@ admitted entities.
 Graphical input now submits an edge-triggered split on Space. Predicted topology, mass, launch,
 food, absorption, merge, and owner state are rendered from the predicted interaction island.
 Outside it, Playing clients advance only newest-authority movement and launch for at most six
-ticks/200 ms and then hold; Spectating clients retain Feature 12 interpolation-and-hold.
+ticks/200 ms and then hold. Spectating clients use Feature 12 interpolation normally; live mode
+advances only an uncovered underrun tail for at most another six ticks, while delayed mode holds
+immediately. Neither spectator mode runs rollback or gameplay mechanics.
 Predicted children retain their `PredictionKey` across replay and through an authoritative
 entity-ID remap. Predicted removal of the final local piece does not enter Spectating or stop
 input capture; only the confirmed replicated session can do that. The client converts new
@@ -542,7 +551,8 @@ Hard resync clears presentation residuals and trails but not consequence tombsto
 Simulation events carry the occurrence geometry required after topology has changed:
 `FoodConsumed` carries the food position, `PlayerAbsorbed` carries absorber and victim positions,
 and `PlayerSplit` carries its origin and initial launch velocity. Stable keys do not change.
-Protocol v4 receipt encoding includes this geometry without another version bump.
+The receipt encoding added in protocol v4 includes this geometry; protocol v5 preserves it while
+adding flow control and spectator roles.
 
 Network presentation owns persistent semantic tracks keyed by `PredictionKey` when present and
 by entity ID otherwise. The selected source order while Playing is predicted closure, latest
@@ -618,6 +628,25 @@ target verifies deterministic split replay across the full entity/RTT-equivalent
 flaky timing assertions in CTest. Timed headless native sessions provide bounded impairment
 soaks. Release measurements at the target 200 ms case reached 0.738 ms p99 at 1,000 entities and
 0% rollback-only 30 Hz frame overruns, so the multi-frame trigger was not crossed.
+
+### Step 9 Decision Record
+
+Step 9 closes the overload gap exposed by long many-client Debug sessions. Protocol v5 adds
+requested/accepted Player and Spectator roles, a 5 Hz status heartbeat, and an exact 32-sequence
+authority receive grant. Playing clients retain grant-blocked commands separately from transport,
+pause production at eight unsent commands, resume at two, and never convert paused wall time into
+a catch-up burst. The server retains its 64-entry queue only as a hostile-peer invariant and
+isolates a peer that sends fresh input beyond its grant.
+
+Permanent spectators create no owner or player, receive full snapshots without participant-only
+receipts, and produce no gameplay commands. Defeated Players likewise use status heartbeats
+except for an explicit respawn edge. The graphical client, bot, and session launcher expose these
+roles, and the Rollback overlay separates input ACK, receive grant, transmit frontier, unsent
+depth, and production pause state.
+
+The standalone server bounds immediate catch-up to five ticks, then rebases wall time without
+fabricating or skipping simulation ticks. The implementation and stress contract are recorded in
+[`14-input-flow-control-spectator-stress.md`](14-input-flow-control-spectator-stress.md).
 
 ## Test Plan
 

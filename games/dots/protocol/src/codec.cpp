@@ -25,10 +25,12 @@ constexpr std::uint8_t kMagicT = 0x54;
 constexpr std::uint8_t kMagicS = 0x53;
 constexpr std::uint8_t kSupportedFlags = 0;
 constexpr std::size_t kWorldRulesBytes = 42;
-constexpr std::size_t kServerWelcomePayloadBytes = 12 + kWorldRulesBytes;
+constexpr std::size_t kClientHelloPayloadBytes = 1;
+constexpr std::size_t kServerWelcomePayloadBytes = 13 + kWorldRulesBytes;
+constexpr std::size_t kClientStatusPayloadBytes = 8;
 constexpr std::size_t kInputPacketPrefixBytes = 9;
 constexpr std::size_t kInputSampleBytes = 18;
-constexpr std::size_t kFullSnapshotBaseBytes = 57;
+constexpr std::size_t kFullSnapshotBaseBytes = 61;
 constexpr std::size_t kOwnedEntityIdBytes = 4;
 constexpr std::size_t kPlayerAbsorbedBytes = 40;
 constexpr std::size_t kOwnerStateBytes = 28;
@@ -181,6 +183,15 @@ private:
     return false;
 }
 
+[[nodiscard]] bool is_known(JoinRole role) noexcept {
+    switch (role) {
+    case JoinRole::Player:
+    case JoinRole::Spectator:
+        return true;
+    }
+    return false;
+}
+
 [[nodiscard]] bool is_known(RespawnResult result) noexcept {
     switch (result) {
     case RespawnResult::None:
@@ -232,16 +243,23 @@ template <class Values, class Projection>
            }) == values.end();
 }
 
-[[nodiscard]] std::optional<CodecError> validate(const ClientHello&) noexcept {
-    return std::nullopt;
+[[nodiscard]] std::optional<CodecError> validate(const ClientHello& message) noexcept {
+    return is_known(message.requested_role) ? std::nullopt : std::optional{CodecError::InvalidEnum};
 }
 
 [[nodiscard]] std::optional<CodecError> validate(const ServerWelcome& message) noexcept {
-    if (!message.client_id.is_valid()) {
-        return CodecError::InvalidId;
+    if (!message.client_id.is_valid() || !is_known(message.accepted_role)) {
+        return !message.client_id.is_valid() ? CodecError::InvalidId : CodecError::InvalidEnum;
     }
     if (!valid_rules(message.world_rules)) {
         return CodecError::InvalidCheckpoint;
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] std::optional<CodecError> validate(const ClientStatus& message) noexcept {
+    if (!message.last_received_snapshot_id.is_valid()) {
+        return CodecError::InvalidId;
     }
     return std::nullopt;
 }
@@ -369,6 +387,15 @@ template <class Values, class Projection>
     }
     if (message.pending_input_count > kMaximumPendingInputCount) {
         return CodecError::OutOfRange;
+    }
+    if (message.input_receive_through.is_valid()) {
+        if (message.input_receive_through !=
+                input_receive_through_for(message.last_processed_input_id) ||
+            message.pending_input_count > kInputReceiveWindow) {
+            return CodecError::InvalidInputOrdering;
+        }
+    } else if (message.pending_input_count != 0) {
+        return CodecError::InvalidInputOrdering;
     }
     if (message.checkpoint_schema_id != kCheckpointSchemaId) {
         return CodecError::InvalidCheckpoint;
@@ -532,13 +559,24 @@ template <class Values, class Projection>
             message.recipient.respawn_available_tick) {
             return CodecError::InvalidId;
         }
-    } else if (!message.recipient.owned_entity_ids.empty() ||
-               message.recipient.primary_entity_id.is_valid() || !message.recipient.defeat_tick ||
-               !message.recipient.respawn_available_tick) {
-        return CodecError::InvalidId;
-    } else if (*message.recipient.defeat_tick > message.server_tick ||
-               *message.recipient.respawn_available_tick < *message.recipient.defeat_tick) {
-        return CodecError::OutOfRange;
+    } else {
+        if (!message.recipient.owned_entity_ids.empty() ||
+            message.recipient.primary_entity_id.is_valid() ||
+            message.recipient.defeat_tick.has_value() !=
+                message.recipient.respawn_available_tick.has_value()) {
+            return CodecError::InvalidId;
+        }
+        if (message.recipient.defeat_tick &&
+            (*message.recipient.defeat_tick > message.server_tick ||
+             *message.recipient.respawn_available_tick < *message.recipient.defeat_tick)) {
+            return CodecError::OutOfRange;
+        }
+        if (!message.recipient.defeat_tick &&
+            (message.recipient.follow_entity_id.is_valid() ||
+             message.recipient.latest_respawn_request_id.is_valid() ||
+             message.recipient.latest_respawn_result != RespawnResult::None)) {
+            return CodecError::InvalidId;
+        }
     }
 
     std::set<std::pair<std::uint8_t, std::vector<std::uint32_t>>> event_keys;
@@ -610,8 +648,10 @@ template <class Values, class Projection>
                 return MessageKind::ServerWelcome;
             } else if constexpr (std::is_same_v<Value, InputPacket>) {
                 return MessageKind::InputPacket;
-            } else {
+            } else if constexpr (std::is_same_v<Value, FullSnapshot>) {
                 return MessageKind::FullSnapshot;
+            } else {
+                return MessageKind::ClientStatus;
             }
         },
         message);
@@ -647,11 +687,13 @@ template <class Values, class Projection>
         [](const auto& value) -> std::size_t {
             using Value = std::decay_t<decltype(value)>;
             if constexpr (std::is_same_v<Value, ClientHello>) {
-                return 0;
+                return kClientHelloPayloadBytes;
             } else if constexpr (std::is_same_v<Value, ServerWelcome>) {
                 return kServerWelcomePayloadBytes;
             } else if constexpr (std::is_same_v<Value, InputPacket>) {
                 return kInputPacketPrefixBytes + (value.samples.size() * kInputSampleBytes);
+            } else if constexpr (std::is_same_v<Value, ClientStatus>) {
+                return kClientStatusPayloadBytes;
             } else {
                 auto size = kFullSnapshotBaseBytes +
                             (value.recipient.owned_entity_ids.size() * kOwnedEntityIdBytes) +
@@ -771,10 +813,13 @@ void encode_authority_event(Writer& writer, const AuthorityEvent& event) {
         event);
 }
 
-void encode_payload(Writer&, const ClientHello&) {}
+void encode_payload(Writer& writer, const ClientHello& message) {
+    writer.write_u8(static_cast<std::uint8_t>(message.requested_role));
+}
 
 void encode_payload(Writer& writer, const ServerWelcome& message) {
     writer.write_u32(message.client_id.value());
+    writer.write_u8(static_cast<std::uint8_t>(message.accepted_role));
     writer.write_u32(message.server_tick);
     writer.write_u32(message.respawn_cooldown_ticks);
     encode_rules(writer, message.world_rules);
@@ -793,10 +838,16 @@ void encode_payload(Writer& writer, const InputPacket& message) {
     }
 }
 
+void encode_payload(Writer& writer, const ClientStatus& message) {
+    writer.write_u32(message.last_received_snapshot_id.value());
+    writer.write_u32(message.last_received_authority_receipt_sequence.value());
+}
+
 void encode_payload(Writer& writer, const FullSnapshot& message) {
     writer.write_u32(message.snapshot_id.value());
     writer.write_u32(message.server_tick);
     writer.write_u32(message.last_processed_input_id.value());
+    writer.write_u32(message.input_receive_through.value());
     writer.write_u8(message.pending_input_count);
     writer.write_u32(message.authority_receipts_retired_through.value());
     writer.write_u16(message.checkpoint_schema_id);
@@ -855,17 +906,28 @@ void encode_payload(Writer& writer, const FullSnapshot& message) {
 }
 
 [[nodiscard]] DecodeResult decode_client_hello(Reader& reader) {
+    std::uint8_t requested_role{};
+    if (!reader.read_u8(requested_role)) {
+        return CodecError::Truncated;
+    }
     if (reader.remaining() != 0) {
         return CodecError::TrailingBytes;
     }
-    return Message{ClientHello{}};
+    ClientHello message{
+        .requested_role = static_cast<JoinRole>(requested_role),
+    };
+    if (const auto error = validate(message)) {
+        return *error;
+    }
+    return Message{message};
 }
 
 [[nodiscard]] DecodeResult decode_server_welcome(Reader& reader) {
     std::uint32_t client_id{};
+    std::uint8_t accepted_role{};
     ServerWelcome message;
-    if (!reader.read_u32(client_id) || !reader.read_u32(message.server_tick) ||
-        !reader.read_u32(message.respawn_cooldown_ticks) ||
+    if (!reader.read_u32(client_id) || !reader.read_u8(accepted_role) ||
+        !reader.read_u32(message.server_tick) || !reader.read_u32(message.respawn_cooldown_ticks) ||
         !decode_rules(reader, message.world_rules)) {
         return CodecError::Truncated;
     }
@@ -873,6 +935,28 @@ void encode_payload(Writer& writer, const FullSnapshot& message) {
         return CodecError::TrailingBytes;
     }
     message.client_id = ClientId{client_id};
+    message.accepted_role = static_cast<JoinRole>(accepted_role);
+    if (const auto error = validate(message)) {
+        return *error;
+    }
+    return Message{message};
+}
+
+[[nodiscard]] DecodeResult decode_client_status(Reader& reader) {
+    std::uint32_t last_received_snapshot_id{};
+    std::uint32_t last_received_authority_receipt_sequence{};
+    if (!reader.read_u32(last_received_snapshot_id) ||
+        !reader.read_u32(last_received_authority_receipt_sequence)) {
+        return CodecError::Truncated;
+    }
+    if (reader.remaining() != 0) {
+        return CodecError::TrailingBytes;
+    }
+    ClientStatus message{
+        .last_received_snapshot_id = SnapshotId{last_received_snapshot_id},
+        .last_received_authority_receipt_sequence =
+            AuthorityReceiptSequenceId{last_received_authority_receipt_sequence},
+    };
     if (const auto error = validate(message)) {
         return *error;
     }
@@ -1007,6 +1091,7 @@ void encode_payload(Writer& writer, const FullSnapshot& message) {
 [[nodiscard]] DecodeResult decode_full_snapshot(Reader& reader) {
     std::uint32_t snapshot_id{};
     std::uint32_t last_processed_input_id{};
+    std::uint32_t input_receive_through{};
     std::uint32_t authority_receipts_retired_through{};
     std::uint8_t session_mode{};
     std::uint32_t next_entity_id{};
@@ -1020,7 +1105,8 @@ void encode_payload(Writer& writer, const FullSnapshot& message) {
     std::uint8_t has_latest_absorption{};
     FullSnapshot message{};
     if (!reader.read_u32(snapshot_id) || !reader.read_u32(message.server_tick) ||
-        !reader.read_u32(last_processed_input_id) || !reader.read_u8(message.pending_input_count) ||
+        !reader.read_u32(last_processed_input_id) || !reader.read_u32(input_receive_through) ||
+        !reader.read_u8(message.pending_input_count) ||
         !reader.read_u32(authority_receipts_retired_through) ||
         !reader.read_u16(message.checkpoint_schema_id) ||
         !reader.read_u64(message.checkpoint_digest) || !reader.read_u32(next_entity_id) ||
@@ -1043,6 +1129,7 @@ void encode_payload(Writer& writer, const FullSnapshot& message) {
 
     message.snapshot_id = SnapshotId{snapshot_id};
     message.last_processed_input_id = InputSequenceId{last_processed_input_id};
+    message.input_receive_through = InputSequenceId{input_receive_through};
     message.authority_receipts_retired_through =
         AuthorityReceiptSequenceId{authority_receipts_retired_through};
     message.next_entity_id = EntityId{next_entity_id};
@@ -1253,6 +1340,8 @@ DecodeResult decode(std::span<const std::byte> bytes) {
         return decode_input_packet(payload);
     case MessageKind::FullSnapshot:
         return decode_full_snapshot(payload);
+    case MessageKind::ClientStatus:
+        return decode_client_status(payload);
     }
     return CodecError::UnknownMessageKind;
 }

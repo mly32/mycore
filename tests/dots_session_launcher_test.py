@@ -178,11 +178,63 @@ class DotsSessionLauncherTests(unittest.TestCase):
                 ]
             )
         self.assertEqual(result, 0)
-        launched_server, launched_clients, launched_bots = run_session.call_args.args
+        (
+            launched_server,
+            launched_clients,
+            launched_bots,
+            launched_spectator_clients,
+            launched_spectator_bots,
+        ) = run_session.call_args.args
         self.assertEqual(launched_server, server_command)
         self.assertEqual(launched_clients, [client_command] * 3)
         self.assertEqual(launched_bots, [bot_command] * 2)
+        self.assertEqual(launched_spectator_clients, [])
+        self.assertEqual(launched_spectator_bots, [])
         self.assertIsNone(run_session.call_args.kwargs["duration_seconds"])
+
+    def test_spectator_counts_launch_role_specific_clients_and_bots(self) -> None:
+        build_directory = Path(self.directory.name) / "build"
+        binary_directory = build_directory / "bin"
+        binary_directory.mkdir(parents=True)
+        executable_suffix = ".exe" if os.name == "nt" else ""
+        (binary_directory / f"dots_server{executable_suffix}").touch()
+        (binary_directory / f"dots_client{executable_suffix}").touch()
+        (binary_directory / f"dots_bot{executable_suffix}").touch()
+
+        with mock.patch.object(dots_session, "run_session", return_value=0) as run_session:
+            result = dots_session.main(
+                [
+                    "--build-dir",
+                    str(build_directory),
+                    "--clients",
+                    "0",
+                    "--spectator-clients",
+                    "2",
+                    "--spectator-bots",
+                    "3",
+                    "--duration-seconds",
+                    "1",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        (
+            _,
+            launched_clients,
+            launched_bots,
+            launched_spectator_clients,
+            launched_spectator_bots,
+        ) = run_session.call_args.args
+        self.assertEqual(launched_clients, [])
+        self.assertEqual(launched_bots, [])
+        self.assertEqual(len(launched_spectator_clients), 2)
+        self.assertEqual(len(launched_spectator_bots), 3)
+        self.assertTrue(
+            all(command[-1] == "--spectate" for command in launched_spectator_clients)
+        )
+        self.assertTrue(
+            all(command[-1] == "--spectate" for command in launched_spectator_bots)
+        )
 
     def test_missing_client_config_is_rejected(self) -> None:
         with self.assertRaises(SystemExit):

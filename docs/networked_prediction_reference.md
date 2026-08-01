@@ -76,7 +76,9 @@ Feature 14 step 7 advances remote movement/launch vectors outside its prediction
 most six ticks/200 ms and then holds by default while Playing. This is presentation-only: it
 cannot collide, consume, split,
 merge, seed a checkpoint, or influence closure construction. Feature 12 delayed interpolation
-remains the spectator, fallback, and comparison path. Extrapolation is not a replacement for
+remains the fallback, comparison, and selectable delayed-spectator path. Spectators default to
+that authoritative interpolation and use the bounded Dots kinematic path only for an uncovered
+underrun tail, without creating a rollback timeline. Extrapolation is not a replacement for
 scalable replication.
 
 ### Complete rollback prediction
@@ -93,6 +95,24 @@ explicit authority facts.
 A mutable global aggregate is predictable only when every contribution that can change it during
 the replay window is subscribed; otherwise presentation may show an authoritative base plus a
 clearly speculative local delta without using that delta for authoritative consequences.
+
+### Prediction extent and network delay
+
+Owned prediction is command-driven, not RTT-multiplied clock extrapolation. Each accepted local
+30 Hz command advances one rollback frame immediately. When authority arrives, the client
+restores its checkpoint and replays the exact unacknowledged suffix. That suffix naturally spans
+the input-to-authority-to-snapshot acknowledgement delay, so higher RTT normally increases the
+number of replayed frames without a separate `RTT * tick_rate` lookahead setting.
+
+The resulting predicted tick is a reconstruction coordinate: authoritative base tick plus
+retained command frames. It is not a promise that the live server has reached that tick or will
+apply those commands at the same tick numbers. The server applies each session's oldest available
+command at its next authoritative tick. `InputSample::client_tick` records local sampling order
+but is not trusted or mapped to `server_tick` by the current scheduler.
+
+Adding another RTT of synthetic steps would double-count time already represented by the
+retained suffix and require guessed input. Backdating an arriving command would instead require
+a separate server rollback or historical-query authority policy.
 
 ### Shooter lag compensation / server rewind
 
