@@ -1069,6 +1069,78 @@ TEST_CASE("Confirmed spectating accepts a missing primary and clears prediction"
           dots::client_runtime::InputSendResult::Sent);
 }
 
+TEST_CASE("Confirmed defeat tolerates topology growth in a retained remote scope",
+          "[dots][prediction][scope][session]") {
+    ManualEndpoint endpoint;
+    dots::client_runtime::Runtime client{endpoint};
+    const mycore::net_transport::ConnectionHandle connection{36};
+    complete_handshake(endpoint, client, connection);
+
+    auto remote_parent = dots::protocol::EntityState{
+        .entity_id = dots::protocol::EntityId{9},
+        .kind = dots::protocol::EntityKind::Player,
+        .owner_id = dots::protocol::PlayerOwnerId{4},
+        .position_x = 10.0F,
+        .mass = 32.0F,
+    };
+    auto nearby = snapshot(1, 2, dots::protocol::InputSequenceId::invalid(), {});
+    nearby.entities.push_back(remote_parent);
+    push_snapshot(endpoint, connection, nearby);
+    REQUIRE_FALSE(client.process_events(clock_time(11s)).error.has_value());
+    REQUIRE(std::ranges::find(client.predicted_scope_entity_ids(), remote_parent.entity_id) !=
+            client.predicted_scope_entity_ids().end());
+
+    remote_parent.mass = 16.0F;
+    auto defeated = snapshot(2, 4, dots::protocol::InputSequenceId::invalid(), {});
+    defeated.entities.clear();
+    defeated.entities.push_back(remote_parent);
+    defeated.entities.push_back({
+        .entity_id = dots::protocol::EntityId{10},
+        .kind = dots::protocol::EntityKind::Player,
+        .owner_id = remote_parent.owner_id,
+        .position_x = 10.0F,
+        .mass = 32.0F,
+        .prediction_key =
+            dots::protocol::PredictionKey{
+                .owner_id = remote_parent.owner_id,
+                .input_id = dots::protocol::InputSequenceId{42},
+                .child_ordinal = 0,
+            },
+    });
+    defeated.owners.push_back({
+        .owner_id = remote_parent.owner_id,
+        .last_input_id = dots::protocol::InputSequenceId{42},
+    });
+    defeated.recipient = {
+        .mode = dots::protocol::SessionMode::Spectating,
+        .defeat_tick = 4,
+        .respawn_available_tick = 94,
+    };
+    defeated.authority_receipts = {{
+        .sequence_id = dots::protocol::AuthorityReceiptSequenceId{0},
+        .event =
+            dots::protocol::PlayerAbsorbed{
+                .server_tick = 4,
+                .absorber_entity_id = dots::protocol::EntityId{10},
+                .victim_entity_id = kControlledEntity,
+                .absorber_owner_id = remote_parent.owner_id,
+                .victim_owner_id = kControlledOwner,
+                .transferred_mass = 16.0F,
+            },
+    }};
+    push_snapshot(endpoint, connection, defeated);
+
+    REQUIRE_FALSE(client.process_events(clock_time(12s)).error.has_value());
+    const auto terminal_batches = client.take_prediction_event_batches();
+    REQUIRE(terminal_batches.size() == 1);
+    REQUIRE(terminal_batches.front().changes.size() == 1);
+    CHECK(terminal_batches.front().changes.front().transition ==
+          mycore::rollback::EventTransition::AuthorityOnly);
+    CHECK(client.session_mode() == dots::protocol::SessionMode::Spectating);
+    CHECK_FALSE(client.predicted_position().has_value());
+    CHECK(client.prediction_statistics(clock_time(12s)).history_count == 0);
+}
+
 TEST_CASE("Client rejects a respawn deadline that conflicts with welcome configuration",
           "[dots][prediction][session]") {
     ManualEndpoint endpoint;

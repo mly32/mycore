@@ -631,7 +631,10 @@ scope failure it identifies whether scope construction or authority projection f
 includes the authority tick and scope epoch. A split or merge immediately before
 `checkpoint outside scope` usually means an older retained scope admitted a remote owner but not
 that owner's new topology; the runtime should rebase to a completely projectable scope, never
-install partial owner state.
+install partial owner state. On confirmed defeat there is no longer a live owned root from which
+to rebuild the normal interaction closure, so the terminal transaction instead expands only the
+topology of already-admitted owners, resolves the event lifecycle, and discards prediction. A
+terminal projection failure after that expansion is still a defect.
 
 A valid retained owned command whose owner was removed by an earlier replayed interaction is an
 expected conditional no-op and must not produce `model_step_failed: ... invalid command`. That

@@ -399,6 +399,54 @@ command_sequence(protocol::InputSequenceId input_id) noexcept {
            contains_all(current.food_ids, required.food_ids);
 }
 
+[[nodiscard]] std::optional<prediction::PredictionScope>
+expanded_terminal_projection_scope(const simulation::WorldCheckpoint& authority,
+                                   const prediction::PredictionScope& retained) {
+    if (retained.scope_epoch.value() == mycore::rollback::ScopeEpoch::kInvalidValue - 1U) {
+        return std::nullopt;
+    }
+
+    auto expanded = retained;
+    expanded.scope_epoch = mycore::rollback::ScopeEpoch{retained.scope_epoch.value() + 1U};
+    const auto append_unique = [](auto& destination, auto value) {
+        const auto position = std::lower_bound(destination.begin(), destination.end(), value);
+        if (position == destination.end() || *position != value) {
+            destination.insert(position, value);
+        }
+    };
+
+    // A confirmed defeat removes the owned root required by the normal closure builder, but the
+    // terminal hard resync still needs a complete checkpoint for resolving predicted event
+    // transitions and authority receipts. Preserve the retained causal island and admit every
+    // current piece of its already-admitted owners. No command is stepped under this expanded
+    // scope: the timeline is discarded immediately after the terminal batch commits.
+    for (const auto& owner : authority.owners) {
+        const auto admit_owner =
+            expanded.active_profile == prediction::PredictionProfile::FullReplicated ||
+            contains(expanded.owner_ids, owner.owner_id);
+        if (!admit_owner) {
+            continue;
+        }
+        append_unique(expanded.owner_ids, owner.owner_id);
+        for (const auto player_id : owner.player_ids) {
+            append_unique(expanded.player_ids, player_id);
+        }
+    }
+    if (expanded.active_profile == prediction::PredictionProfile::FullReplicated) {
+        for (const auto& item : authority.food) {
+            append_unique(expanded.food_ids, item.entity_id);
+        }
+    }
+    const auto has_remote_owner =
+        std::any_of(expanded.owner_ids.begin(), expanded.owner_ids.end(), [&expanded](auto owner) {
+            return !contains(expanded.owned_owner_ids, owner);
+        });
+    expanded.required_causal_channels =
+        has_remote_owner ? prediction::causal_channel_bit(prediction::CausalChannel::RemoteMovement)
+                         : prediction::CausalChannelMask{};
+    return expanded;
+}
+
 [[nodiscard]] std::vector<protocol::EntityId>
 scope_entity_ids(const prediction::PredictionScope& scope) {
     std::vector<protocol::EntityId> result;
@@ -1830,17 +1878,27 @@ private:
         if (candidate_world.recipient().mode == protocol::SessionMode::Spectating) {
             std::vector<PredictionEventBatch> committed_batches;
             if (timeline_ && timeline_->scope()) {
-                const auto projected =
-                    prediction::project_checkpoint(*authority, *timeline_->scope());
-                const auto* projected_authority =
-                    std::get_if<simulation::WorldCheckpoint>(&projected);
+                auto terminal_scope = *timeline_->scope();
+                auto projected = prediction::project_checkpoint(*authority, terminal_scope);
+                if (const auto* error = std::get_if<prediction::PredictionError>(&projected);
+                    error != nullptr &&
+                    error->code == prediction::PredictionErrorCode::CheckpointOutsideScope) {
+                    const auto expanded =
+                        expanded_terminal_projection_scope(*authority, terminal_scope);
+                    if (!expanded) {
+                        return RuntimeError::PredictionScopeFailed;
+                    }
+                    terminal_scope = *expanded;
+                    projected = prediction::project_checkpoint(*authority, terminal_scope);
+                }
+                auto* projected_authority = std::get_if<simulation::WorldCheckpoint>(&projected);
                 if (projected_authority == nullptr) {
                     const auto& error = std::get<prediction::PredictionError>(projected);
                     mycore::debug::log_error(
                         "dots.client.prediction",
                         "Terminal authority projection failed at tick {} in scope epoch {}: {}",
                         authority->tick.value(),
-                        timeline_->scope_epoch().value(),
+                        terminal_scope.scope_epoch.value(),
                         prediction_error_name(error.code));
                     return RuntimeError::PredictionScopeFailed;
                 }
@@ -1849,11 +1907,11 @@ private:
                     .tick = projected_authority->tick,
                     .acknowledged_through =
                         command_sequence(candidate_world.last_processed_input_id()),
-                    .scope_epoch = timeline_->scope_epoch(),
+                    .scope_epoch = terminal_scope.scope_epoch,
                     .checkpoint = *projected_authority,
                     .events = std::move(pending_authority_events),
                 };
-                auto resynced = scratch_timeline.hard_resync(frame, *timeline_->scope());
+                auto resynced = scratch_timeline.hard_resync(frame, terminal_scope);
                 auto* commit = std::get_if<prediction::Commit>(&resynced);
                 if (commit == nullptr) {
                     const auto& failure = std::get<prediction::TimelineFailure>(resynced);

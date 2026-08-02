@@ -487,8 +487,13 @@ confirmed events on the same transactional authority frame (or an authority-only
 timeline), queues the resulting batch, and only then advances its published/ACK frontier.
 Pre-welcome receipts remain pending; the presentation router begins consuming them only after
 the local owner is known. A terminal receipt publishes before prediction is cleared on entry to
-Spectating. Payloads and live key records are pruned only after the server echoes retirement.
-Handler failures are counted and logged without retrying or failing the authoritative session.
+Spectating. If that terminal checkpoint no longer projects through the retained scope because an
+already-admitted remote owner gained a piece, the client expands a projection-only terminal scope
+to that owner's complete current topology under a new epoch, hard-resyncs the event lifecycle,
+and then discards the timeline. It never steps a command under that scope or creates a spectator
+rollback timeline. Payloads and live key records are pruned only after the server echoes
+retirement. Handler failures are counted and logged without retrying or failing the authoritative
+session.
 
 Repeated Feature 13 session fields remain authoritative state. Receipts control one-time
 consequence delivery and do not replace those state fields.
