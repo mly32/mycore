@@ -61,7 +61,7 @@ state.
 
 ## Implementation Status
 
-Implemented on `chore/validation-baseline`. The macOS Debug build, all 269 host tests, the full
+Implemented on `chore/validation-baseline`. The macOS Debug build, all 273 host tests, the full
 tracked-source format check, and clang-tidy pass. A standalone ASan/UBSan build of the structured
 rollback harness completes its checked-in seeds and 1,000 deterministic generated traces, and a
 60-second 10-player-plus-spectator session completes at 5 ms simulated latency and 15% packet

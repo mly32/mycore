@@ -77,6 +77,11 @@ Revision-triggered smoothing now applies only to `Extrapolated` source replaceme
 interpolation, same-head predicted correction, source handoff, identity remap, and removal remain
 unchanged.
 
+The controlled primary and playing camera also interpolate between the same previous/current
+prediction ticks using the fixed-step accumulator fraction. The local correction residual is
+added after that interpolation. This keeps smoothly sampled remote entities from being viewed
+through a camera that advances in visible 30 Hz steps while the player is moving.
+
 Focused tests establish the source contract:
 
 - already-presented `State` revisions pass through without a correction;
@@ -84,6 +89,7 @@ Focused tests establish the source contract:
 - extrapolation advances directly within one snapshot revision and smooths a newer snapshot
   replacement;
 - predicted fixed ticks interpolate;
+- the controlled primary and playing camera share that fixed-tick interpolation;
 - same-head predicted changes, source handoffs, and predicted-key ID remaps smooth;
 - structural fades and motion trails stay bounded.
 
@@ -132,6 +138,9 @@ remote inputs can require correction.
 
 ## Prevention Rules
 
+- Normal rendering and cameras consume a single immutable presentation snapshot, never a raw
+  simulation, replication, or prediction pose. The camera and any entity it follows use the
+  identical sampled transform.
 - Treat source revision as sample identity, not a universal discontinuity signal.
 - Give every pose producer an explicit sampling contract: fixed-tick interpolation, continuous
   pass-through, or authority-replacement correction.
@@ -142,6 +151,15 @@ remote inputs can require correction.
 - Test same-revision motion and revision changes separately for every presentation source.
 - Preserve the rule that presentation residuals never feed rollback, collision, authority,
   checkpoint, or event decisions.
+- Test moving-camera screen-space motion at render cadences that are not integer multiples of the
+  simulation rate; a faster render loop must expose meaningful interpolated samples rather than
+  repeat the newest fixed state.
+
+The follow-up
+[multi-rate simulation and presentation boundary audit](plans/multi-rate-simulation-presentation.md)
+turns the snapshot rule into an API boundary and separately measures whether physics substeps
+above 30 Hz improve correctness. A higher physics cadence is not a substitute for this
+presentation contract.
 
 The later correction-history hardening closed the remaining cross-tick limitation. Reconciliation
 now supplies an explicit per-entity correction generation and displacement to presentation, so a

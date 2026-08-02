@@ -152,14 +152,29 @@ public:
             }
 
             if (std::holds_alternative<protocol::ClientHello>(*message)) {
-                if (received.delivery != DeliveryMode::Reliable ||
-                    session_iterator->second.ready()) {
+                if (received.delivery != DeliveryMode::Reliable) {
                     reject(received.connection);
                     continue;
                 }
-                if (const auto error =
-                        accept(session_iterator->second,
-                               std::get<protocol::ClientHello>(*message).requested_role)) {
+                auto& session = session_iterator->second;
+                const auto requested_role =
+                    std::get<protocol::ClientHello>(*message).requested_role;
+                if (session.ready()) {
+                    if (requested_role != session.role) {
+                        reject(received.connection, "handshake retry changed requested role");
+                        continue;
+                    }
+                    mycore::debug::log_info(
+                        "dots.server.session",
+                        "Client {} repeated the handshake on connection {}; resending welcome",
+                        session.client_id.value(),
+                        received.connection.value());
+                    if (const auto error = send_welcome(session)) {
+                        return error;
+                    }
+                    continue;
+                }
+                if (const auto error = accept(session, requested_role)) {
                     return error;
                 }
                 continue;
@@ -708,36 +723,47 @@ private:
         }
         session.last_activity_tick = world_.tick().value();
         const auto connection = session.connection;
+        const auto welcome_error = send_welcome(session);
+        if (welcome_error || !sessions_.contains(connection.value())) {
+            return welcome_error;
+        }
+        const auto snapshot_error = send_snapshot(connection);
+        if (snapshot_error || !sessions_.contains(connection.value())) {
+            return snapshot_error;
+        }
+        if (role == protocol::JoinRole::Spectator) {
+            mycore::debug::log_info("dots.server.session",
+                                    "Spectator client {} joined on connection {}",
+                                    session.client_id.value(),
+                                    connection.value());
+        } else if (const auto position = world_.position(session.primary_player_id)) {
+            mycore::debug::log_info("dots.server.session",
+                                    "Client {} joined on connection {} controlling entity {} at "
+                                    "({:.1f}, {:.1f})",
+                                    session.client_id.value(),
+                                    connection.value(),
+                                    session.primary_player_id.value(),
+                                    position->x,
+                                    position->y);
+        }
+        return std::nullopt;
+    }
+
+    [[nodiscard]] std::optional<RuntimeError> send_welcome(Session& session) {
+        if (world_.tick().value() > std::numeric_limits<std::uint32_t>::max()) {
+            return RuntimeError::TickOutOfRange;
+        }
+        session.last_activity_tick = world_.tick().value();
+        const auto connection = session.connection;
         const protocol::ServerWelcome welcome{
             .client_id = session.client_id,
-            .accepted_role = role,
+            .accepted_role = session.role,
             .server_tick = static_cast<std::uint32_t>(world_.tick().value()),
             .respawn_cooldown_ticks = settings_.respawn_cooldown_ticks,
             .world_rules = replication::to_protocol(world_.rules()),
         };
         if (const auto error = transmit(connection, welcome, DeliveryMode::Reliable)) {
             return error;
-        }
-        if (sessions_.contains(connection.value())) {
-            const auto snapshot_error = send_snapshot(connection);
-            if (!snapshot_error && sessions_.contains(connection.value())) {
-                if (role == protocol::JoinRole::Spectator) {
-                    mycore::debug::log_info("dots.server.session",
-                                            "Spectator client {} joined on connection {}",
-                                            session.client_id.value(),
-                                            connection.value());
-                } else if (const auto position = world_.position(session.primary_player_id)) {
-                    mycore::debug::log_info("dots.server.session",
-                                            "Client {} joined on connection {} controlling entity "
-                                            "{} at ({:.1f}, {:.1f})",
-                                            session.client_id.value(),
-                                            connection.value(),
-                                            session.primary_player_id.value(),
-                                            position->x,
-                                            position->y);
-                }
-            }
-            return snapshot_error;
         }
         return std::nullopt;
     }

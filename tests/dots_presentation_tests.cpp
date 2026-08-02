@@ -1054,6 +1054,30 @@ TEST_CASE("Local prediction presentation preserves continuity and decays over 10
     CHECK(presentation.retained_correction_replay_path().empty());
 }
 
+TEST_CASE("Local prediction presentation interpolates the moving camera between fixed ticks",
+          "[dots][presentation][prediction][camera]") {
+    using namespace std::chrono_literals;
+    dots::presentation::LocalPredictionPresentation presentation;
+    presentation.update({.predicted_position = {}, .predicted_tick = 10}, clock_time(0ms));
+    presentation.update({.predicted_position = {3.0F, 0.0F}, .predicted_tick = 11},
+                        clock_time(1ms));
+
+    CHECK(presentation.predicted_position() == mycore::math::Vector2{3.0F, 0.0F});
+    CHECK(presentation.presentation_position(0.0F) == mycore::math::Vector2{});
+    CHECK(presentation.presentation_position(0.25F).x == Catch::Approx(0.75F));
+    CHECK(presentation.presentation_position(1.0F) == mycore::math::Vector2{3.0F, 0.0F});
+
+    // Rendering the same simulation tick again must retain its endpoints instead of collapsing
+    // the interpolation before the fixed-step accumulator reaches the next tick.
+    presentation.update({.predicted_position = {3.0F, 0.0F}, .predicted_tick = 11},
+                        clock_time(10ms));
+    CHECK(presentation.presentation_position(0.5F).x == Catch::Approx(1.5F));
+
+    presentation.update({.predicted_position = {6.0F, 0.0F}, .predicted_tick = 12},
+                        clock_time(20ms));
+    CHECK(presentation.presentation_position(0.25F).x == Catch::Approx(3.75F));
+}
+
 TEST_CASE("Overlapping corrections compound residuals and hard resync clears presentation",
           "[dots][presentation][prediction]") {
     using namespace std::chrono_literals;

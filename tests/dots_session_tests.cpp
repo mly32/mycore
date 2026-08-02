@@ -292,6 +292,73 @@ TEST_CASE("Client runtime exposes actionable error names", "[dots][session]") {
           "PREDICTION CONSEQUENCE FAILED");
 }
 
+TEST_CASE("Client retries an unanswered application handshake without waiting for reconnect",
+          "[dots][session][handshake]") {
+    using namespace std::chrono_literals;
+    ManualEndpoint endpoint;
+    dots::client_runtime::Runtime client{endpoint};
+    const mycore::net_transport::ConnectionHandle connection{41};
+    const auto started_at = std::chrono::steady_clock::time_point{};
+    endpoint.events.push_back(mycore::net_transport::Connected{.connection = connection});
+
+    REQUIRE_FALSE(client.process_events(started_at).has_value());
+    REQUIRE(endpoint.sent_payloads.size() == 1);
+    CHECK(std::holds_alternative<dots::protocol::ClientHello>(
+        decode_bytes(endpoint.sent_payloads.front())));
+
+    REQUIRE_FALSE(client.process_events(started_at + 499ms).has_value());
+    CHECK(endpoint.sent_payloads.size() == 1);
+    REQUIRE_FALSE(client.process_events(started_at + 500ms).has_value());
+    REQUIRE(endpoint.sent_payloads.size() == 2);
+    CHECK(std::holds_alternative<dots::protocol::ClientHello>(
+        decode_bytes(endpoint.sent_payloads.back())));
+
+    const auto welcome = encode_bytes(dots::protocol::ServerWelcome{
+        .client_id = dots::protocol::ClientId{2},
+    });
+    endpoint.events.push_back(mycore::net_transport::PayloadReceived{
+        .connection = connection,
+        .delivery = mycore::net_transport::DeliveryMode::Reliable,
+        .payload = welcome,
+    });
+    REQUIRE_FALSE(client.process_events(started_at + 600ms).has_value());
+    REQUIRE(client.client_id() == dots::protocol::ClientId{2});
+    endpoint.events.push_back(mycore::net_transport::PayloadReceived{
+        .connection = connection,
+        .delivery = mycore::net_transport::DeliveryMode::Reliable,
+        .payload = welcome,
+    });
+    REQUIRE_FALSE(client.process_events(started_at + 700ms).has_value());
+    REQUIRE_FALSE(client.process_events(started_at + 1100ms).has_value());
+    CHECK(endpoint.sent_payloads.size() == 2);
+}
+
+TEST_CASE("Server handles a repeated application handshake idempotently",
+          "[dots][session][handshake]") {
+    mycore::net_transport::InMemoryNetwork network;
+    dots::server::Runtime server{network.server_endpoint()};
+    auto& raw_client = network.connect_client();
+    const auto connection = complete_raw_handshake(raw_client, server);
+    REQUIRE(server.client_count() == 1);
+    REQUIRE(server.world().player_count() == 1);
+
+    const auto hello = encode_bytes(dots::protocol::ClientHello{});
+    REQUIRE(raw_client.send(connection, hello, mycore::net_transport::DeliveryMode::Reliable) ==
+            mycore::net_transport::SendStatus::Sent);
+    REQUIRE_FALSE(server.process_events().has_value());
+    const auto repeated_handshake = raw_client.poll();
+
+    REQUIRE(repeated_handshake.size() == 1);
+    CHECK(std::ranges::any_of(repeated_handshake, [](const auto& event) {
+        const auto* received = std::get_if<mycore::net_transport::PayloadReceived>(&event);
+        return received != nullptr && std::holds_alternative<dots::protocol::ServerWelcome>(
+                                          decode_bytes(received->payload));
+    }));
+    CHECK(server.client_count() == 1);
+    CHECK(server.world().player_count() == 1);
+    CHECK(server.rejected_packet_count() == 0);
+}
+
 TEST_CASE("Two in-memory clients receive authoritative identities and snapshots",
           "[dots][session]") {
     mycore::net_transport::InMemoryNetwork network;

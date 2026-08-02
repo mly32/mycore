@@ -619,6 +619,13 @@ authoritative game world
         -> SDL_GPU -> Metal / Vulkan / D3D12
 ```
 
+Normal rendering and camera code consume presentation-space transforms from the same immutable
+snapshot. They do not reach around that snapshot for a newer simulation, replication, or
+prediction pose. Merely running the render loop faster does not smooth a discrete source; the
+game-owned presentation sampler must interpolate, extrapolate, hold, or correct that source
+according to its explicit contract. A fixed-state comparison may bypass sampling only as an
+explicitly labeled debug layer.
+
 Do not turn the authoritative world into an engine scene. Add a persistent client-only
 `RenderWorld` only when culling, LOD, interpolation, render-thread ownership, or stable
 mesh/material handles make it simpler than a transient snapshot.
@@ -1084,6 +1091,12 @@ Aim to consume only a fraction of that budget so the server has headroom for spi
 
 Prediction hides much of the local perceptual cost of a lower server tick rate.
 
+Dots currently has no separate physics cadence. A planned measured pass compares integer 60,
+120, and 240 Hz physics substeps inside the 30 Hz gameplay tick while retaining 30 Hz inputs,
+15 Hz snapshots, and variable-rate rendering. A higher physics cadence is for demonstrated
+integration or collision correctness; it is not a rendering-smoothness mechanism. See the
+[multi-rate simulation and presentation boundary audit](plans/multi-rate-simulation-presentation.md).
+
 ### Parallelism policy
 
 Do not add a generic job system at the beginning.
@@ -1181,6 +1194,14 @@ Implement:
 4. Simple mass and radius rules.
 
 This keeps the authority logic inspectable and makes scaling behavior easier to understand.
+
+If measured Dots mechanics later require finer contact sampling, prefer an integer number of
+fixed substeps inside the existing owner-thread gameplay tick. Commands and edge actions are
+consumed once at the outer boundary, every substep completes before publication, and rollback
+replays the identical substep sequence. Do not run authoritative physics on an independent clock
+or thread. Compare 30, 60, 120, and 240 Hz rather than assuming the highest rate is best; retain
+30 Hz when correct presentation interpolation solves the visible problem and collision evidence
+does not justify the additional server and replay work.
 
 The later aim trainer owns its target storage, hit rules, and ray queries. Shared math or
 spatial utilities should move into an engine library only after both games establish a

@@ -62,7 +62,7 @@ interfaces remain unchanged.
 ## Implementation Status
 
 Implemented on `chore/validation-baseline`. Normal macOS Debug configuration and the complete
-269-test host suite pass. A direct 2,000-run ASan/UBSan/libFuzzer smoke passes with the real
+273-test host suite pass. A direct 2,000-run ASan/UBSan/libFuzzer smoke passes with the real
 decoder and checked-in dictionary. The first Linux CI execution exposed the packaged
 GameNetworkingSockets RTTI boundary described above; the adapter now has a source-scoped `vptr`
 exception. The follow-up audit in

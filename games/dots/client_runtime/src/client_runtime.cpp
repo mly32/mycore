@@ -31,6 +31,7 @@ using mycore::net_transport::SendStatus;
 constexpr float kCorrectionTolerance = 0.0001F;
 constexpr auto kReplayBudget = std::chrono::milliseconds{2};
 constexpr auto kWarningInterval = std::chrono::seconds{5};
+constexpr auto kClientHelloRetryInterval = std::chrono::milliseconds{500};
 constexpr std::size_t kReplayDurationSampleCapacity = 120;
 constexpr std::size_t kRecentPredictionCorrectionCapacity = 256;
 constexpr auto kInitialScopeEpoch = mycore::rollback::ScopeEpoch{0};
@@ -587,6 +588,7 @@ public:
                     result.error = fail(RuntimeError::TransportSendFailed);
                     return result;
                 }
+                last_client_hello_time_ = now;
                 continue;
             }
             if (const auto* disconnected =
@@ -607,9 +609,24 @@ public:
                 return result;
             }
             if (const auto* welcome = std::get_if<protocol::ServerWelcome>(message)) {
-                if (received.delivery != DeliveryMode::Reliable || client_id_.is_valid()) {
+                if (received.delivery != DeliveryMode::Reliable) {
                     result.error = fail(RuntimeError::UnexpectedMessage);
                     return result;
+                }
+                if (client_id_.is_valid()) {
+                    if (welcome->client_id != client_id_ || !accepted_role_ ||
+                        welcome->accepted_role != *accepted_role_ ||
+                        welcome->respawn_cooldown_ticks != respawn_cooldown_ticks_ ||
+                        !world_rules_ || welcome->world_rules != *world_rules_) {
+                        result.error = fail(RuntimeError::UnexpectedMessage);
+                        return result;
+                    }
+                    mycore::debug::log_info(
+                        "dots.client.session",
+                        "Ignoring repeated welcome for client {} on connection {}",
+                        client_id_.value(),
+                        connection_.value());
+                    continue;
                 }
                 if (welcome->accepted_role != settings_.requested_role) {
                     result.error = fail(RuntimeError::UnexpectedMessage);
@@ -659,6 +676,20 @@ public:
             }
             result.error = fail(RuntimeError::UnexpectedMessage);
             return result;
+        }
+        if (state_ == State::Handshaking && !client_id_.is_valid() && last_client_hello_time_ &&
+            now - *last_client_hello_time_ >= kClientHelloRetryInterval) {
+            if (!transmit(protocol::ClientHello{.requested_role = settings_.requested_role},
+                          DeliveryMode::Reliable)) {
+                result.error = fail(RuntimeError::TransportSendFailed);
+                return result;
+            }
+            last_client_hello_time_ = now;
+            ++client_hello_retry_count_;
+            mycore::debug::log_info("dots.client.session",
+                                    "Retrying handshake on connection {} (attempt {})",
+                                    connection_.value(),
+                                    client_hello_retry_count_ + 1U);
         }
         if (state_ == State::Ready) {
             if (const auto error = flush_pending_inputs(now)) {
@@ -2755,6 +2786,8 @@ private:
     State state_{State::Connecting};
     protocol::ClientId client_id_;
     std::optional<protocol::JoinRole> accepted_role_;
+    std::optional<std::chrono::steady_clock::time_point> last_client_hello_time_;
+    std::uint64_t client_hello_retry_count_{};
     std::uint32_t respawn_cooldown_ticks_{};
     std::optional<protocol::WorldRules> world_rules_;
     replication::ReplicatedWorld world_;

@@ -71,11 +71,14 @@ The next delivery sequence is evidence-first:
 2. `feature/24-authoritative-input-provenance` makes the existing scheduler measurable without
    changing it.
 3. `feature/17-bot-load-harness` completes the harness and records a full-snapshot baseline.
-4. `feature/15-interest-management` adds AOI filtering and repeats the same scale matrix.
-5. `feature/16-delta-snapshots-byte-budget` adds scalable snapshots and repeats the matrix again.
-6. `feature/18-lua-rules`, `feature/22-platform-user-settings`, and
+4. `research/multi-rate-simulation-cadence` compares the current 30 Hz World step with measured
+   60, 120, and 240 Hz internal substeps while keeping gameplay publication and networking at
+   their current cadences. It may conclude that 30 Hz plus presentation interpolation is correct.
+5. `feature/15-interest-management` adds AOI filtering and repeats the same scale matrix.
+6. `feature/16-delta-snapshots-byte-budget` adds scalable snapshots and repeats the matrix again.
+7. `feature/18-lua-rules`, `feature/22-platform-user-settings`, and
    `feature/23-client-input-observability` finish the current Dots and desktop-platform work.
-7. `feature/19-aim-trainer-3d-slice` validates in-tree reuse, followed by
+8. `feature/19-aim-trainer-3d-slice` validates in-tree reuse, followed by
    `feature/20-cmake-package-consumer` and `chore/linux-server-package`.
 
 Evaluate `feature/21-profile-guided-task-scheduler` after Feature 16 and again after Feature 19,
@@ -842,6 +845,9 @@ Changes:
   join it before state publication, but the scheduler does not define game-tick ordering.
 - Keep network polling, SDL window/event ownership, GPU submission, and the real-time audio
   callback on their appropriate threads. Schedule only bounded processing around them.
+- If render-command preparation becomes a scheduled workload, its only game-state input is the
+  immutable game-owned presentation snapshot. Render tasks and camera code do not borrow the
+  mutable simulation, replication, or prediction worlds.
 - Preserve a deterministic single-threaded execution mode for tests and replay comparisons.
 - Introduce one measured workload first, preferably immutable per-client snapshot construction;
   add render preparation or other consumers only after that boundary is proven.
@@ -852,6 +858,8 @@ Tests:
 - No task outlives referenced state; add ThreadSanitizer coverage where supported.
 - Single-threaded and scheduled modes produce identical snapshot bytes or render preparation
   output for a recorded workload.
+- Scheduled render preparation and its single-threaded equivalent consume the same immutable
+  presentation snapshot and produce identical camera and entity transforms.
 - Benchmarks show a useful improvement without causing server tick-tail regressions.
 
 Exit criterion:
@@ -1031,6 +1039,28 @@ Measure:
 - Runtime cost.
 - Implementation complexity.
 - Cross-platform behavior.
+
+### `research/multi-rate-simulation-cadence`
+
+Compare the current 30 Hz Dots World step with two 60 Hz, four 120 Hz, and eight 240 Hz fixed
+physics substeps inside each 30 Hz gameplay tick. Keep client input at 30 Hz, snapshots at 15 Hz,
+and rendering variable-rate during the comparison.
+
+Measure:
+
+- Collision tunneling and contested-contact outcomes against a high-resolution oracle.
+- Authoritative tick and prediction-replay mean, p95, p99, and deadline misses.
+- Deterministic checkpoint, journal, receipt, and consequence equality across repeated runs.
+- The event-identity and rule-ordering cost of resolving contacts inside a gameplay tick.
+- Whether an immutable presentation snapshot prevents high-refresh motion defects without a
+  higher simulation cadence.
+
+Use integer substeps on the authoritative owner thread; do not prototype an independent physics
+thread. Select the lowest cadence that fixes a demonstrated correctness problem within the
+Feature 17 budgets, or retain 30 Hz when presentation interpolation is sufficient.
+
+Detailed plan:
+[`plans/multi-rate-simulation-presentation.md`](plans/multi-rate-simulation-presentation.md).
 
 ### `research/opengl-renderer`
 

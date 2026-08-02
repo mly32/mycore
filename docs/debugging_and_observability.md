@@ -254,7 +254,7 @@ Important log categories include:
 | Category | Meaning |
 |---|---|
 | `dots.client` | Client startup and general runtime information. |
-| `dots.client.session` | Client transport, handshake, assigned identity, disconnect lifecycle, and newly confirmed absorption, session-mode, follow-target-loss, and respawn-result transitions. |
+| `dots.client.session` | Client transport, initial and repeated handshake attempts, idempotent repeated welcomes, assigned identity, disconnect lifecycle, and newly confirmed absorption, session-mode, follow-target-loss, and respawn-result transitions. |
 | `dots.client.simulation` | Client fixed-step overload warnings, escalation, and recovery. |
 | `dots.client.presentation` | Rejection of a noncanonical/stale remote extrapolation sample, including candidate and prior snapshot coordinates. Such rejection fails the session rather than drawing unvalidated state. |
 | `dots.client.consequence` | Non-retried Dots consequence-handler failures after an otherwise successful rollback commit, plus typed malformed-batch contract failures. A contract failure includes batch kind, change index, error code, and count before terminating only that client session. |

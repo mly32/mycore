@@ -111,7 +111,8 @@ void LocalPredictionPresentation::update(const LocalPredictionSample& sample,
 
     if (!initialized_ || sample.hard_resync_sequence < last_hard_resync_sequence_ ||
         (sample.hard_resync_sequence == last_hard_resync_sequence_ &&
-         sample.correction_sequence < last_correction_sequence_)) {
+         (sample.correction_sequence < last_correction_sequence_ ||
+          sample.predicted_tick < last_predicted_tick_))) {
         initialize(sample, now);
         return;
     }
@@ -141,10 +142,24 @@ void LocalPredictionPresentation::update(const LocalPredictionSample& sample,
         correction_visual_active_ = true;
     }
 
+    const auto same_tick_prediction_replaced = sample.predicted_tick == last_predicted_tick_ &&
+                                               sample.predicted_position != predicted_position_;
+    if (hard_resynced || same_tick_prediction_replaced) {
+        // Reconciliation can replace the prediction head without advancing its tick. Its explicit
+        // correction residual preserves visual continuity; do not invent a second fixed-tick
+        // interpolation from a state that was never a distinct simulation step. A hard resync
+        // likewise has no compatible previous step to interpolate from.
+        previous_predicted_position_ = sample.predicted_position;
+        predicted_position_ = sample.predicted_position;
+    } else if (sample.predicted_tick > last_predicted_tick_) {
+        previous_predicted_position_ = predicted_position_;
+        predicted_position_ = sample.predicted_position;
+    }
+
     last_correction_sequence_ = sample.correction_sequence;
     last_hard_resync_sequence_ = sample.hard_resync_sequence;
+    last_predicted_tick_ = sample.predicted_tick;
     last_correction_accumulator_ = sample.accumulated_correction_displacement;
-    predicted_position_ = sample.predicted_position;
     smoothing_offset_ = evaluate_smoothing_offset(now);
     presentation_position_ = predicted_position_ + smoothing_offset_;
     if (correction_visual_active_ && now >= correction_visual_expiry_) {
@@ -153,6 +168,7 @@ void LocalPredictionPresentation::update(const LocalPredictionSample& sample,
 }
 
 void LocalPredictionPresentation::reset() noexcept {
+    previous_predicted_position_ = {};
     predicted_position_ = {};
     presentation_position_ = {};
     smoothing_offset_ = {};
@@ -164,6 +180,7 @@ void LocalPredictionPresentation::reset() noexcept {
     correction_visual_expiry_ = {};
     last_correction_sequence_ = 0;
     last_hard_resync_sequence_ = 0;
+    last_predicted_tick_ = 0;
     initialized_ = false;
     smoothing_active_ = false;
     correction_visual_active_ = false;
@@ -181,6 +198,13 @@ mycore::math::Vector2 LocalPredictionPresentation::predicted_position() const no
 
 mycore::math::Vector2 LocalPredictionPresentation::presentation_position() const noexcept {
     return presentation_position_;
+}
+
+mycore::math::Vector2
+LocalPredictionPresentation::presentation_position(float fixed_tick_alpha) const noexcept {
+    const auto alpha = std::clamp(fixed_tick_alpha, 0.0F, 1.0F);
+    return previous_predicted_position_ +
+           ((predicted_position_ - previous_predicted_position_) * alpha) + smoothing_offset_;
 }
 
 mycore::math::Vector2 LocalPredictionPresentation::smoothing_offset() const noexcept {
@@ -216,6 +240,7 @@ mycore::math::Vector2 LocalPredictionPresentation::evaluate_smoothing_offset(
 
 void LocalPredictionPresentation::initialize(const LocalPredictionSample& sample,
                                              std::chrono::steady_clock::time_point now) noexcept {
+    previous_predicted_position_ = sample.predicted_position;
     predicted_position_ = sample.predicted_position;
     presentation_position_ = sample.predicted_position;
     smoothing_offset_ = {};
@@ -224,6 +249,7 @@ void LocalPredictionPresentation::initialize(const LocalPredictionSample& sample
     smoothing_start_time_ = now;
     last_correction_sequence_ = sample.correction_sequence;
     last_hard_resync_sequence_ = sample.hard_resync_sequence;
+    last_predicted_tick_ = sample.predicted_tick;
     initialized_ = true;
     smoothing_active_ = false;
     clear_correction_visuals();

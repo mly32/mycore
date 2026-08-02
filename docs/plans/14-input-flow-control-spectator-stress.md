@@ -61,8 +61,10 @@ rollback timeline, prediction history, or unsent outbox concurrently mutable.
 
 Implemented as Feature 14 step 9 and merged into `main`. Protocol, replication, runtime, app,
 launcher, and focused flow-control/spectator tests are complete. The full host test preset
-passes; the native soak commands below remain repeatable operational checks rather than a claimed
-client-count performance target.
+passes. Native application handshakes retry on the same connection and the server handles a
+repeated same-role hello idempotently, preventing burst connection fan-in from turning one
+stranded initial hello into a whole-session launcher failure. The native soak commands below
+remain repeatable operational checks rather than a claimed client-count performance target.
 
 ## Interfaces and Data Flow
 
@@ -109,3 +111,6 @@ python3 games/dots/tools/dots_session.py \
   workload, and the original fifteen-player-bot scenario for 180 seconds with 5 ms configured
   one-way lag and ten-percent loss. No unexpected exit, queue overflow, invalid acknowledgement,
   prediction failure, or lost buffered action is allowed. Tick rate is recorded, not gated.
+- A burst of at least twelve native peers completes the application handshake; immediate reliable
+  messages are drained across poll-group assignment and unanswered hellos retry before the fixed
+  startup deadline.

@@ -1693,6 +1693,11 @@ int run_networked_game(
                 : dots::presentation::RemoteExtrapolationFrame{};
         auto prediction_statistics = client.prediction_statistics(now);
         prediction_debug_controls.observe_input_drop_burst(prediction_statistics, now);
+        const auto fixed_tick_alpha =
+            std::clamp(static_cast<float>(accumulator.accumulated_time().count()) /
+                           static_cast<float>(accumulator.step_duration().count()),
+                       0.0F,
+                       1.0F);
         const auto update_local_prediction_presentation = [&] {
             const auto predicted_position = client.predicted_position();
             if (!predicted_position) {
@@ -1701,6 +1706,7 @@ int run_networked_game(
             local_prediction_presentation.update(
                 {
                     .predicted_position = *predicted_position,
+                    .predicted_tick = prediction_statistics.predicted_tick,
                     .accumulated_correction_displacement =
                         prediction_statistics.accumulated_correction_displacement,
                     .correction_sequence =
@@ -1741,7 +1747,8 @@ int run_networked_game(
                 spectator_camera_active = false;
             }
             update_local_prediction_presentation();
-            last_camera_position = local_prediction_presentation.presentation_position();
+            last_camera_position =
+                local_prediction_presentation.presentation_position(fixed_tick_alpha);
         } else {
             if (!spectator_camera_active) {
                 local_prediction_presentation.reset();
@@ -1831,9 +1838,10 @@ int run_networked_game(
                                                                           .predicted_position()}
                                                       : std::nullopt,
                             .presentation_position =
-                                playing ? std::optional{local_prediction_presentation
-                                                            .presentation_position()}
-                                        : std::nullopt,
+                                playing
+                                    ? std::optional{local_prediction_presentation
+                                                        .presentation_position(fixed_tick_alpha)}
+                                    : std::nullopt,
                             .smoothing_offset = playing
                                                     ? std::optional{local_prediction_presentation
                                                                         .smoothing_offset()}
@@ -1904,7 +1912,8 @@ int run_networked_game(
         if (playing) {
             const auto correction_visual_active =
                 local_prediction_presentation.correction_visual_active();
-            last_camera_position = local_prediction_presentation.presentation_position();
+            last_camera_position =
+                local_prediction_presentation.presentation_position(fixed_tick_alpha);
             const auto* predicted_world = client.predicted_world();
             if (predicted_world == nullptr) {
                 throw StartupError{"The complete local prediction World disappeared"};
@@ -1914,7 +1923,8 @@ int run_networked_game(
                                                : client.primary_entity_id();
             const auto controlled_presentation = dots::presentation::PredictedReplicatedPlayer{
                 .entity_id = predicted_primary,
-                .presentation_position = local_prediction_presentation.presentation_position(),
+                .presentation_position =
+                    local_prediction_presentation.presentation_position(fixed_tick_alpha),
                 .predicted_position = local_prediction_presentation.predicted_position(),
                 .pre_correction_position = std::nullopt,
                 .correction_replay_path =
@@ -1950,11 +1960,6 @@ int run_networked_game(
                         frame, remote_frame, client.predicted_scope_entity_ids());
                 }
             }
-            const auto fixed_tick_alpha =
-                std::clamp(static_cast<float>(accumulator.accumulated_time().count()) /
-                               static_cast<float>(accumulator.step_duration().count()),
-                           0.0F,
-                           1.0F);
             frame = persistent_world_presentation.compose(frame,
                                                           fixed_tick_alpha,
                                                           prediction_statistics.hard_resync_count,
