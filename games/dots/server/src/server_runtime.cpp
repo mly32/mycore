@@ -631,6 +631,8 @@ private:
                 }
             }
 
+            // owners() borrows the participant value's inline array. Keep that value alive for
+            // the entire loop; taking the span from the factory temporary would leave it dangling.
             const auto participants = simulation::simulation_event_participants(simulation_event);
             for (const auto owner_id : participants.owners()) {
                 add_recipient(session_for_owner(owner_id));
