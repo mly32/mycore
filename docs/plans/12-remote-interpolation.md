@@ -288,10 +288,12 @@ Deferred work includes:
 ### Phase 12.4: Integration and exit validation
 
 - [x] Run deterministic jitter, capacity, hold, and hard-rebase schedules.
-- [ ] Manually validate native remote smoothness and debug views.
+- Historical note: a separate native visual-validation record was not captured before merge;
+  later Feature 14 presentation work superseded this implementation without retroactively
+  claiming that check.
 - [x] Run the full configure, build, and CTest suite.
 - [x] Finalize README, networking, and debugging documentation.
-- [ ] Feature 12 completion approved.
+- [x] Feature 12 was accepted into `main` before Feature 13 began.
 
 ## Exit Criteria
 

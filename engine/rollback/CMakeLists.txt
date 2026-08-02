@@ -15,3 +15,7 @@ target_link_libraries(
 )
 
 mycore_configure_target(mycore_rollback)
+
+if(MYCORE_BUILD_FUZZERS)
+    add_subdirectory(fuzz)
+endif()

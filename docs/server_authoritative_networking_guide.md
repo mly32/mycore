@@ -119,10 +119,12 @@ in order. Losing a welcome message cannot be fixed by receiving a newer welcome 
 
 Reliable delivery means that the transport retransmits and preserves ordering while the
 connection remains usable. It does not mean that the application retries forever or that a
-connection is guaranteed to form. Dots submits each `ClientHello` and `ServerWelcome` once and
-lets GameNetworkingSockets perform any required retransmission. The transport can still declare
-the connection failed, and the client gives the complete connection-plus-handshake sequence a
-10-second startup deadline. Heavy loss can therefore make a reliable handshake fail to complete.
+connection is guaranteed to form. Dots repeats an unanswered `ClientHello` every 500 ms within
+the existing startup attempt; the server treats the same role and connection idempotently and
+resends `ServerWelcome`. A changed role is invalid. This application retry covers a first message
+racing the native server's poll-group assignment while GameNetworkingSockets still owns reliable
+packet retransmission. The transport can still declare the connection failed, and the client
+gives the complete connection-plus-handshake sequence a 10-second startup deadline.
 
 Reliable and unreliable are message delivery modes on the same GameNetworkingSockets connection,
 not separate TCP and UDP application paths. Unreliable means no retransmission guarantee; it does
@@ -281,9 +283,10 @@ snapshot is lost, a later 15 Hz full snapshot can still complete the client hand
 
 The client starts one 10-second deadline when its networked runtime is created. That deadline
 includes transport connection establishment, the reliable hello/welcome exchange, and receipt
-of a usable snapshot. Reaching it is a failed startup even if the transport was still retrying.
-Dots currently does not reconnect or begin a second handshake automatically; the client exits
-with `Could not establish the authoritative session`.
+of a usable snapshot. Until a welcome arrives, the client repeats the hello every 500 ms on the
+same connection. Reaching the deadline is a failed startup even if either layer was still
+retrying. Dots does not reconnect automatically; the client exits with
+`Could not establish the authoritative session`.
 
 After startup, network polling and 30 Hz fixed input production do not depend on a drawable
 surface. If a graphical window is minimized or temporarily has zero drawable size, rendering
@@ -434,9 +437,10 @@ After the handshake, each current in-memory fixed step is composed in this order
 6. Every two ticks, the server builds and sends a 15 Hz full snapshot for each ready client.
 7. The client polls and atomically installs a newer snapshot.
 8. While Playing, presentation composes the persistent predicted interaction island with bounded
-   outside-closure extrapolation by default and centers the camera on the smoothed primary. While
-   Spectating, it draws the complete delayed remote sample and uses confirmed-killer follow or a
-   presentation-only free camera.
+   outside-closure extrapolation by default and centers the camera on the smoothed primary. The
+   corrected primary and playing camera share fixed-tick interpolation, so smooth remote world
+   poses are not viewed through a 30 Hz stepping camera. While Spectating, it draws the complete
+   delayed remote sample and uses confirmed-killer follow or a presentation-only free camera.
 
 Each full snapshot currently contains every player and food entity in canonical identity order,
 plus:
@@ -637,6 +641,7 @@ hidden input-prediction or smoothing clock, and it never decides respawn eligibi
 |---|---|---|---|
 | Interaction-closed World prediction | Current, Feature 14 step 7 | Local 30 Hz commands plus latest-authority remote assumptions applied to a complete scoped Dots World. | No. |
 | Reconciliation | Current, Feature 14 step 7 | Verified authoritative checkpoint plus replay of the unacknowledged input suffix. Server tick labels the rollback base but does not choose how far to replay. | No. |
+| Playing camera interpolation | Current | Fixed-step accumulator fraction between the previous and current predicted primary positions, plus the same correction residual used by the local circle. | No. |
 | Local correction smoothing | Current, Feature 11 | Local steady-clock age of a fixed 100 ms visual offset. | No. |
 | Remote presentation | Current, Feature 12 | Fractional cursor in historical server-tick coordinates, targeting six ticks behind the newest known snapshot; holds on underrun. | No. |
 | Outside-closure extrapolation | Current, Feature 14 step 7 | Local steady-clock age of the newest snapshot converted to at most six shared movement/launch ticks; holds after the cap. | No. |
@@ -656,7 +661,8 @@ Current local correction smoothing is spatial and fixed-duration:
 ```text
 correction = prediction_before_reconcile - prediction_after_replay
 new_offset = residual_offset_from_any_prior_correction + correction
-presentation_position = corrected_prediction + decaying_offset
+fixed_tick_position = lerp(previous_prediction, corrected_prediction, accumulator_alpha)
+presentation_position = fixed_tick_position + decaying_offset
 
 decaying_offset(age) = new_offset * clamp(1 - age / 100 ms, 0, 1)
 ```
@@ -781,6 +787,13 @@ Dots does not currently have a separate physics clock. Movement, spatial-grid up
 collision resolution are all part of `World::step()` on the 30 Hz authoritative simulation tick.
 Likewise, there is no abstract “network frame.” There are encoded messages, transport events,
 and explicit times when each runtime polls its endpoint.
+
+The planned
+[multi-rate simulation and presentation boundary audit](plans/multi-rate-simulation-presentation.md)
+will compare 60, 120, and 240 Hz fixed physics substeps inside that 30 Hz tick. It does not assume
+that a higher rate is necessary: high-refresh visual continuity comes from variable-rate
+presentation sampling, while physics substeps are justified only by measured integration or
+collision correctness. Input and snapshot cadences remain 30 Hz and 15 Hz during the comparison.
 
 At an illustrative 60 render frames per second, the clocks line up like this:
 

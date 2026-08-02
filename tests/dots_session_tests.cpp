@@ -287,6 +287,76 @@ TEST_CASE("Client runtime exposes actionable error names", "[dots][session]") {
     CHECK(dots::client_runtime::runtime_error_name(
               dots::client_runtime::RuntimeError::ProtocolDecodeFailed) ==
           "PROTOCOL DECODE FAILED");
+    CHECK(dots::client_runtime::runtime_error_name(
+              dots::client_runtime::RuntimeError::PredictionConsequenceFailed) ==
+          "PREDICTION CONSEQUENCE FAILED");
+}
+
+TEST_CASE("Client retries an unanswered application handshake without waiting for reconnect",
+          "[dots][session][handshake]") {
+    using namespace std::chrono_literals;
+    ManualEndpoint endpoint;
+    dots::client_runtime::Runtime client{endpoint};
+    const mycore::net_transport::ConnectionHandle connection{41};
+    const auto started_at = std::chrono::steady_clock::time_point{};
+    endpoint.events.push_back(mycore::net_transport::Connected{.connection = connection});
+
+    REQUIRE_FALSE(client.process_events(started_at).has_value());
+    REQUIRE(endpoint.sent_payloads.size() == 1);
+    CHECK(std::holds_alternative<dots::protocol::ClientHello>(
+        decode_bytes(endpoint.sent_payloads.front())));
+
+    REQUIRE_FALSE(client.process_events(started_at + 499ms).has_value());
+    CHECK(endpoint.sent_payloads.size() == 1);
+    REQUIRE_FALSE(client.process_events(started_at + 500ms).has_value());
+    REQUIRE(endpoint.sent_payloads.size() == 2);
+    CHECK(std::holds_alternative<dots::protocol::ClientHello>(
+        decode_bytes(endpoint.sent_payloads.back())));
+
+    const auto welcome = encode_bytes(dots::protocol::ServerWelcome{
+        .client_id = dots::protocol::ClientId{2},
+    });
+    endpoint.events.push_back(mycore::net_transport::PayloadReceived{
+        .connection = connection,
+        .delivery = mycore::net_transport::DeliveryMode::Reliable,
+        .payload = welcome,
+    });
+    REQUIRE_FALSE(client.process_events(started_at + 600ms).has_value());
+    REQUIRE(client.client_id() == dots::protocol::ClientId{2});
+    endpoint.events.push_back(mycore::net_transport::PayloadReceived{
+        .connection = connection,
+        .delivery = mycore::net_transport::DeliveryMode::Reliable,
+        .payload = welcome,
+    });
+    REQUIRE_FALSE(client.process_events(started_at + 700ms).has_value());
+    REQUIRE_FALSE(client.process_events(started_at + 1100ms).has_value());
+    CHECK(endpoint.sent_payloads.size() == 2);
+}
+
+TEST_CASE("Server handles a repeated application handshake idempotently",
+          "[dots][session][handshake]") {
+    mycore::net_transport::InMemoryNetwork network;
+    dots::server::Runtime server{network.server_endpoint()};
+    auto& raw_client = network.connect_client();
+    const auto connection = complete_raw_handshake(raw_client, server);
+    REQUIRE(server.client_count() == 1);
+    REQUIRE(server.world().player_count() == 1);
+
+    const auto hello = encode_bytes(dots::protocol::ClientHello{});
+    REQUIRE(raw_client.send(connection, hello, mycore::net_transport::DeliveryMode::Reliable) ==
+            mycore::net_transport::SendStatus::Sent);
+    REQUIRE_FALSE(server.process_events().has_value());
+    const auto repeated_handshake = raw_client.poll();
+
+    REQUIRE(repeated_handshake.size() == 1);
+    CHECK(std::ranges::any_of(repeated_handshake, [](const auto& event) {
+        const auto* received = std::get_if<mycore::net_transport::PayloadReceived>(&event);
+        return received != nullptr && std::holds_alternative<dots::protocol::ServerWelcome>(
+                                          decode_bytes(received->payload));
+    }));
+    CHECK(server.client_count() == 1);
+    CHECK(server.world().player_count() == 1);
+    CHECK(server.rejected_packet_count() == 0);
 }
 
 TEST_CASE("Two in-memory clients receive authoritative identities and snapshots",
@@ -668,6 +738,76 @@ TEST_CASE("Pre-welcome authority receipts publish after prediction initializatio
     receipt_statistics = client.prediction_statistics();
     CHECK(receipt_statistics.authority_receipts_published_through ==
           dots::protocol::AuthorityReceiptSequenceId{0});
+}
+
+TEST_CASE("Pre-welcome terminal authority publishes once without creating a timeline",
+          "[dots][session][rollback][receipts][lifecycle]") {
+    ManualEndpoint endpoint;
+    dots::client_runtime::Runtime client{endpoint};
+    const mycore::net_transport::ConnectionHandle connection{35};
+    const auto absorption = dots::protocol::PlayerAbsorbed{
+        .server_tick = 4,
+        .absorber_entity_id = dots::protocol::EntityId{9},
+        .victim_entity_id = dots::protocol::EntityId{8},
+        .absorber_owner_id = dots::protocol::PlayerOwnerId{4},
+        .victim_owner_id = dots::protocol::PlayerOwnerId{3},
+        .transferred_mass = 16.0F,
+    };
+
+    endpoint.events.push_back(mycore::net_transport::Connected{.connection = connection});
+    REQUIRE_FALSE(client.process_events().has_value());
+    endpoint.events.push_back(mycore::net_transport::PayloadReceived{
+        .connection = connection,
+        .delivery = mycore::net_transport::DeliveryMode::Unreliable,
+        .payload = encode_bytes(dots::protocol::FullSnapshot{
+            .snapshot_id = dots::protocol::SnapshotId{0},
+            .server_tick = 4,
+            .input_receive_through = dots::protocol::input_receive_through_for(
+                dots::protocol::InputSequenceId::invalid()),
+            .recipient =
+                {
+                    .mode = dots::protocol::SessionMode::Spectating,
+                    .defeat_tick = 4,
+                    .respawn_available_tick = 4,
+                    .latest_absorption = absorption,
+                },
+            .entities = {{
+                .entity_id = dots::protocol::EntityId{9},
+                .kind = dots::protocol::EntityKind::Player,
+                .owner_id = dots::protocol::PlayerOwnerId{4},
+                .mass = 32.0F,
+            }},
+            .authority_receipts = {{
+                .sequence_id = dots::protocol::AuthorityReceiptSequenceId{0},
+                .event = absorption,
+            }},
+        }),
+    });
+    REQUIRE_FALSE(client.process_events().has_value());
+    CHECK(client.state() == dots::client_runtime::State::Handshaking);
+    CHECK(client.session_mode() == dots::protocol::SessionMode::Spectating);
+    CHECK(client.take_prediction_event_batches().empty());
+    CHECK(client.prediction_statistics().history_count == 0);
+
+    endpoint.events.push_back(mycore::net_transport::PayloadReceived{
+        .connection = connection,
+        .delivery = mycore::net_transport::DeliveryMode::Reliable,
+        .payload = encode_bytes(dots::protocol::ServerWelcome{
+            .client_id = dots::protocol::ClientId{2},
+            .respawn_cooldown_ticks = 0,
+        }),
+    });
+    REQUIRE_FALSE(client.process_events().has_value());
+    CHECK(client.state() == dots::client_runtime::State::Ready);
+    CHECK(client.session_mode() == dots::protocol::SessionMode::Spectating);
+    CHECK(client.predicted_world() == nullptr);
+    const auto batches = client.take_prediction_event_batches();
+    REQUIRE(batches.size() == 1);
+    REQUIRE(batches.front().changes.size() == 1);
+    CHECK(batches.front().changes.front().transition ==
+          mycore::rollback::EventTransition::AuthorityOnly);
+    CHECK(client.take_prediction_event_batches().empty());
+    CHECK(client.prediction_statistics().history_count == 0);
 }
 
 TEST_CASE("Respawn requests while playing are acknowledged and explicitly rejected",

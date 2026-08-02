@@ -343,6 +343,60 @@ TEST_CASE("Native transport accepts multiple independently routed clients",
            received[1].payload == std::vector<std::byte>{std::byte{2}}));
 }
 
+TEST_CASE("Native transport drains immediate reliable messages during connection fan-in",
+          "[transport][native][multiple][handshake]") {
+    constexpr auto kClientCount = std::size_t{12};
+    const auto bind = mycore::net_transport::NetworkAddress::parse("127.0.0.1:0");
+    REQUIRE(bind.has_value());
+    mycore::net_transport::GameNetworkingSocketsNetwork network;
+    const auto listening = network.listen(*bind);
+    std::vector<mycore::net_transport::Endpoint*> clients;
+    clients.reserve(kClientCount);
+    for (auto index = std::size_t{}; index < kClientCount; ++index) {
+        clients.push_back(&network.connect(listening.address));
+    }
+
+    std::vector<mycore::net_transport::ConnectionHandle> client_connections(kClientCount);
+    std::vector<mycore::net_transport::ConnectionHandle> server_connections;
+    std::vector<std::byte> received_payloads;
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (std::chrono::steady_clock::now() < deadline &&
+           (server_connections.size() < kClientCount || received_payloads.size() < kClientCount)) {
+        for (const auto& event : listening.endpoint->poll()) {
+            if (const auto* connected = std::get_if<mycore::net_transport::Connected>(&event)) {
+                server_connections.push_back(connected->connection);
+            } else if (const auto* payload =
+                           std::get_if<mycore::net_transport::PayloadReceived>(&event)) {
+                REQUIRE(payload->delivery == mycore::net_transport::DeliveryMode::Reliable);
+                REQUIRE(payload->payload.size() == 1);
+                received_payloads.push_back(payload->payload.front());
+            }
+        }
+        for (auto index = std::size_t{}; index < clients.size(); ++index) {
+            for (const auto& event : clients[index]->poll()) {
+                const auto* connected = std::get_if<mycore::net_transport::Connected>(&event);
+                if (connected == nullptr || client_connections[index].is_valid()) {
+                    continue;
+                }
+                client_connections[index] = connected->connection;
+                const std::array payload{std::byte{static_cast<unsigned char>(index)}};
+                REQUIRE(clients[index]->send(connected->connection,
+                                             payload,
+                                             mycore::net_transport::DeliveryMode::Reliable) ==
+                        mycore::net_transport::SendStatus::Sent);
+            }
+        }
+        std::this_thread::sleep_for(1ms);
+    }
+
+    REQUIRE(server_connections.size() == kClientCount);
+    REQUIRE(received_payloads.size() == kClientCount);
+    std::ranges::sort(received_payloads);
+    for (auto index = std::size_t{}; index < received_payloads.size(); ++index) {
+        CHECK(received_payloads[index] == std::byte{static_cast<unsigned char>(index)});
+    }
+}
+
 TEST_CASE("Native transport drains reliable data before a lingered remote close",
           "[transport][native][disconnect]") {
     const auto listen_address = mycore::net_transport::NetworkAddress::parse("127.0.0.1:0");

@@ -9,3 +9,8 @@ target_include_directories(
 
 target_link_libraries(dots_protocol PUBLIC MyCore::Core)
 mycore_configure_target(dots_protocol)
+
+if(MYCORE_BUILD_FUZZERS)
+    mycore_enable_fuzz_coverage(dots_protocol)
+    add_subdirectory(fuzz)
+endif()

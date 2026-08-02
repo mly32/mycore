@@ -49,6 +49,8 @@ struct ToyScope {
 struct ToyState {
     mycore::time::Tick tick;
     int value{};
+
+    bool operator==(const ToyState&) const = default;
 };
 
 struct ToyCheckpoint {
@@ -65,6 +67,8 @@ struct ToyStimulus {
     std::optional<ToyEventKey> pulse_key;
     std::optional<ToyEventKey> notice_key;
     int fail_at_or_above{std::numeric_limits<int>::max()};
+
+    bool operator==(const ToyStimulus&) const = default;
 };
 
 struct ToyStateDiff {
@@ -259,7 +263,110 @@ struct ConfirmOncePulseHandler {
     }
 };
 
+using TestRouter = mycore::rollback::StaticConsequenceRouter<ToyModel,
+                                                             PredictOncePulseHandler,
+                                                             CancelablePulseHandler,
+                                                             ConfirmOncePulseHandler>;
+
+template <class Type>
+concept ExposesTimelineStateFromRvalue = requires(Type&& value) { std::move(value).state(); };
+
+template <class Type>
+concept ExposesTimelineHistoryFromRvalue = requires(Type&& value) { std::move(value).history(); };
+
+template <class Type>
+concept ExposesRouterHandlerFromRvalue =
+    requires(Type&& value) { std::move(value).template handler<PredictOncePulseHandler>(); };
+
+template <class Type>
+concept ExposesRouterStatisticsFromRvalue =
+    requires(Type&& value) { std::move(value).handler_statistics(); };
+
+static_assert(!ExposesTimelineStateFromRvalue<Timeline>);
+static_assert(!ExposesTimelineHistoryFromRvalue<Timeline>);
+static_assert(!ExposesRouterHandlerFromRvalue<TestRouter>);
+static_assert(!ExposesRouterStatisticsFromRvalue<TestRouter>);
+
+void require_timeline_invariants(const Timeline& timeline) {
+    if (!timeline.initialized()) {
+        REQUIRE(timeline.state() == nullptr);
+        REQUIRE(timeline.scope() == nullptr);
+        REQUIRE(timeline.history().empty());
+        return;
+    }
+
+    REQUIRE(timeline.state() != nullptr);
+    REQUIRE(timeline.scope() != nullptr);
+    REQUIRE(timeline.scope_epoch().is_valid());
+    REQUIRE(timeline.state()->tick == timeline.predicted_tick());
+    REQUIRE(timeline.predicted_tick().value() - timeline.authoritative_tick().value() ==
+            timeline.history().size());
+    REQUIRE(timeline.statistics().history_high_water >= timeline.history().size());
+
+    auto expected_tick = timeline.authoritative_tick().value() + 1U;
+    auto previous_sequence = timeline.acknowledged_through();
+    for (const auto& frame : timeline.history()) {
+        REQUIRE(frame.tick == mycore::time::Tick{expected_tick});
+        REQUIRE(frame.scope_epoch == timeline.scope_epoch());
+        REQUIRE(frame.command_sequence.is_valid());
+        if (previous_sequence) {
+            REQUIRE(frame.command_sequence > *previous_sequence);
+        }
+        previous_sequence = frame.command_sequence;
+        ++expected_tick;
+    }
+    if (!timeline.history().empty()) {
+        REQUIRE(timeline.last_submitted_sequence() == timeline.history().back().command_sequence);
+        REQUIRE(timeline.history().back().checkpoint ==
+                ToyModel{}.capture(*timeline.state(), *timeline.scope()));
+    }
+}
+
+void require_commit_coordinates(const Timeline& timeline, const Commit& commit) {
+    REQUIRE(commit.authoritative_tick == timeline.authoritative_tick());
+    REQUIRE(commit.predicted_tick == timeline.predicted_tick());
+    REQUIRE(commit.acknowledged_through == timeline.acknowledged_through());
+    REQUIRE(commit.predicted_digest ==
+            ToyModel{}.digest(ToyModel{}.capture(*timeline.state(), *timeline.scope()),
+                              *timeline.scope()));
+}
+
 } // namespace
+
+TEST_CASE("Rollback borrowed views require a live lvalue owner", "[rollback][lifetime]") {
+    SUCCEED("Compile-time concepts reject borrowed views from temporary owners");
+}
+
+TEST_CASE("Rollback rejects every stateful operation before initialization",
+          "[rollback][timeline][invariants]") {
+    Timeline timeline{ToyModel{}};
+    const auto retain = [](mycore::rollback::CommandSequence,
+                           const ToyStimulus& stimulus,
+                           const ToyState&,
+                           const ToyScope&) -> std::variant<ToyStimulus, ToyError> {
+        return stimulus;
+    };
+
+    CHECK(require_failure(timeline.advance(sequence(1), ToyStimulus{})).code ==
+          mycore::rollback::TimelineErrorCode::NotInitialized);
+    CHECK(require_failure(timeline.reconcile(authority(1, 0))).code ==
+          mycore::rollback::TimelineErrorCode::NotInitialized);
+    CHECK(require_failure(timeline.reconcile_with_stimulus_refresh(authority(1, 0), retain)).code ==
+          mycore::rollback::TimelineErrorCode::NotInitialized);
+    CHECK(require_failure(timeline.refresh_authority(authority(0, 0))).code ==
+          mycore::rollback::TimelineErrorCode::NotInitialized);
+    CHECK(require_failure(timeline.refresh_authority_with_stimulus_refresh(authority(0, 0), retain))
+              .code == mycore::rollback::TimelineErrorCode::NotInitialized);
+    CHECK(require_failure(timeline.rebase_scope(authority(0, 0, {}, epoch(2)), ToyScope{})).code ==
+          mycore::rollback::TimelineErrorCode::NotInitialized);
+    CHECK(require_failure(timeline.rebase_scope_with_stimulus_refresh(
+                              authority(0, 0, {}, epoch(2)), ToyScope{}, retain))
+              .code == mycore::rollback::TimelineErrorCode::NotInitialized);
+    CHECK(require_failure(timeline.hard_resync(authority(0, 0), ToyScope{})).code ==
+          mycore::rollback::TimelineErrorCode::NotInitialized);
+    CHECK(timeline.statistics().failure_count == 8);
+    require_timeline_invariants(timeline);
+}
 
 TEST_CASE("Rollback timeline initializes and advances atomically", "[rollback][timeline]") {
     REQUIRE(mycore::rollback::library_name() == "MyCore::Rollback");
@@ -451,6 +558,74 @@ TEST_CASE("Hard resync may accept externally submitted commands beyond timeline 
     CHECK(timeline.last_submitted_sequence() == sequence(3));
     CHECK(timeline.history().empty());
     CHECK(timeline.state()->value == 9);
+}
+
+TEST_CASE("Hard resync cannot replace a scope without advancing its epoch",
+          "[rollback][timeline][scope][invariants]") {
+    Timeline timeline{ToyModel{}};
+    const auto& initialized =
+        require_commit(timeline.initialize(authority(0, 2), ToyScope{.multiplier = 2}));
+    require_commit_coordinates(timeline, initialized);
+    require_timeline_invariants(timeline);
+
+    const auto state_before = *timeline.state();
+    const auto history_before = timeline.history().size();
+    const auto failure_count_before = timeline.statistics().failure_count;
+    const auto rejected =
+        timeline.hard_resync(authority(1, 20, std::nullopt, epoch(1)), ToyScope{.multiplier = 3});
+    CHECK(require_failure(rejected).code == mycore::rollback::TimelineErrorCode::IncompatibleScope);
+    CHECK(*timeline.state() == state_before);
+    CHECK(timeline.scope()->multiplier == 2);
+    CHECK(timeline.history().size() == history_before);
+    CHECK(timeline.statistics().failure_count == failure_count_before + 1U);
+    require_timeline_invariants(timeline);
+
+    const auto& same_scope = require_commit(
+        timeline.hard_resync(authority(1, 20, std::nullopt, epoch(1)), ToyScope{.multiplier = 2}));
+    require_commit_coordinates(timeline, same_scope);
+    CHECK(timeline.scope()->multiplier == 2);
+
+    const auto& newer_scope = require_commit(
+        timeline.hard_resync(authority(2, 30, std::nullopt, epoch(2)), ToyScope{.multiplier = 3}));
+    require_commit_coordinates(timeline, newer_scope);
+    CHECK(timeline.scope()->multiplier == 3);
+    CHECK(timeline.scope_epoch() == epoch(2));
+    require_timeline_invariants(timeline);
+}
+
+TEST_CASE("Reconciliation at every acknowledged prefix preserves deterministic state",
+          "[rollback][timeline][metamorphic][invariants]") {
+    const std::vector stimuli{
+        ToyStimulus{.delta = 1},
+        ToyStimulus{.delta = 2},
+        ToyStimulus{.delta = 3},
+        ToyStimulus{.delta = 4},
+    };
+    Timeline direct{ToyModel{}};
+    require_commit_coordinates(direct,
+                               require_commit(direct.initialize(authority(0, 0), ToyScope{})));
+    for (auto index = std::size_t{}; index < stimuli.size(); ++index) {
+        const auto& commit = require_commit(direct.advance(sequence(index + 1U), stimuli[index]));
+        require_commit_coordinates(direct, commit);
+        require_timeline_invariants(direct);
+    }
+    const auto expected = *direct.state();
+
+    auto authoritative_value = 0;
+    for (auto prefix = std::size_t{1}; prefix <= stimuli.size(); ++prefix) {
+        authoritative_value += stimuli[prefix - 1U].delta;
+        Timeline reconciled{ToyModel{}};
+        static_cast<void>(require_commit(reconciled.initialize(authority(0, 0), ToyScope{})));
+        for (auto index = std::size_t{}; index < stimuli.size(); ++index) {
+            static_cast<void>(
+                require_commit(reconciled.advance(sequence(index + 1U), stimuli[index])));
+        }
+        const auto& commit = require_commit(reconciled.reconcile(
+            authority(prefix, authoritative_value, sequence(prefix), epoch(1))));
+        require_commit_coordinates(reconciled, commit);
+        require_timeline_invariants(reconciled);
+        CHECK(*reconciled.state() == expected);
+    }
 }
 
 TEST_CASE("Failed scratch replay does not mutate committed rollback state",
@@ -773,6 +948,97 @@ TEST_CASE("Consequence policies deliver, revise, cancel, confirm, and suppress b
     REQUIRE(confirmed_log.confirmed.size() == confirmed_count);
 }
 
+TEST_CASE("Malformed consequence batches fail atomically before handler dispatch",
+          "[rollback][consequences][contract]") {
+    HandlerLog once_log;
+    HandlerLog cancelable_log;
+    HandlerLog confirmed_log;
+    TestRouter router{PredictOncePulseHandler{.log = &once_log},
+                      CancelablePulseHandler{.log = &cancelable_log},
+                      ConfirmOncePulseHandler{.log = &confirmed_log}};
+    const auto key = ToyEventKey{31};
+    const auto pulse = ToyEvent{PulseEvent{.key = key, .payload = 1}};
+    const auto notice = ToyEvent{NoticeEvent{.key = key, .payload = 2}};
+    const mycore::rollback::EventBatch<ToyModel> predicted{
+        .kind = mycore::rollback::CommitKind::Advance,
+        .changes = {{
+            .transition = mycore::rollback::EventTransition::FirstPredicted,
+            .key = key,
+            .previous = std::nullopt,
+            .current = pulse,
+        }},
+    };
+    REQUIRE(router.consume(predicted).contract_failures.empty());
+
+    const auto statistics_before = router.statistics();
+    const auto handlers_before =
+        std::vector(router.handler_statistics().begin(), router.handler_statistics().end());
+    const auto ledger_before = router.ledger_statistics();
+    const auto once_before = once_log;
+    const auto cancelable_before = cancelable_log;
+    const auto confirmed_before = confirmed_log;
+    const mycore::rollback::EventBatch<ToyModel> malformed{
+        .kind = mycore::rollback::CommitKind::Reconcile,
+        .changes =
+            {
+                {
+                    .transition = mycore::rollback::EventTransition::FirstPredicted,
+                    .key = ToyEventKey{32},
+                    .previous = pulse,
+                    .current = pulse,
+                },
+                {
+                    .transition = mycore::rollback::EventTransition::Revised,
+                    .key = key,
+                    .previous = pulse,
+                    .current = notice,
+                },
+                {
+                    .transition = mycore::rollback::EventTransition::Retracted,
+                    .key = key,
+                    .previous = std::nullopt,
+                    .current = pulse,
+                },
+            },
+        .retired_keys = {key},
+        .externally_retired_keys = {key},
+    };
+    const auto report = router.consume(malformed);
+
+    REQUIRE(report.contract_failures.size() == 3);
+    CHECK(report.contract_failures[0] ==
+          mycore::rollback::ConsequenceBatchContractFailure{
+              .change_index = 0,
+              .error = mycore::rollback::ConsequenceBatchContractError::InvalidTransitionShape});
+    CHECK(report.contract_failures[1].error ==
+          mycore::rollback::ConsequenceBatchContractError::ChangedEventAlternative);
+    CHECK(report.contract_failures[2].error ==
+          mycore::rollback::ConsequenceBatchContractError::InvalidTransitionShape);
+    CHECK(report.statistics == mycore::rollback::ConsequenceDispatchStatistics{});
+    CHECK(router.statistics() == statistics_before);
+    CHECK(std::vector(router.handler_statistics().begin(), router.handler_statistics().end()) ==
+          handlers_before);
+    CHECK(router.ledger_statistics() == ledger_before);
+    CHECK(once_log.first == once_before.first);
+    CHECK(cancelable_log.predicted == cancelable_before.predicted);
+    CHECK(cancelable_log.revised == cancelable_before.revised);
+    CHECK(confirmed_log.confirmed == confirmed_before.confirmed);
+    CHECK(mycore::rollback::consequence_batch_contract_error_name(
+              report.contract_failures[1].error) == "CHANGED EVENT ALTERNATIVE");
+
+    const mycore::rollback::EventBatch<ToyModel> revised{
+        .kind = mycore::rollback::CommitKind::Reconcile,
+        .changes = {{
+            .transition = mycore::rollback::EventTransition::Revised,
+            .key = key,
+            .previous = pulse,
+            .current = ToyEvent{PulseEvent{.key = key, .payload = 3}},
+        }},
+    };
+    REQUIRE(router.consume(revised).contract_failures.empty());
+    CHECK(cancelable_log.revised.size() == 1);
+}
+
 TEST_CASE("Failed consequence delivery is not retried for the same occurrence",
           "[rollback][consequences]") {
     HandlerLog log;
@@ -932,7 +1198,7 @@ TEST_CASE("Consequence retirement remains bounded across many confirmed occurren
             .changes = {{
                 .transition = mycore::rollback::EventTransition::Confirmed,
                 .key = key,
-                .previous = std::nullopt,
+                .previous = event,
                 .current = event,
             }},
             .retired_keys = {key},

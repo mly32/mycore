@@ -61,6 +61,13 @@ Each supported platform has native Debug and Release presets:
 - `linux-clang-debug` and `linux-clang-release`
 - `windows-msvc-debug` and `windows-msvc-release`
 
+Linux also provides validation-only presets:
+
+- `linux-clang-asan` builds and tests the complete project with AddressSanitizer and
+  UndefinedBehaviorSanitizer.
+- `linux-clang-fuzz` builds the coverage-guided Dots protocol decoder and structured rollback
+  timeline fuzzers.
+
 Release presets enable the compiler's optimized `Release` configuration and define `NDEBUG`.
 Tests remain enabled so optimized builds can be validated with the matching test preset.
 
@@ -92,6 +99,44 @@ Use a fresh cache after changing compilers, architectures, or vcpkg triplets:
 ```bash
 cmake --fresh --preset macos-clang-debug
 ```
+
+## Sanitizers and fuzzing
+
+Run the complete Linux sanitizer build with:
+
+```bash
+cmake --preset linux-clang-asan
+cmake --build --preset linux-clang-asan
+ctest --preset linux-clang-asan
+```
+
+Build both fuzzers and copy their source seeds to writable build directories before running them.
+libFuzzer may minimize or extend a working corpus; it must not write into a tracked seed
+directory. The structured rollback grammar is byte-oriented and does not require a dictionary.
+
+```bash
+cmake --preset linux-clang-fuzz
+cmake --build --preset linux-clang-fuzz
+cmake -E copy_directory \
+    games/dots/protocol/fuzz/corpus \
+    build/linux-clang-fuzz/protocol-fuzz-corpus
+cmake -E copy_directory \
+    engine/rollback/fuzz/corpus \
+    build/linux-clang-fuzz/rollback-fuzz-corpus
+./build/linux-clang-fuzz/bin/dots_protocol_decode_fuzzer \
+    build/linux-clang-fuzz/protocol-fuzz-corpus \
+    -dict=games/dots/protocol/fuzz/protocol.dict \
+    -max_len=65536 \
+    -runs=2000
+./build/linux-clang-fuzz/bin/mycore_rollback_timeline_fuzzer \
+    build/linux-clang-fuzz/rollback-fuzz-corpus \
+    -max_len=4096 \
+    -runs=5000
+```
+
+These presets intentionally require Clang on Linux. ThreadSanitizer remains deferred until the
+project introduces its own concurrent execution, and performance benchmarks remain Feature 17
+work.
 
 ## Package the Dots client
 

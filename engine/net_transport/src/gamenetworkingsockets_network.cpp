@@ -375,7 +375,12 @@ public:
             if (poll_group_ != k_HSteamNetPollGroup_Invalid) {
                 while (receive_one_from_poll_group()) {
                 }
-                return;
+                // A peer can send its first reliable application message immediately after its
+                // Connected callback, while the listening side is still assigning that new
+                // connection to this poll group. GameNetworkingSockets only promises to attempt
+                // to migrate already-pending messages during SetConnectionPollGroup. Drain each
+                // connection as a fallback so a raced handshake message cannot remain stranded
+                // outside the group queue until both applications time out.
             }
             for (const auto& [unused, connection] : connections_) {
                 static_cast<void>(unused);

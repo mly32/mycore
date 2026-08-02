@@ -183,9 +183,124 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  sanitizer-and-fuzz:
+    name: Sanitizers and fuzz smoke
+    needs: changes
+    if: needs.changes.outputs.run_expensive == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.cache/vcpkg/archives
+      VCPKG_MAX_CONCURRENCY: 4
+    steps:
+      - name: Check out MyCore
+        uses: actions/checkout@v7.0.0
+
+      - name: Prepare vcpkg binary cache
+        run: cmake -E make_directory "${{ env.VCPKG_DEFAULT_BINARY_CACHE }}"
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Check out pinned vcpkg
+        uses: actions/checkout@v7.0.0
+        with:
+          repository: microsoft/vcpkg
+          ref: ec62869cdd9f80413abb5e4c1d8b68688df932f4
+          path: vcpkg
+
+      - name: Bootstrap vcpkg
+        run: ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+
+      - name: Install Linux dependency tools
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            autoconf autoconf-archive automake libtool libltdl-dev \
+            libx11-dev libxft-dev libxext-dev \
+            libxcursor-dev libxfixes-dev libxi-dev libxrandr-dev \
+            libxss-dev libxtst-dev \
+            libwayland-dev libxkbcommon-dev libegl1-mesa-dev \
+            libibus-1.0-dev
+
+      - name: Configure sanitizer build
+        run: cmake --preset linux-clang-asan
+
+      - name: Build sanitizer targets
+        run: cmake --build --preset linux-clang-asan
+
+      - name: Test with ASan and UBSan
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --preset linux-clang-asan --parallel
+
+      - name: Configure fuzzers
+        run: cmake --preset linux-clang-fuzz
+
+      - name: Build fuzzers
+        run: cmake --build --preset linux-clang-fuzz
+
+      - name: Prepare writable fuzz corpora
+        run: |
+          cmake -E make_directory build/linux-clang-fuzz/protocol-fuzz-corpus
+          cmake -E copy_directory \
+            games/dots/protocol/fuzz/corpus \
+            build/linux-clang-fuzz/protocol-fuzz-corpus
+          cmake -E make_directory build/linux-clang-fuzz/rollback-fuzz-corpus
+          cmake -E copy_directory \
+            engine/rollback/fuzz/corpus \
+            build/linux-clang-fuzz/rollback-fuzz-corpus
+          cmake -E make_directory build/linux-clang-fuzz/protocol-fuzz-artifacts
+          cmake -E make_directory build/linux-clang-fuzz/rollback-fuzz-artifacts
+
+      - name: Run bounded protocol fuzz smoke
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          ./build/linux-clang-fuzz/bin/dots_protocol_decode_fuzzer \
+            build/linux-clang-fuzz/protocol-fuzz-corpus \
+            -artifact_prefix=build/linux-clang-fuzz/protocol-fuzz-artifacts/ \
+            -dict=games/dots/protocol/fuzz/protocol.dict \
+            -max_len=65536 \
+            -runs=2000 \
+            -timeout=5
+
+      - name: Run bounded rollback fuzz smoke
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          ./build/linux-clang-fuzz/bin/mycore_rollback_timeline_fuzzer \
+            build/linux-clang-fuzz/rollback-fuzz-corpus \
+            -artifact_prefix=build/linux-clang-fuzz/rollback-fuzz-artifacts/ \
+            -max_len=4096 \
+            -runs=5000 \
+            -timeout=5
+
+      - name: Upload sanitizer and fuzz diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sanitizer-fuzz-diagnostics-attempt-${{ github.run_attempt }}
+          path: |
+            build/linux-clang-asan/Testing/Temporary/LastTest.log
+            build/linux-clang-fuzz/protocol-fuzz-artifacts
+            build/linux-clang-fuzz/rollback-fuzz-artifacts
+          if-no-files-found: ignore
+          retention-days: 7
+
   ci-gate:
     name: CI gate
-    needs: [changes, build-and-test, format-check]
+    needs: [changes, build-and-test, format-check, sanitizer-and-fuzz]
     if: always()
     runs-on: ubuntu-slim
     timeout-minutes: 5
@@ -196,7 +311,9 @@ jobs:
           if [ "${{ needs.changes.outputs.run_expensive }}" = "true" ]; then
             test "${{ needs.build-and-test.result }}" = "success"
             test "${{ needs.format-check.result }}" = "success"
+            test "${{ needs.sanitizer-and-fuzz.result }}" = "success"
           else
             test "${{ needs.build-and-test.result }}" = "skipped"
             test "${{ needs.format-check.result }}" = "skipped"
+            test "${{ needs.sanitizer-and-fuzz.result }}" = "skipped"
           fi

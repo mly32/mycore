@@ -89,6 +89,7 @@ inline constexpr auto kPredictionDebugRetentionDuration = std::chrono::seconds{2
 
 struct LocalPredictionSample {
     mycore::math::Vector2 predicted_position;
+    std::uint64_t predicted_tick{};
     mycore::math::Vector2 accumulated_correction_displacement;
     std::uint64_t correction_sequence{};
     std::uint64_t hard_resync_sequence{};
@@ -104,6 +105,8 @@ public:
 
     [[nodiscard]] mycore::math::Vector2 predicted_position() const noexcept;
     [[nodiscard]] mycore::math::Vector2 presentation_position() const noexcept;
+    [[nodiscard]] mycore::math::Vector2
+    presentation_position(float fixed_tick_alpha) const noexcept;
     [[nodiscard]] mycore::math::Vector2 smoothing_offset() const noexcept;
     [[nodiscard]] bool correction_visual_active() const noexcept;
     [[nodiscard]] std::optional<mycore::math::Vector2>
@@ -117,6 +120,7 @@ private:
     void initialize(const LocalPredictionSample& sample,
                     std::chrono::steady_clock::time_point now) noexcept;
 
+    mycore::math::Vector2 previous_predicted_position_;
     mycore::math::Vector2 predicted_position_;
     mycore::math::Vector2 presentation_position_;
     mycore::math::Vector2 smoothing_offset_;
@@ -128,6 +132,7 @@ private:
     std::chrono::steady_clock::time_point correction_visual_expiry_;
     std::uint64_t last_correction_sequence_{};
     std::uint64_t last_hard_resync_sequence_{};
+    std::uint64_t last_predicted_tick_{};
     bool initialized_{};
     bool smoothing_active_{};
     bool correction_visual_active_{};

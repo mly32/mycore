@@ -9,6 +9,11 @@ namespace dots::prediction {
 
 using ScopeBuildResult = std::variant<PredictionScope, ScopeBuildError>;
 
+// The complete public scope contract used by construction, projection, restore, and replay.
+// Keeping one validator prevents malformed scopes from being accepted at one boundary only to
+// fail later with a less actionable checkpoint or simulation error.
+[[nodiscard]] bool is_valid_prediction_scope(const PredictionScope& scope) noexcept;
+
 [[nodiscard]] ScopeBuildResult build_prediction_scope(const simulation::WorldCheckpoint& authority,
                                                       const PredictionRequest& request);
 

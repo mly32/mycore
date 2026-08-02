@@ -130,9 +130,11 @@ struct SimulationEventParticipants {
     std::array<PlayerOwnerId, 2> owner_ids;
     std::size_t count{};
 
-    [[nodiscard]] std::span<const PlayerOwnerId> owners() const noexcept {
+    // The span borrows this value's inline array, so temporary participants cannot expose it.
+    [[nodiscard]] std::span<const PlayerOwnerId> owners() const& noexcept {
         return std::span{owner_ids}.first(count);
     }
+    [[nodiscard]] std::span<const PlayerOwnerId> owners() const&& = delete;
 
     bool operator==(const SimulationEventParticipants&) const = default;
 };

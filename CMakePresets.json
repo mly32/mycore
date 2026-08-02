@@ -74,6 +74,30 @@
       }
     },
     {
+      "name": "linux-clang-asan",
+      "displayName": "Linux Clang ASan + UBSan",
+      "inherits": "base",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "MYCORE_ENABLE_SANITIZERS": "ON"
+      }
+    },
+    {
+      "name": "linux-clang-fuzz",
+      "displayName": "Linux Clang fuzzing",
+      "inherits": "linux-clang-asan",
+      "cacheVariables": {
+        "BUILD_TESTING": "OFF",
+        "MYCORE_BUILD_FUZZERS": "ON"
+      }
+    },
+    {
       "name": "windows-msvc-debug",
       "displayName": "Windows MSVC Debug",
       "inherits": "base",
@@ -120,6 +144,15 @@
       "configurePreset": "linux-clang-release"
     },
     {
+      "name": "linux-clang-asan",
+      "configurePreset": "linux-clang-asan"
+    },
+    {
+      "name": "linux-clang-fuzz",
+      "configurePreset": "linux-clang-fuzz",
+      "targets": ["dots_protocol_decode_fuzzer", "mycore_rollback_timeline_fuzzer"]
+    },
+    {
       "name": "windows-msvc-debug",
       "configurePreset": "windows-msvc-debug"
     },
@@ -153,6 +186,13 @@
     {
       "name": "linux-clang-release",
       "configurePreset": "linux-clang-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-clang-asan",
+      "configurePreset": "linux-clang-asan",
       "output": {
         "outputOnFailure": true
       }
