@@ -40,6 +40,12 @@ CI uses the sanitizer preset for a full build and CTest run. It then configures 
 builds only `dots_protocol_decode_fuzzer`, and performs a bounded deterministic smoke run against
 the checked-in seed corpus and dictionary. Longer campaigns remain scheduled or local work.
 
+The vcpkg GameNetworkingSockets archive does not expose the RTTI metadata required by Clang's
+`vptr` sanitizer for its polymorphic C++ interfaces. Disable only `vptr` instrumentation in the
+native GameNetworkingSockets adapter translation unit; AddressSanitizer and all other
+UndefinedBehaviorSanitizer checks remain enabled there, and project-owned translation units keep
+the complete sanitizer set.
+
 ## Ownership and Interfaces
 
 - `cmake/ProjectOptions.cmake` owns target-scoped sanitizer/fuzzer compiler policy.
@@ -53,8 +59,10 @@ No public C++ API or wire interface changes.
 
 Implemented on `chore/validation-baseline`. Normal macOS Debug configuration and the complete
 257-test host suite pass. A direct 2,000-run ASan/UBSan/libFuzzer smoke passes with the real
-decoder and checked-in dictionary. The required Linux preset executions remain the CI merge gate
-because the development host is macOS.
+decoder and checked-in dictionary. The first Linux CI execution exposed the packaged
+GameNetworkingSockets RTTI boundary described above; the adapter now has a source-scoped `vptr`
+exception. The required Linux preset executions remain the CI merge gate because the development
+host is macOS.
 
 ## Validation and Exit Criteria
 
