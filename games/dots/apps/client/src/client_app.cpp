@@ -1314,10 +1314,22 @@ int run_networked_game(
     auto consequence_delivery_ready = false;
     const auto drain_consequence_batches = [&](std::chrono::steady_clock::time_point observed_at) {
         if (!consequence_delivery_ready) {
-            return;
+            return false;
         }
         for (const auto& batch : client.take_prediction_event_batches()) {
             const auto report = consequence_presentation.consume(batch, observed_at);
+            if (!report.contract_failures.empty()) {
+                const auto& failure = report.contract_failures.front();
+                mycore::debug::log_error(
+                    "dots.client.consequence",
+                    "Rollback consequence batch contract failed: kind {}, change {}: {} "
+                    "({} contract failures); terminating this client session",
+                    static_cast<std::uint8_t>(batch.kind),
+                    failure.change_index,
+                    mycore::rollback::consequence_batch_contract_error_name(failure.error),
+                    report.contract_failures.size());
+                return true;
+            }
             if (!report.failures.empty()) {
                 mycore::debug::log_error(
                     "dots.client.consequence",
@@ -1325,6 +1337,7 @@ int run_networked_game(
                     report.failures.size());
             }
         }
+        return false;
     };
     const auto process_client_events = [&](std::chrono::steady_clock::time_point now) {
         auto result = client.process_events(now);
@@ -1363,7 +1376,9 @@ int run_networked_game(
                 }
             }
         }
-        drain_consequence_batches(now);
+        if (drain_consequence_batches(now) && !result.error) {
+            result.error = dots::client_runtime::RuntimeError::PredictionConsequenceFailed;
+        }
         if (result.error) {
             const auto name = dots::client_runtime::runtime_error_name(*result.error);
             mycore::debug::log_error(
@@ -1394,7 +1409,9 @@ int run_networked_game(
             dots::simulation::PlayerOwnerId{controlled->owner_id.value()});
     }
     consequence_delivery_ready = true;
-    drain_consequence_batches(std::chrono::steady_clock::now());
+    if (drain_consequence_batches(std::chrono::steady_clock::now())) {
+        throw StartupError{"The networked client consequence contract failed"};
+    }
 
     std::uint32_t client_tick{};
     if (join_role == dots::protocol::JoinRole::Player) {
@@ -1409,7 +1426,9 @@ int run_networked_game(
     if (embedded_server != nullptr && embedded_server->process_events()) {
         throw StartupError{"The embedded authoritative server rejected input prefill"};
     }
-    drain_consequence_batches(std::chrono::steady_clock::now());
+    if (drain_consequence_batches(std::chrono::steady_clock::now())) {
+        throw StartupError{"The networked client consequence contract failed"};
+    }
 
     mycore::time::FixedStepAccumulator accumulator{dots::simulation::kTickDuration};
     auto previous_time = std::chrono::steady_clock::now();

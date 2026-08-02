@@ -65,7 +65,8 @@ Linux also provides validation-only presets:
 
 - `linux-clang-asan` builds and tests the complete project with AddressSanitizer and
   UndefinedBehaviorSanitizer.
-- `linux-clang-fuzz` builds only the coverage-guided Dots protocol decoder fuzzer.
+- `linux-clang-fuzz` builds the coverage-guided Dots protocol decoder and structured rollback
+  timeline fuzzers.
 
 Release presets enable the compiler's optimized `Release` configuration and define `NDEBUG`.
 Tests remain enabled so optimized builds can be validated with the matching test preset.
@@ -99,7 +100,7 @@ Use a fresh cache after changing compilers, architectures, or vcpkg triplets:
 cmake --fresh --preset macos-clang-debug
 ```
 
-## Sanitizers and protocol fuzzing
+## Sanitizers and fuzzing
 
 Run the complete Linux sanitizer build with:
 
@@ -109,21 +110,28 @@ cmake --build --preset linux-clang-asan
 ctest --preset linux-clang-asan
 ```
 
-Build the protocol decoder fuzzer and copy its source seeds to a writable build directory before
-running it. libFuzzer may minimize or extend the working corpus; it must not write into the
-tracked seed directory.
+Build both fuzzers and copy their source seeds to writable build directories before running them.
+libFuzzer may minimize or extend a working corpus; it must not write into a tracked seed
+directory. The structured rollback grammar is byte-oriented and does not require a dictionary.
 
 ```bash
 cmake --preset linux-clang-fuzz
 cmake --build --preset linux-clang-fuzz
 cmake -E copy_directory \
     games/dots/protocol/fuzz/corpus \
-    build/linux-clang-fuzz/fuzz-corpus
+    build/linux-clang-fuzz/protocol-fuzz-corpus
+cmake -E copy_directory \
+    engine/rollback/fuzz/corpus \
+    build/linux-clang-fuzz/rollback-fuzz-corpus
 ./build/linux-clang-fuzz/bin/dots_protocol_decode_fuzzer \
-    build/linux-clang-fuzz/fuzz-corpus \
+    build/linux-clang-fuzz/protocol-fuzz-corpus \
     -dict=games/dots/protocol/fuzz/protocol.dict \
     -max_len=65536 \
     -runs=2000
+./build/linux-clang-fuzz/bin/mycore_rollback_timeline_fuzzer \
+    build/linux-clang-fuzz/rollback-fuzz-corpus \
+    -max_len=4096 \
+    -runs=5000
 ```
 
 These presets intentionally require Clang on Linux. ThreadSanitizer remains deferred until the

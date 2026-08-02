@@ -148,7 +148,11 @@ target_link_libraries(
 mycore_configure_test_executable(dots_simulation_tests)
 catch_discover_tests(dots_simulation_tests)
 
-add_executable(dots_world_prediction_tests dots_world_prediction_tests.cpp)
+add_executable(
+    dots_world_prediction_tests
+    dots_prediction_correctness_tests.cpp
+    dots_world_prediction_tests.cpp
+)
 target_link_libraries(
     dots_world_prediction_tests
     PRIVATE

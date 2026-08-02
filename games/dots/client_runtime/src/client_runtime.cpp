@@ -548,6 +548,8 @@ std::string_view runtime_error_name(RuntimeError error) noexcept {
         return "PREDICTION SCOPE FAILED";
     case RuntimeError::PredictionTimelineFailed:
         return "PREDICTION TIMELINE FAILED";
+    case RuntimeError::PredictionConsequenceFailed:
+        return "PREDICTION CONSEQUENCE FAILED";
     case RuntimeError::PredictionEventQueueFull:
         return "PREDICTION EVENT QUEUE FULL";
     case RuntimeError::AmbiguousPredictionIdentity:
@@ -2884,7 +2886,7 @@ State Runtime::state() const noexcept {
     return impl_->state();
 }
 
-const replication::ReplicatedWorld& Runtime::world() const noexcept {
+const replication::ReplicatedWorld& Runtime::world() const& noexcept {
     return impl_->world();
 }
 
@@ -2908,7 +2910,7 @@ protocol::SessionMode Runtime::session_mode() const noexcept {
     return impl_->session_mode();
 }
 
-std::span<const protocol::EntityId> Runtime::owned_entity_ids() const noexcept {
+std::span<const protocol::EntityId> Runtime::owned_entity_ids() const& noexcept {
     return impl_->owned_entity_ids();
 }
 
@@ -2952,7 +2954,7 @@ mycore::net_transport::ConnectionHandle Runtime::connection_handle() const noexc
     return impl_->connection_handle();
 }
 
-const simulation::World* Runtime::predicted_world() const noexcept {
+const simulation::World* Runtime::predicted_world() const& noexcept {
     return impl_->predicted_world();
 }
 
@@ -2960,20 +2962,20 @@ protocol::EntityId Runtime::predicted_primary_entity_id() const noexcept {
     return impl_->predicted_primary_entity_id();
 }
 
-std::span<const protocol::EntityId> Runtime::predicted_owned_entity_ids() const noexcept {
+std::span<const protocol::EntityId> Runtime::predicted_owned_entity_ids() const& noexcept {
     return impl_->predicted_owned_entity_ids();
 }
 
-std::span<const protocol::EntityId> Runtime::predicted_scope_entity_ids() const noexcept {
+std::span<const protocol::EntityId> Runtime::predicted_scope_entity_ids() const& noexcept {
     return impl_->predicted_scope_entity_ids();
 }
 
 std::span<const PredictionIdentityRemap>
-Runtime::latest_prediction_identity_remaps() const noexcept {
+Runtime::latest_prediction_identity_remaps() const& noexcept {
     return impl_->latest_prediction_identity_remaps();
 }
 
-std::span<const PredictionCorrection> Runtime::recent_prediction_corrections() const noexcept {
+std::span<const PredictionCorrection> Runtime::recent_prediction_corrections() const& noexcept {
     return impl_->recent_prediction_corrections();
 }
 
@@ -2985,11 +2987,11 @@ std::optional<mycore::math::Vector2> Runtime::pre_correction_position() const no
     return impl_->pre_correction_position();
 }
 
-std::span<const mycore::math::Vector2> Runtime::latest_replay_path() const noexcept {
+std::span<const mycore::math::Vector2> Runtime::latest_replay_path() const& noexcept {
     return impl_->latest_replay_path();
 }
 
-std::span<const mycore::math::Vector2> Runtime::latest_correction_replay_path() const noexcept {
+std::span<const mycore::math::Vector2> Runtime::latest_correction_replay_path() const& noexcept {
     return impl_->latest_correction_replay_path();
 }
 
@@ -3001,7 +3003,7 @@ bool Runtime::debug_drop_next_input_packets(std::size_t count) {
     return impl_->debug_drop_next_input_packets(count);
 }
 
-std::span<const DebugFaultReceipt> Runtime::debug_fault_receipts() const noexcept {
+std::span<const DebugFaultReceipt> Runtime::debug_fault_receipts() const& noexcept {
     return impl_->debug_fault_receipts();
 }
 

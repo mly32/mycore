@@ -287,6 +287,9 @@ TEST_CASE("Client runtime exposes actionable error names", "[dots][session]") {
     CHECK(dots::client_runtime::runtime_error_name(
               dots::client_runtime::RuntimeError::ProtocolDecodeFailed) ==
           "PROTOCOL DECODE FAILED");
+    CHECK(dots::client_runtime::runtime_error_name(
+              dots::client_runtime::RuntimeError::PredictionConsequenceFailed) ==
+          "PREDICTION CONSEQUENCE FAILED");
 }
 
 TEST_CASE("Two in-memory clients receive authoritative identities and snapshots",
@@ -668,6 +671,76 @@ TEST_CASE("Pre-welcome authority receipts publish after prediction initializatio
     receipt_statistics = client.prediction_statistics();
     CHECK(receipt_statistics.authority_receipts_published_through ==
           dots::protocol::AuthorityReceiptSequenceId{0});
+}
+
+TEST_CASE("Pre-welcome terminal authority publishes once without creating a timeline",
+          "[dots][session][rollback][receipts][lifecycle]") {
+    ManualEndpoint endpoint;
+    dots::client_runtime::Runtime client{endpoint};
+    const mycore::net_transport::ConnectionHandle connection{35};
+    const auto absorption = dots::protocol::PlayerAbsorbed{
+        .server_tick = 4,
+        .absorber_entity_id = dots::protocol::EntityId{9},
+        .victim_entity_id = dots::protocol::EntityId{8},
+        .absorber_owner_id = dots::protocol::PlayerOwnerId{4},
+        .victim_owner_id = dots::protocol::PlayerOwnerId{3},
+        .transferred_mass = 16.0F,
+    };
+
+    endpoint.events.push_back(mycore::net_transport::Connected{.connection = connection});
+    REQUIRE_FALSE(client.process_events().has_value());
+    endpoint.events.push_back(mycore::net_transport::PayloadReceived{
+        .connection = connection,
+        .delivery = mycore::net_transport::DeliveryMode::Unreliable,
+        .payload = encode_bytes(dots::protocol::FullSnapshot{
+            .snapshot_id = dots::protocol::SnapshotId{0},
+            .server_tick = 4,
+            .input_receive_through = dots::protocol::input_receive_through_for(
+                dots::protocol::InputSequenceId::invalid()),
+            .recipient =
+                {
+                    .mode = dots::protocol::SessionMode::Spectating,
+                    .defeat_tick = 4,
+                    .respawn_available_tick = 4,
+                    .latest_absorption = absorption,
+                },
+            .entities = {{
+                .entity_id = dots::protocol::EntityId{9},
+                .kind = dots::protocol::EntityKind::Player,
+                .owner_id = dots::protocol::PlayerOwnerId{4},
+                .mass = 32.0F,
+            }},
+            .authority_receipts = {{
+                .sequence_id = dots::protocol::AuthorityReceiptSequenceId{0},
+                .event = absorption,
+            }},
+        }),
+    });
+    REQUIRE_FALSE(client.process_events().has_value());
+    CHECK(client.state() == dots::client_runtime::State::Handshaking);
+    CHECK(client.session_mode() == dots::protocol::SessionMode::Spectating);
+    CHECK(client.take_prediction_event_batches().empty());
+    CHECK(client.prediction_statistics().history_count == 0);
+
+    endpoint.events.push_back(mycore::net_transport::PayloadReceived{
+        .connection = connection,
+        .delivery = mycore::net_transport::DeliveryMode::Reliable,
+        .payload = encode_bytes(dots::protocol::ServerWelcome{
+            .client_id = dots::protocol::ClientId{2},
+            .respawn_cooldown_ticks = 0,
+        }),
+    });
+    REQUIRE_FALSE(client.process_events().has_value());
+    CHECK(client.state() == dots::client_runtime::State::Ready);
+    CHECK(client.session_mode() == dots::protocol::SessionMode::Spectating);
+    CHECK(client.predicted_world() == nullptr);
+    const auto batches = client.take_prediction_event_batches();
+    REQUIRE(batches.size() == 1);
+    REQUIRE(batches.front().changes.size() == 1);
+    CHECK(batches.front().changes.front().transition ==
+          mycore::rollback::EventTransition::AuthorityOnly);
+    CHECK(client.take_prediction_event_batches().empty());
+    CHECK(client.prediction_statistics().history_count == 0);
 }
 
 TEST_CASE("Respawn requests while playing are acknowledged and explicitly rejected",

@@ -90,7 +90,7 @@
     },
     {
       "name": "linux-clang-fuzz",
-      "displayName": "Linux Clang protocol fuzzing",
+      "displayName": "Linux Clang fuzzing",
       "inherits": "linux-clang-asan",
       "cacheVariables": {
         "BUILD_TESTING": "OFF",
@@ -150,7 +150,7 @@
     {
       "name": "linux-clang-fuzz",
       "configurePreset": "linux-clang-fuzz",
-      "targets": ["dots_protocol_decode_fuzzer"]
+      "targets": ["dots_protocol_decode_fuzzer", "mycore_rollback_timeline_fuzzer"]
     },
     {
       "name": "windows-msvc-debug",

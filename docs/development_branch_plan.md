@@ -67,7 +67,7 @@ reporting do not.
 
 The next delivery sequence is evidence-first:
 
-1. `chore/validation-baseline` adds the missing sanitizer and protocol-fuzzing gate.
+1. `chore/validation-baseline` adds the sanitizer, protocol-fuzzing, and rollback correctness gate.
 2. `feature/24-authoritative-input-provenance` makes the existing scheduler measurable without
    changing it.
 3. `feature/17-bot-load-harness` completes the harness and records a full-snapshot baseline.
@@ -86,14 +86,16 @@ parked until they have stable workloads and a concrete comparison question.
 
 ### `chore/validation-baseline`
 
-Purpose: close the sanitizer and hostile-input fuzzing commitments before replication-scale work
-changes the protocol and server boundary.
+Purpose: close the sanitizer, hostile-input fuzzing, and prediction-kernel correctness
+commitments before replication-scale work changes the protocol and server boundary.
 
 Changes:
 
 - Add a target-scoped Linux Clang AddressSanitizer plus UndefinedBehaviorSanitizer preset.
 - Run the complete test suite under that preset in required CI.
 - Add a Clang/libFuzzer target that passes arbitrary bytes to the real Dots protocol decoder.
+- Audit rollback invariants, Dots scope closure, client lifecycle boundaries, and borrowed views.
+- Add a structured rollback libFuzzer target and required bounded CI smoke.
 - Add representative framing seeds, a protocol-aware dictionary, and a bounded CI smoke run.
 - Keep ThreadSanitizer deferred until project-owned concurrent execution exists; keep performance
   benchmarks in Feature 17 and Linux server packaging in its later release branch.
@@ -102,7 +104,7 @@ Tests:
 
 - Normal host Debug builds and tests remain unchanged.
 - The sanitizer preset builds and runs the full suite without findings.
-- The fuzzer target builds independently and completes its bounded smoke corpus without a crash.
+- Both fuzzer targets build independently and complete their bounded smoke corpora without a crash.
 - Unsupported sanitizer/fuzzer compiler requests fail during configuration.
 
 Exit criterion:
@@ -111,7 +113,8 @@ Exit criterion:
   24, 17, 15, and 16 merge.
 
 Detailed plan:
-[`plans/validation-baseline.md`](plans/validation-baseline.md).
+[`plans/validation-baseline.md`](plans/validation-baseline.md) and
+[`plans/rollback-correctness-audit.md`](plans/rollback-correctness-audit.md).
 
 ### `feature/00-foundation`
 

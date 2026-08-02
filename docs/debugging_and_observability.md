@@ -257,7 +257,7 @@ Important log categories include:
 | `dots.client.session` | Client transport, handshake, assigned identity, disconnect lifecycle, and newly confirmed absorption, session-mode, follow-target-loss, and respawn-result transitions. |
 | `dots.client.simulation` | Client fixed-step overload warnings, escalation, and recovery. |
 | `dots.client.presentation` | Rejection of a noncanonical/stale remote extrapolation sample, including candidate and prior snapshot coordinates. Such rejection fails the session rather than drawing unvalidated state. |
-| `dots.client.consequence` | Non-retried Dots consequence-handler failures after an otherwise successful rollback commit. |
+| `dots.client.consequence` | Non-retried Dots consequence-handler failures after an otherwise successful rollback commit, plus typed malformed-batch contract failures. A contract failure includes batch kind, change index, error code, and count before terminating only that client session. |
 | `dots.client.prediction` | Prediction history pressure/recovery, hard resyncs, replay-budget warnings, explicit debug fault injection, and fatal scope/timeline operation failures. Timeline failures name the operation, engine rollback error, and any nested Dots model/checkpoint/tick error; scope failures name the failed build or projection and scope epoch/counts. |
 | `dots.client.prediction.frontier` | Entry into deliberately deferred prediction, recovery by ordinary replay or validated ACK catch-up, and fatal authority failures with authoritative ACK, timeline ACK/submission, retained input range, deferred count, and last-sent input. Transition logs require `debug.prediction_log_level` `info` or `debug`; failure context is unconditional. |
 | `dots.client.prediction.scope` | Successful scope-epoch changes with replay depth, horizon, and before/after causal-owner, event-owner, player, and food membership counts when `debug.prediction_log_level` is `info` or `debug`. |
@@ -635,6 +635,11 @@ install partial owner state. On confirmed defeat there is no longer a live owned
 to rebuild the normal interaction closure, so the terminal transaction instead expands only the
 topology of already-admitted owners, resolves the event lifecycle, and discards prediction. A
 terminal projection failure after that expansion is still a defect.
+
+A `dots.client.consequence` batch-contract error is also a defect rather than network loss or a
+recoverable stale frame. The router rejects the complete batch without calling handlers or
+changing its ledger. Preserve the preceding rollback/prediction logs and the named change index;
+the affected client session terminates so corrupted consequence integration state is not reused.
 
 A valid retained owned command whose owner was removed by an earlier replayed interaction is an
 expected conditional no-op and must not produce `model_step_failed: ... invalid command`. That

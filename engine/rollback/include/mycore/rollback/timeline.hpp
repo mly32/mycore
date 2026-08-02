@@ -24,6 +24,7 @@ concept RollbackModel =
     std::copy_constructible<typename Model::Checkpoint> &&
     std::copy_constructible<typename Model::Stimulus> &&
     std::copy_constructible<typename Model::Scope> &&
+    std::equality_comparable<typename Model::Scope> &&
     std::copy_constructible<typename Model::Event> &&
     std::copy_constructible<typename Model::EventKey> && std::movable<typename Model::StateDiff> &&
     std::copy_constructible<typename Model::StateDigest> && std::movable<typename Model::Error> &&
@@ -495,6 +496,12 @@ public:
         if (authority.scope_epoch < scope_epoch_) {
             return failure(TimelineErrorCode::IncompatibleScope);
         }
+        // An epoch identifies one exact prediction membership/policy contract. Replacing that
+        // contract without advancing the epoch would make retained epoch comparisons meaningless,
+        // even though hard_resync deliberately discards history.
+        if (authority.scope_epoch == scope_epoch_ && scope != *scope_) {
+            return failure(TimelineErrorCode::IncompatibleScope);
+        }
         if (const auto error = validate_authority(authority,
                                                   AuthorityTickRule::SameOrNewer,
                                                   SameTickCheckpointRule::MayReplace,
@@ -559,17 +566,20 @@ public:
         return state_.has_value() && base_checkpoint_.has_value() && scope_.has_value();
     }
 
-    [[nodiscard]] const typename Model::State* state() const noexcept {
+    [[nodiscard]] const typename Model::State* state() const& noexcept {
         return state_ ? &*state_ : nullptr;
     }
+    [[nodiscard]] const typename Model::State* state() const&& = delete;
 
-    [[nodiscard]] const typename Model::Scope* scope() const noexcept {
+    [[nodiscard]] const typename Model::Scope* scope() const& noexcept {
         return scope_ ? &*scope_ : nullptr;
     }
+    [[nodiscard]] const typename Model::Scope* scope() const&& = delete;
 
-    [[nodiscard]] const std::deque<FrameRecord<Model>>& history() const noexcept {
+    [[nodiscard]] const std::deque<FrameRecord<Model>>& history() const& noexcept {
         return history_;
     }
+    [[nodiscard]] const std::deque<FrameRecord<Model>>& history() const&& = delete;
 
     [[nodiscard]] time::Tick authoritative_tick() const noexcept {
         return authoritative_tick_;
@@ -591,9 +601,10 @@ public:
         return last_submitted_sequence_;
     }
 
-    [[nodiscard]] const TimelineStatistics& statistics() const noexcept {
+    [[nodiscard]] const TimelineStatistics& statistics() const& noexcept {
         return statistics_;
     }
+    [[nodiscard]] const TimelineStatistics& statistics() const&& = delete;
 
 private:
     enum class AuthorityTickRule : std::uint8_t {

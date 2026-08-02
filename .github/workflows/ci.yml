@@ -184,7 +184,7 @@ jobs:
           retention-days: 7
 
   sanitizer-and-fuzz:
-    name: Sanitizers and protocol fuzz smoke
+    name: Sanitizers and fuzz smoke
     needs: changes
     if: needs.changes.outputs.run_expensive == 'true'
     runs-on: ubuntu-latest
@@ -242,19 +242,24 @@ jobs:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: ctest --preset linux-clang-asan --parallel
 
-      - name: Configure protocol fuzzer
+      - name: Configure fuzzers
         run: cmake --preset linux-clang-fuzz
 
-      - name: Build protocol fuzzer
+      - name: Build fuzzers
         run: cmake --build --preset linux-clang-fuzz
 
-      - name: Prepare writable fuzz corpus
+      - name: Prepare writable fuzz corpora
         run: |
-          cmake -E make_directory build/linux-clang-fuzz/fuzz-corpus
+          cmake -E make_directory build/linux-clang-fuzz/protocol-fuzz-corpus
           cmake -E copy_directory \
             games/dots/protocol/fuzz/corpus \
-            build/linux-clang-fuzz/fuzz-corpus
-          cmake -E make_directory build/linux-clang-fuzz/fuzz-artifacts
+            build/linux-clang-fuzz/protocol-fuzz-corpus
+          cmake -E make_directory build/linux-clang-fuzz/rollback-fuzz-corpus
+          cmake -E copy_directory \
+            engine/rollback/fuzz/corpus \
+            build/linux-clang-fuzz/rollback-fuzz-corpus
+          cmake -E make_directory build/linux-clang-fuzz/protocol-fuzz-artifacts
+          cmake -E make_directory build/linux-clang-fuzz/rollback-fuzz-artifacts
 
       - name: Run bounded protocol fuzz smoke
         env:
@@ -262,11 +267,23 @@ jobs:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: |
           ./build/linux-clang-fuzz/bin/dots_protocol_decode_fuzzer \
-            build/linux-clang-fuzz/fuzz-corpus \
-            -artifact_prefix=build/linux-clang-fuzz/fuzz-artifacts/ \
+            build/linux-clang-fuzz/protocol-fuzz-corpus \
+            -artifact_prefix=build/linux-clang-fuzz/protocol-fuzz-artifacts/ \
             -dict=games/dots/protocol/fuzz/protocol.dict \
             -max_len=65536 \
             -runs=2000 \
+            -timeout=5
+
+      - name: Run bounded rollback fuzz smoke
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          ./build/linux-clang-fuzz/bin/mycore_rollback_timeline_fuzzer \
+            build/linux-clang-fuzz/rollback-fuzz-corpus \
+            -artifact_prefix=build/linux-clang-fuzz/rollback-fuzz-artifacts/ \
+            -max_len=4096 \
+            -runs=5000 \
             -timeout=5
 
       - name: Upload sanitizer and fuzz diagnostics
@@ -276,7 +293,8 @@ jobs:
           name: sanitizer-fuzz-diagnostics-attempt-${{ github.run_attempt }}
           path: |
             build/linux-clang-asan/Testing/Temporary/LastTest.log
-            build/linux-clang-fuzz/fuzz-artifacts
+            build/linux-clang-fuzz/protocol-fuzz-artifacts
+            build/linux-clang-fuzz/rollback-fuzz-artifacts
           if-no-files-found: ignore
           retention-days: 7
 

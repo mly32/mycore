@@ -1,0 +1,3 @@
+add_executable(mycore_rollback_timeline_fuzzer timeline_fuzzer.cpp)
+target_link_libraries(mycore_rollback_timeline_fuzzer PRIVATE MyCore::Rollback)
+mycore_configure_fuzzer(mycore_rollback_timeline_fuzzer)
