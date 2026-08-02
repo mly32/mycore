@@ -23,7 +23,8 @@ research/<topic>
 
 ## Ground Rules
 
-- Merge branches sequentially unless explicitly marked as research.
+- Follow the current delivery sequence below. Feature identifiers remain stable historical names
+  and are not required to merge in numeric order.
 - Keep `main` buildable after every merge.
 - Add or update tests in the same branch as the feature.
 - Prefer real systems over heavy mocking: real `World`, serializers, protocol messages, in-memory transport, loopback transport, and replay inputs.
@@ -55,7 +56,62 @@ cmake --build --preset <local-asan>
 ctest --preset <local-asan>
 ```
 
+## Current Status and Delivery Sequence
+
+`main` is implemented through Feature 14, including authoritative spawn search, complete-World
+rollback, input flow control, direct spectators, and the measured decision to retain same-frame
+replay. Feature 17 is partially implemented: `dots_bot`, the multi-process session launcher,
+player/spectator counts, impairments, bounded sessions, and child cleanup exist, but scale-grade
+connection ramping, configurable patterns, metrics artifacts, benchmarks, and 100--1,000-client
+reporting do not.
+
+The next delivery sequence is evidence-first:
+
+1. `chore/validation-baseline` adds the missing sanitizer and protocol-fuzzing gate.
+2. `feature/24-authoritative-input-provenance` makes the existing scheduler measurable without
+   changing it.
+3. `feature/17-bot-load-harness` completes the harness and records a full-snapshot baseline.
+4. `feature/15-interest-management` adds AOI filtering and repeats the same scale matrix.
+5. `feature/16-delta-snapshots-byte-budget` adds scalable snapshots and repeats the matrix again.
+6. `feature/18-lua-rules`, `feature/22-platform-user-settings`, and
+   `feature/23-client-input-observability` finish the current Dots and desktop-platform work.
+7. `feature/19-aim-trainer-3d-slice` validates in-tree reuse, followed by
+   `feature/20-cmake-package-consumer` and `chore/linux-server-package`.
+
+Evaluate `feature/21-profile-guided-task-scheduler` after Feature 16 and again after Feature 19,
+but activate it only when its measured entry criteria are satisfied. Research branches remain
+parked until they have stable workloads and a concrete comparison question.
+
 ## Branch Roadmap
+
+### `chore/validation-baseline`
+
+Purpose: close the sanitizer and hostile-input fuzzing commitments before replication-scale work
+changes the protocol and server boundary.
+
+Changes:
+
+- Add a target-scoped Linux Clang AddressSanitizer plus UndefinedBehaviorSanitizer preset.
+- Run the complete test suite under that preset in required CI.
+- Add a Clang/libFuzzer target that passes arbitrary bytes to the real Dots protocol decoder.
+- Add representative framing seeds, a protocol-aware dictionary, and a bounded CI smoke run.
+- Keep ThreadSanitizer deferred until project-owned concurrent execution exists; keep performance
+  benchmarks in Feature 17 and Linux server packaging in its later release branch.
+
+Tests:
+
+- Normal host Debug builds and tests remain unchanged.
+- The sanitizer preset builds and runs the full suite without findings.
+- The fuzzer target builds independently and completes its bounded smoke corpus without a crash.
+- Unsupported sanitizer/fuzzer compiler requests fail during configuration.
+
+Exit criterion:
+
+- ASan/UBSan and protocol fuzz smoke are reproducible locally and required by CI before Features
+  24, 17, 15, and 16 merge.
+
+Detailed plan:
+[`plans/validation-baseline.md`](plans/validation-baseline.md).
 
 ### `feature/00-foundation`
 
@@ -527,7 +583,7 @@ Exit criterion:
 - Complete interaction-closed Dots gameplay converges atomically to server truth, Dots exercises
   every generic consequence policy, and `MyCore::Rollback` contains no game or protocol policy.
 
-Implementation status: steps 1 through 9 are complete on `feature/14`. Adaptive command timing,
+Implementation status: steps 1 through 9 are merged into `main`. Adaptive command timing,
 expanded fault/diagnostic coverage, bounded router-ledger pruning, explicit correction
 generations, measured scale workloads, bounded native soaks, receive-window overload recovery,
 and direct spectator stress modes are implemented. The optimized
@@ -535,9 +591,9 @@ target 200 ms, 1,000-entity workload measured 0.738 ms p99 with 0% rollback-only
 overruns, so the conditional multi-frame spike was not activated. The evidence is recorded in
 [`feature14_rollback_workload_results.md`](feature14_rollback_workload_results.md).
 
-Implement Feature 14 incrementally, beginning with the game-neutral rollback kernel. Keep commits
-small enough to review independently; the roadmap does not require separate branches or approval
-gates for each implementation step.
+Feature 14 was implemented incrementally beginning with the game-neutral rollback kernel. Its
+commits remained independently reviewable without separate branches or approval gates for every
+implementation step.
 
 Detailed plan:
 [`plans/14-selectable-world-rollback.md`](plans/14-selectable-world-rollback.md). The step 9
@@ -620,11 +676,21 @@ Exit criterion:
 
 Purpose: measure scalability instead of guessing.
 
+Implementation status: partially implemented by Features 10 and 14. The native headless bot,
+launcher bot counts, direct spectator roles, impairment controls, bounded duration, prefixed
+output, exit propagation, and child cleanup already exist. This feature completes scale-oriented
+connection generation, workload control, metrics artifacts, benchmarks, and staged reporting;
+it must preserve rather than recreate the existing pieces.
+
 Changes:
 
-- Implement `dots_bot` under `games/dots/apps/bot`.
+- Retain `dots_bot` under `games/dots/apps/bot` as the headless load-client composition root.
+- Extend `dots_bot` to multiplex or shard logical sessions so the 1,000-client workload does not
+  require one operating-system process per simulated connection.
 - Add configurable bot count, input pattern, spawn behavior, and connection ramp.
 - Add metrics output for CPU, bandwidth, tick time, queue depth, and disconnects.
+- Write versioned machine-readable run summaries and time series under the selected metrics
+  directory, including Feature 24 input-provenance distributions when enabled.
 - Add benchmark targets for grid, world stepping, AOI, and snapshot build.
 - Extend `dots_session.py` with bot count, connection ramp, input pattern, metrics directory,
   and optional client count. Keep load-test policy in the launcher rather than CMake custom
@@ -635,6 +701,8 @@ Tests:
 - 10-bot automated integration test in CI-friendly mode.
 - Local/manual scenarios for 100, 500, and 1,000 clients.
 - Benchmark targets compile and run.
+- Record the pre-AOI full-snapshot capacity or failure threshold, then rerun the identical matrix
+  after Features 15 and 16.
 
 Exit criterion:
 
@@ -732,6 +800,22 @@ Exit criterion:
 
 - A separate CMake project can install and consume selected MyCore components without
   accessing the MyCore source tree.
+
+### `chore/linux-server-package`
+
+Purpose: fulfill the deferred CI/release commitment for a verified headless Linux server artifact
+after scalable replication has stabilized.
+
+Changes:
+
+- Install only `dots_server` and its required runtime libraries into a Linux server component.
+- Produce a versioned archive independently from the Dots client and MyCore SDK packages.
+- Extract the archive in CI and run `--help` plus a bounded dynamic-port tick smoke test.
+
+Exit criterion:
+
+- CI retains a verified relocatable Linux `dots_server` archive without renderer, SDL video,
+  client assets, Dots client configuration, or engine development headers.
 
 ### `feature/21-profile-guided-task-scheduler`
 
@@ -879,6 +963,20 @@ Exit criterion:
 - A developer can answer when a sequenced input arrived and when authority applied it without
   subtracting client and server clocks or mistaking the trace for a server-rewind policy.
 
+Delivery note: implement this feature immediately after `chore/validation-baseline` so Feature
+17's first scale baseline includes exact, bounded scheduler and queue-wait distributions.
+
+### `feature/portable-replay-artifact` — conditional
+
+Purpose: add a versioned persistent replay artifact only when cross-version debugging, external
+reproduction, or another concrete consumer requires more than the current deterministic workload
+fixtures.
+
+Do not activate this feature merely because replay is useful internally. A detailed plan must
+first name the producer and consumer, compatibility window, authoritative inputs/checkpoints,
+and migration or rejection behavior. Until then, code-owned recorded workloads remain the
+regression and benchmark mechanism.
+
 ## Research Branches
 
 Create these only after the bot/load harness or Lua rules branch provides a stable
@@ -1002,7 +1100,7 @@ Start CI small and expand as subsystems appear:
 1. Linux configure/build/test.
 2. macOS configure/build/test.
 3. Windows configure/build/test.
-4. Sanitizer preset after core and protocol exist.
+4. Required sanitizer and protocol-fuzz smoke after `chore/validation-baseline`.
 5. Benchmark smoke after spatial grid exists.
 6. Loopback networking tests after GameNetworkingSockets exists.
 7. Bot/load tests as manual or scheduled jobs before making them required.
@@ -1014,7 +1112,7 @@ CI should eventually:
 - Run tests.
 - Run clang-format verification on tracked C/C++ sources.
 - Run clang-tidy against the Linux compile database with warnings treated as errors.
-- Run sanitizer builds.
+- Run sanitizer builds and a bounded protocol-fuzz smoke.
 - Run selected benchmarks.
 - Build and retain verified Dots client archives for Windows, Linux, and macOS.
 - Package the Linux `dots_server`.

@@ -59,10 +59,10 @@ rollback timeline, prediction history, or unsent outbox concurrently mutable.
 
 ## Implementation Status
 
-Implemented on `feature/14` as step 9. Protocol, replication, runtime, app, launcher, and focused
-flow-control/spectator tests are complete. The full host test preset passes; the native soak
-commands below remain repeatable operational checks rather than a claimed client-count
-performance target.
+Implemented as Feature 14 step 9 and merged into `main`. Protocol, replication, runtime, app,
+launcher, and focused flow-control/spectator tests are complete. The full host test preset
+passes; the native soak commands below remain repeatable operational checks rather than a claimed
+client-count performance target.
 
 ## Interfaces and Data Flow
 

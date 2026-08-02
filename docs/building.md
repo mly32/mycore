@@ -61,6 +61,12 @@ Each supported platform has native Debug and Release presets:
 - `linux-clang-debug` and `linux-clang-release`
 - `windows-msvc-debug` and `windows-msvc-release`
 
+Linux also provides validation-only presets:
+
+- `linux-clang-asan` builds and tests the complete project with AddressSanitizer and
+  UndefinedBehaviorSanitizer.
+- `linux-clang-fuzz` builds only the coverage-guided Dots protocol decoder fuzzer.
+
 Release presets enable the compiler's optimized `Release` configuration and define `NDEBUG`.
 Tests remain enabled so optimized builds can be validated with the matching test preset.
 
@@ -92,6 +98,37 @@ Use a fresh cache after changing compilers, architectures, or vcpkg triplets:
 ```bash
 cmake --fresh --preset macos-clang-debug
 ```
+
+## Sanitizers and protocol fuzzing
+
+Run the complete Linux sanitizer build with:
+
+```bash
+cmake --preset linux-clang-asan
+cmake --build --preset linux-clang-asan
+ctest --preset linux-clang-asan
+```
+
+Build the protocol decoder fuzzer and copy its source seeds to a writable build directory before
+running it. libFuzzer may minimize or extend the working corpus; it must not write into the
+tracked seed directory.
+
+```bash
+cmake --preset linux-clang-fuzz
+cmake --build --preset linux-clang-fuzz
+cmake -E copy_directory \
+    games/dots/protocol/fuzz/corpus \
+    build/linux-clang-fuzz/fuzz-corpus
+./build/linux-clang-fuzz/bin/dots_protocol_decode_fuzzer \
+    build/linux-clang-fuzz/fuzz-corpus \
+    -dict=games/dots/protocol/fuzz/protocol.dict \
+    -max_len=65536 \
+    -runs=2000
+```
+
+These presets intentionally require Clang on Linux. ThreadSanitizer remains deferred until the
+project introduces its own concurrent execution, and performance benchmarks remain Feature 17
+work.
 
 ## Package the Dots client
 
