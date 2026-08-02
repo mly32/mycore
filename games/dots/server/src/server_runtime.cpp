@@ -631,8 +631,8 @@ private:
                 }
             }
 
-            for (const auto owner_id :
-                 simulation::simulation_event_participants(simulation_event).owners()) {
+            const auto participants = simulation::simulation_event_participants(simulation_event);
+            for (const auto owner_id : participants.owners()) {
                 add_recipient(session_for_owner(owner_id));
             }
             for (auto* recipient : recipients) {
