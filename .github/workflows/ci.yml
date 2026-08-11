@@ -24,7 +24,7 @@ jobs:
       run_expensive: ${{ steps.filter.outputs.run_expensive }}
     steps:
       - name: Check out MyCore
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Detect changes requiring full CI
         id: filter
@@ -44,7 +44,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Check out MyCore
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Install clang-format
         run: |
@@ -84,7 +84,7 @@ jobs:
 
     steps:
       - name: Check out MyCore
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Prepare vcpkg binary cache
         run: cmake -E make_directory "${{ env.VCPKG_DEFAULT_BINARY_CACHE }}"
@@ -98,7 +98,7 @@ jobs:
             vcpkg-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Check out pinned vcpkg
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
         with:
           repository: microsoft/vcpkg
           ref: ec62869cdd9f80413abb5e4c1d8b68688df932f4
@@ -195,7 +195,7 @@ jobs:
       VCPKG_MAX_CONCURRENCY: 4
     steps:
       - name: Check out MyCore
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Prepare vcpkg binary cache
         run: cmake -E make_directory "${{ env.VCPKG_DEFAULT_BINARY_CACHE }}"
@@ -209,7 +209,7 @@ jobs:
             vcpkg-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Check out pinned vcpkg
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
         with:
           repository: microsoft/vcpkg
           ref: ec62869cdd9f80413abb5e4c1d8b68688df932f4
