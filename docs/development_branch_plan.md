@@ -945,6 +945,12 @@ Exit criterion:
 Purpose: make the current arrival-based authoritative input scheduler directly observable without
 turning client-local ticks into trusted server timestamps or changing gameplay scheduling.
 
+Implementation status: implemented on `feature/24-authoritative-input-provenance`. The runtime
+captures bounded first-receipt/application records and exact cumulative distributions; the server
+and session launcher expose paired, explicitly capped JSONL trace options plus rate-limited
+aggregate logs. Host format, clang-tidy, build, full CTest, capped-artifact, and impaired native
+trace validation pass; CI remains the merge gate.
+
 Changes:
 
 - Add a bounded, opt-in server diagnostic record for accepted Player inputs containing client ID,
@@ -952,9 +958,8 @@ Changes:
   tick, and queue wait in ticks.
 - Preserve current scheduling: each server tick consumes at most the oldest queued sequence per
   session. Diagnostics must not backdate commands, alter ordering, or implement lag compensation.
-- Choose during detailed planning between rate-limited structured server logs and a developer
-  trace artifact. Do not add a replicated per-input stream to every snapshot without measured
-  need.
+- Emit a schema-versioned, explicitly capped developer JSONL trace and rate-limited aggregate
+  server logs. Do not add a replicated per-input stream to every snapshot without measured need.
 - Summarize counts and queue-wait distributions for many-client soaks so opt-in diagnostics do
   not flood normal logs.
 - Cross-reference the protocol/networking time model and clearly label `client_tick` as local
@@ -973,6 +978,8 @@ Exit criterion:
 
 - A developer can answer when a sequenced input arrived and when authority applied it without
   subtracting client and server clocks or mistaking the trace for a server-rewind policy.
+
+Detailed plan: [`plans/24-authoritative-input-provenance.md`](plans/24-authoritative-input-provenance.md).
 
 Delivery note: implement this feature immediately after `chore/validation-baseline` so Feature
 17's first scale baseline includes exact, bounded scheduler and queue-wait distributions.

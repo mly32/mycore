@@ -180,6 +180,16 @@ def _parse_arguments(arguments: Sequence[str] | None = None) -> argparse.Namespa
     parser.add_argument("--fake-lag-ms", type=int, default=0)
     parser.add_argument("--fake-loss-percent", type=float, default=0.0)
     parser.add_argument(
+        "--input-provenance-trace",
+        type=Path,
+        help="new JSONL path for authoritative applied-input provenance",
+    )
+    parser.add_argument(
+        "--input-provenance-max-records",
+        type=int,
+        help="maximum applied-input rows written to the provenance trace",
+    )
+    parser.add_argument(
         "--duration-seconds",
         type=float,
         help="stop successfully after this many seconds if every process remains healthy",
@@ -206,6 +216,23 @@ def _parse_arguments(arguments: Sequence[str] | None = None) -> argparse.Namespa
         parser.error("--fake-loss-percent must be in the range 0..100")
     if parsed.duration_seconds is not None and parsed.duration_seconds <= 0.0:
         parser.error("--duration-seconds must be positive")
+    if (parsed.input_provenance_trace is None) != (
+        parsed.input_provenance_max_records is None
+    ):
+        parser.error(
+            "--input-provenance-trace and --input-provenance-max-records must be used together"
+        )
+    if (
+        parsed.input_provenance_max_records is not None
+        and parsed.input_provenance_max_records <= 0
+    ):
+        parser.error("--input-provenance-max-records must be positive")
+    if parsed.input_provenance_trace is not None:
+        parsed.input_provenance_trace = parsed.input_provenance_trace.resolve()
+        if parsed.input_provenance_trace.exists():
+            parser.error("--input-provenance-trace must name a new file")
+        if not parsed.input_provenance_trace.parent.is_dir():
+            parser.error("--input-provenance-trace parent directory does not exist")
     if parsed.client_config is not None:
         parsed.client_config = parsed.client_config.resolve()
         if not parsed.client_config.is_file():
@@ -238,6 +265,15 @@ def _session_commands(arguments: argparse.Namespace) -> tuple[list[str], list[st
         arguments.server_address,
         *impairment,
     ]
+    if arguments.input_provenance_trace is not None:
+        server_command.extend(
+            [
+                "--input-provenance-trace",
+                str(arguments.input_provenance_trace),
+                "--input-provenance-max-records",
+                str(arguments.input_provenance_max_records),
+            ]
+        )
     client_configuration: list[str] = (
         []
         if arguments.client_config is None

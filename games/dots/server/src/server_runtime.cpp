@@ -56,7 +56,12 @@ struct Session {
     protocol::InputSequenceId latest_respawn_request_id;
     protocol::RespawnResult latest_respawn_result{protocol::RespawnResult::None};
     protocol::InputSequenceId last_processed_input_id;
-    std::map<std::uint32_t, protocol::InputSample> pending_inputs;
+    struct PendingInput {
+        protocol::InputSample sample;
+        std::uint64_t receive_server_tick{};
+    };
+
+    std::map<std::uint32_t, PendingInput> pending_inputs;
     std::uint64_t last_activity_tick{};
     std::uint32_t consecutive_missing_input_ticks{};
     std::uint32_t next_snapshot_id{};
@@ -81,6 +86,12 @@ enum class InputEnqueueResult : std::uint8_t {
 enum class ReceiptAcknowledgementResult : std::uint8_t {
     Accepted,
     Invalid,
+};
+
+struct SelectedInput {
+    std::uint32_t connection_value{};
+    protocol::InputSequenceId sequence_id;
+    std::optional<InputProvenanceRecord> provenance;
 };
 
 } // namespace
@@ -261,7 +272,7 @@ public:
 
     [[nodiscard]] std::optional<RuntimeError> step() {
         remove_inactive_sessions();
-        std::vector<std::pair<std::uint32_t, protocol::InputSequenceId>> applied_inputs;
+        std::vector<SelectedInput> applied_inputs;
         applied_inputs.reserve(sessions_.size());
         std::vector<simulation::TickCommand> tick_commands;
         tick_commands.reserve(sessions_.size());
@@ -284,7 +295,8 @@ public:
                 }
                 continue;
             }
-            const auto& sample = session.pending_inputs.begin()->second;
+            const auto& pending = session.pending_inputs.begin()->second;
+            const auto& sample = pending.sample;
             if ((sample.action_bits & protocol::kRespawnActionBit) != 0U) {
                 if (const auto error = process_respawn_request(session, sample.sequence_id)) {
                     return error;
@@ -303,7 +315,22 @@ public:
                 });
             }
             session.consecutive_missing_input_ticks = 0;
-            applied_inputs.emplace_back(connection_value, sample.sequence_id);
+            auto provenance = std::optional<InputProvenanceRecord>{};
+            if (input_provenance_enabled()) {
+                provenance = InputProvenanceRecord{
+                    .client_id = session.client_id,
+                    .input_sequence = sample.sequence_id,
+                    .client_tick = sample.client_tick,
+                    .receive_server_tick = pending.receive_server_tick,
+                    .application_server_tick = {},
+                    .queue_wait_ticks = {},
+                };
+            }
+            applied_inputs.push_back({
+                .connection_value = connection_value,
+                .sequence_id = sample.sequence_id,
+                .provenance = provenance,
+            });
         }
 
         const auto tick_result = world_.advance(tick_commands);
@@ -314,13 +341,22 @@ public:
                        ? RuntimeError::SimulationStepFailed
                        : RuntimeError::SimulationInputRejected;
         }
+        for (auto& selected : applied_inputs) {
+            if (!selected.provenance) {
+                continue;
+            }
+            selected.provenance->application_server_tick = journal->tick.value();
+            selected.provenance->queue_wait_ticks = selected.provenance->application_server_tick -
+                                                    selected.provenance->receive_server_tick;
+            observe_input_provenance(*selected.provenance);
+        }
         if (const auto error = process_simulation_events(*journal)) {
             return error;
         }
-        for (const auto& [connection_value, sequence_id] : applied_inputs) {
-            auto& session = sessions_.at(connection_value);
-            session.last_processed_input_id = sequence_id;
-            session.pending_inputs.erase(sequence_id.value());
+        for (const auto& selected : applied_inputs) {
+            auto& session = sessions_.at(selected.connection_value);
+            session.last_processed_input_id = selected.sequence_id;
+            session.pending_inputs.erase(selected.sequence_id.value());
             if (session.input_pressure_active && session.pending_inputs.size() <= 8) {
                 session.input_pressure_active = false;
                 mycore::debug::log_info(
@@ -372,7 +408,57 @@ public:
         return rejected_packet_count_;
     }
 
+    [[nodiscard]] std::vector<InputProvenanceRecord> take_input_provenance_records() {
+        auto records = std::vector<InputProvenanceRecord>{};
+        records.reserve(input_provenance_records_.size());
+        while (!input_provenance_records_.empty()) {
+            records.push_back(input_provenance_records_.front());
+            input_provenance_records_.pop_front();
+        }
+        return records;
+    }
+
+    [[nodiscard]] InputProvenanceSummary input_provenance_summary() const noexcept {
+        auto summary = input_provenance_summary_;
+        if (!input_provenance_enabled()) {
+            return summary;
+        }
+        for (const auto& [unused, session] : sessions_) {
+            static_cast<void>(unused);
+            summary.pending_input_count += session.pending_inputs.size();
+        }
+        return summary;
+    }
+
 private:
+    [[nodiscard]] bool input_provenance_enabled() const noexcept {
+        return settings_.input_provenance_record_capacity != 0;
+    }
+
+    void observe_input_provenance(const InputProvenanceRecord& record) {
+        ++input_provenance_summary_.applied_input_count;
+        input_provenance_summary_.queue_wait_tick_sum += record.queue_wait_ticks;
+        input_provenance_summary_.minimum_queue_wait_ticks =
+            input_provenance_summary_.minimum_queue_wait_ticks
+                ? std::min(*input_provenance_summary_.minimum_queue_wait_ticks,
+                           record.queue_wait_ticks)
+                : record.queue_wait_ticks;
+        input_provenance_summary_.maximum_queue_wait_ticks =
+            input_provenance_summary_.maximum_queue_wait_ticks
+                ? std::max(*input_provenance_summary_.maximum_queue_wait_ticks,
+                           record.queue_wait_ticks)
+                : record.queue_wait_ticks;
+        const auto bucket = static_cast<std::size_t>(std::min<std::uint64_t>(
+            record.queue_wait_ticks, kInputProvenanceExactQueueWaitBucketCount));
+        ++input_provenance_summary_.queue_wait_histogram[bucket];
+
+        if (input_provenance_records_.size() == settings_.input_provenance_record_capacity) {
+            input_provenance_records_.pop_front();
+            ++input_provenance_summary_.record_buffer_dropped_count;
+        }
+        input_provenance_records_.push_back(record);
+    }
+
     [[nodiscard]] static std::string sequence_name(protocol::InputSequenceId sequence) {
         return sequence.is_valid() ? std::to_string(sequence.value()) : "none";
     }
@@ -407,8 +493,8 @@ private:
         return ReceiptAcknowledgementResult::Accepted;
     }
 
-    [[nodiscard]] static InputEnqueueResult enqueue_input(Session& session,
-                                                          const protocol::InputPacket& packet) {
+    [[nodiscard]] InputEnqueueResult enqueue_input(Session& session,
+                                                   const protocol::InputPacket& packet) {
         std::vector<protocol::InputSample> fresh_samples;
         fresh_samples.reserve(packet.samples.size());
         for (const auto& sample : packet.samples) {
@@ -418,7 +504,7 @@ private:
             }
             const auto existing = session.pending_inputs.find(sample.sequence_id.value());
             if (existing != session.pending_inputs.end()) {
-                if (existing->second != sample) {
+                if (existing->second.sample != sample) {
                     return InputEnqueueResult::ConflictingDuplicate;
                 }
                 continue;
@@ -438,8 +524,20 @@ private:
             protocol::kMaximumPendingInputCount) {
             return InputEnqueueResult::Overflow;
         }
+        const auto current_server_tick = world_.tick().value();
+        const auto receive_server_tick =
+            current_server_tick == std::numeric_limits<std::uint64_t>::max()
+                ? current_server_tick
+                : current_server_tick + 1U;
         for (const auto& sample : fresh_samples) {
-            session.pending_inputs.emplace(sample.sequence_id.value(), sample);
+            session.pending_inputs.emplace(sample.sequence_id.value(),
+                                           Session::PendingInput{
+                                               .sample = sample,
+                                               .receive_server_tick = receive_server_tick,
+                                           });
+        }
+        if (input_provenance_enabled()) {
+            input_provenance_summary_.accepted_input_count += fresh_samples.size();
         }
         return InputEnqueueResult::Accepted;
     }
@@ -868,6 +966,10 @@ private:
         if (iterator == sessions_.end()) {
             return;
         }
+        if (input_provenance_enabled()) {
+            input_provenance_summary_.discarded_before_application_count +=
+                iterator->second.pending_inputs.size();
+        }
         for (const auto player_id : iterator->second.player_ids) {
             static_cast<void>(world_.remove_player(player_id));
         }
@@ -917,6 +1019,8 @@ private:
     std::uint32_t next_client_id_{};
     std::uint32_t next_owner_id_{};
     std::size_t rejected_packet_count_{};
+    std::deque<InputProvenanceRecord> input_provenance_records_;
+    InputProvenanceSummary input_provenance_summary_;
 };
 
 Runtime::Runtime(mycore::net_transport::Endpoint& endpoint,
@@ -946,6 +1050,14 @@ std::size_t Runtime::client_count() const noexcept {
 
 std::size_t Runtime::rejected_packet_count() const noexcept {
     return impl_->rejected_packet_count();
+}
+
+std::vector<InputProvenanceRecord> Runtime::take_input_provenance_records() {
+    return impl_->take_input_provenance_records();
+}
+
+InputProvenanceSummary Runtime::input_provenance_summary() const noexcept {
+    return impl_->input_provenance_summary();
 }
 
 } // namespace dots::server

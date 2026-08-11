@@ -1,6 +1,7 @@
 #include "dots/client_runtime/client_runtime.hpp"
 #include "dots/prediction/model.hpp"
 #include "dots/protocol/codec.hpp"
+#include "dots/server/input_provenance.hpp"
 #include "dots/server/server_runtime.hpp"
 #include "mycore/net_transport/net_transport.hpp"
 
@@ -12,7 +13,9 @@
 #include <cstddef>
 #include <optional>
 #include <span>
+#include <string>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -219,12 +222,14 @@ void send_input_packet(mycore::net_transport::Endpoint& endpoint,
 }
 
 [[nodiscard]] mycore::net_transport::ConnectionHandle
-complete_raw_handshake(mycore::net_transport::Endpoint& client, dots::server::Runtime& server) {
+complete_raw_handshake(mycore::net_transport::Endpoint& client,
+                       dots::server::Runtime& server,
+                       dots::protocol::JoinRole requested_role = dots::protocol::JoinRole::Player) {
     const auto connected_events = client.poll();
     REQUIRE(connected_events.size() == 1);
     const auto* connected = std::get_if<mycore::net_transport::Connected>(&connected_events[0]);
     REQUIRE(connected != nullptr);
-    const auto hello = encode_bytes(dots::protocol::ClientHello{});
+    const auto hello = encode_bytes(dots::protocol::ClientHello{.requested_role = requested_role});
     REQUIRE(
         client.send(connected->connection, hello, mycore::net_transport::DeliveryMode::Reliable) ==
         mycore::net_transport::SendStatus::Sent);
@@ -1122,6 +1127,263 @@ TEST_CASE("Server queues reordered redundant inputs and consumes one per tick",
     REQUIRE(drained_snapshot.has_value());
     CHECK(drained_snapshot->last_processed_input_id == dots::protocol::InputSequenceId{2});
     CHECK(drained_snapshot->pending_input_count == 0);
+}
+
+TEST_CASE("Authoritative input provenance records shared application ticks and queue waits",
+          "[dots][session][input][provenance]") {
+    mycore::net_transport::InMemoryNetwork network;
+    dots::server::Runtime server{
+        network.server_endpoint(),
+        {},
+        {.input_provenance_record_capacity = 16},
+    };
+    auto& first = network.connect_client();
+    auto& second = network.connect_client();
+    const auto first_connection = complete_raw_handshake(first, server);
+    const auto second_connection = complete_raw_handshake(second, server);
+
+    send_input_packet(first, first_connection, {input_sample(0, 40, {}), input_sample(1, 41, {})});
+    REQUIRE_FALSE(server.process_events().has_value());
+    REQUIRE_FALSE(server.step().has_value());
+
+    auto records = server.take_input_provenance_records();
+    REQUIRE(records.size() == 1);
+    CHECK(records.front().client_id == dots::protocol::ClientId{0});
+    CHECK(records.front().input_sequence == dots::protocol::InputSequenceId{0});
+    CHECK(records.front().client_tick == 40);
+    CHECK(records.front().receive_server_tick == 1);
+    CHECK(records.front().application_server_tick == 1);
+    CHECK(records.front().queue_wait_ticks == 0);
+
+    send_input_packet(second, second_connection, {input_sample(0, 90, {})});
+    REQUIRE_FALSE(server.process_events().has_value());
+    REQUIRE_FALSE(server.step().has_value());
+
+    records = server.take_input_provenance_records();
+    REQUIRE(records.size() == 2);
+    std::sort(records.begin(), records.end(), [](const auto& lhs, const auto& rhs) {
+        return lhs.client_id < rhs.client_id;
+    });
+    CHECK(records[0].client_id == dots::protocol::ClientId{0});
+    CHECK(records[0].input_sequence == dots::protocol::InputSequenceId{1});
+    CHECK(records[0].client_tick == 41);
+    CHECK(records[0].receive_server_tick == 1);
+    CHECK(records[0].application_server_tick == 2);
+    CHECK(records[0].queue_wait_ticks == 1);
+    CHECK(records[1].client_id == dots::protocol::ClientId{1});
+    CHECK(records[1].input_sequence == dots::protocol::InputSequenceId{0});
+    CHECK(records[1].client_tick == 90);
+    CHECK(records[1].receive_server_tick == 2);
+    CHECK(records[1].application_server_tick == 2);
+    CHECK(records[1].queue_wait_ticks == 0);
+
+    const auto summary = server.input_provenance_summary();
+    CHECK(summary.accepted_input_count == 3);
+    CHECK(summary.applied_input_count == 3);
+    CHECK(summary.pending_input_count == 0);
+    CHECK(summary.queue_wait_tick_sum == 1);
+    CHECK(summary.queue_wait_histogram[0] == 2);
+    CHECK(summary.queue_wait_histogram[1] == 1);
+}
+
+TEST_CASE("Authoritative input provenance preserves first receipt across redundancy",
+          "[dots][session][input][provenance]") {
+    mycore::net_transport::InMemoryNetwork network;
+    dots::server::Runtime server{
+        network.server_endpoint(),
+        {},
+        {.input_provenance_record_capacity = 16},
+    };
+    auto& client = network.connect_client();
+    const auto connection = complete_raw_handshake(client, server);
+
+    const auto zero = input_sample(0, 100, {});
+    const auto one = input_sample(1, 101, {});
+    const auto two = input_sample(2, 102, {});
+    send_input_packet(client, connection, {two});
+    send_input_packet(client, connection, {zero, one, two});
+    REQUIRE_FALSE(server.process_events().has_value());
+
+    for (auto tick = 0; tick < 3; ++tick) {
+        REQUIRE_FALSE(server.step().has_value());
+        send_input_packet(client, connection, {zero, one, two});
+        REQUIRE_FALSE(server.process_events().has_value());
+    }
+
+    const auto records = server.take_input_provenance_records();
+    REQUIRE(records.size() == 3);
+    for (auto index = std::size_t{}; index < records.size(); ++index) {
+        CHECK(records[index].input_sequence ==
+              dots::protocol::InputSequenceId{static_cast<std::uint32_t>(index)});
+        CHECK(records[index].receive_server_tick == 1);
+        CHECK(records[index].application_server_tick == index + 1);
+        CHECK(records[index].queue_wait_ticks == index);
+    }
+    const auto summary = server.input_provenance_summary();
+    CHECK(summary.accepted_input_count == 3);
+    CHECK(summary.applied_input_count == 3);
+}
+
+TEST_CASE("Authoritative input provenance retention is bounded without losing aggregates",
+          "[dots][session][input][provenance]") {
+    mycore::net_transport::InMemoryNetwork network;
+    dots::server::Runtime server{
+        network.server_endpoint(),
+        {},
+        {.input_provenance_record_capacity = 2},
+    };
+    auto& client = network.connect_client();
+    const auto connection = complete_raw_handshake(client, server);
+    send_input_packet(client,
+                      connection,
+                      {input_sample(0, 0, {}), input_sample(1, 1, {}), input_sample(2, 2, {})});
+    REQUIRE_FALSE(server.process_events().has_value());
+    REQUIRE_FALSE(server.step().has_value());
+    REQUIRE_FALSE(server.step().has_value());
+    REQUIRE_FALSE(server.step().has_value());
+
+    const auto records = server.take_input_provenance_records();
+    REQUIRE(records.size() == 2);
+    CHECK(records[0].input_sequence == dots::protocol::InputSequenceId{1});
+    CHECK(records[1].input_sequence == dots::protocol::InputSequenceId{2});
+    const auto summary = server.input_provenance_summary();
+    CHECK(summary.accepted_input_count == 3);
+    CHECK(summary.applied_input_count == 3);
+    CHECK(summary.record_buffer_dropped_count == 1);
+    CHECK(summary.queue_wait_tick_sum == 3);
+}
+
+TEST_CASE("Input provenance counts pending inputs discarded with a session",
+          "[dots][session][input][provenance]") {
+    mycore::net_transport::InMemoryNetwork network;
+    dots::server::Runtime server{
+        network.server_endpoint(),
+        {},
+        {.input_provenance_record_capacity = 8},
+    };
+    auto& client = network.connect_client();
+    const auto connection = complete_raw_handshake(client, server);
+    send_input_packet(client, connection, {input_sample(0, 5, {}), input_sample(1, 6, {})});
+    REQUIRE_FALSE(server.process_events().has_value());
+    CHECK(server.input_provenance_summary().pending_input_count == 2);
+
+    REQUIRE(client.disconnect(connection));
+    REQUIRE_FALSE(server.process_events().has_value());
+    const auto summary = server.input_provenance_summary();
+    CHECK(summary.accepted_input_count == 2);
+    CHECK(summary.applied_input_count == 0);
+    CHECK(summary.discarded_before_application_count == 2);
+    CHECK(summary.pending_input_count == 0);
+    CHECK(server.take_input_provenance_records().empty());
+}
+
+TEST_CASE("Direct spectators cannot produce authoritative input provenance",
+          "[dots][session][input][provenance]") {
+    mycore::net_transport::InMemoryNetwork network;
+    dots::server::Runtime server{
+        network.server_endpoint(),
+        {},
+        {.input_provenance_record_capacity = 8},
+    };
+    auto& spectator = network.connect_client();
+    const auto connection =
+        complete_raw_handshake(spectator, server, dots::protocol::JoinRole::Spectator);
+    send_input_packet(spectator, connection, {input_sample(0, 0, {})});
+    REQUIRE_FALSE(server.process_events().has_value());
+
+    CHECK(server.client_count() == 0);
+    CHECK(server.input_provenance_summary() == dots::server::InputProvenanceSummary{});
+    CHECK(server.take_input_provenance_records().empty());
+}
+
+TEST_CASE("Input provenance is disabled by default and does not change authoritative output",
+          "[dots][session][input][provenance]") {
+    const auto run = [](std::size_t provenance_capacity) {
+        ManualEndpoint endpoint;
+        constexpr auto connection = mycore::net_transport::ConnectionHandle{12};
+        endpoint.events = {
+            mycore::net_transport::Connected{.connection = connection},
+            mycore::net_transport::PayloadReceived{
+                .connection = connection,
+                .delivery = mycore::net_transport::DeliveryMode::Reliable,
+                .payload = encode_bytes(dots::protocol::ClientHello{}),
+            },
+        };
+        dots::server::Runtime server{
+            endpoint,
+            {},
+            {.input_provenance_record_capacity = provenance_capacity},
+        };
+        REQUIRE_FALSE(server.process_events().has_value());
+        endpoint.events.push_back(mycore::net_transport::PayloadReceived{
+            .connection = connection,
+            .delivery = mycore::net_transport::DeliveryMode::Unreliable,
+            .payload = encode_bytes(dots::protocol::InputPacket{
+                .last_received_snapshot_id = dots::protocol::SnapshotId{0},
+                .samples = {input_sample(0, 77, {1.0F, 0.0F})},
+            }),
+        });
+        REQUIRE_FALSE(server.process_events().has_value());
+        REQUIRE_FALSE(server.step().has_value());
+        REQUIRE_FALSE(server.step().has_value());
+        return std::tuple{
+            server.world().checkpoint(),
+            endpoint.sent_payloads,
+            server.take_input_provenance_records(),
+            server.input_provenance_summary(),
+        };
+    };
+
+    const auto disabled = run(0);
+    const auto enabled = run(8);
+    CHECK(std::get<0>(disabled) == std::get<0>(enabled));
+    CHECK(std::get<1>(disabled) == std::get<1>(enabled));
+    CHECK(std::get<2>(disabled).empty());
+    CHECK(std::get<3>(disabled) == dots::server::InputProvenanceSummary{});
+    REQUIRE(std::get<2>(enabled).size() == 1);
+    CHECK(std::get<3>(enabled).applied_input_count == 1);
+}
+
+TEST_CASE("Input provenance JSONL exposes stable schema and aggregate wait statistics",
+          "[dots][session][input][provenance]") {
+    const dots::server::InputProvenanceRecord record{
+        .client_id = dots::protocol::ClientId{4},
+        .input_sequence = dots::protocol::InputSequenceId{9},
+        .client_tick = 17,
+        .receive_server_tick = 20,
+        .application_server_tick = 23,
+        .queue_wait_ticks = 3,
+    };
+    auto runtime = dots::server::InputProvenanceSummary{
+        .accepted_input_count = 2,
+        .applied_input_count = 2,
+        .queue_wait_tick_sum = 3,
+        .minimum_queue_wait_ticks = 0,
+        .maximum_queue_wait_ticks = 3,
+    };
+    runtime.queue_wait_histogram[0] = 1;
+    runtime.queue_wait_histogram[3] = 1;
+
+    CHECK(dots::server::input_provenance_header_jsonl(25).find("\"maximum_applied_records\":25") !=
+          std::string::npos);
+    CHECK(dots::server::input_provenance_record_jsonl(record) ==
+          "{\"kind\":\"applied_input\",\"client_id\":4,\"input_sequence\":9,"
+          "\"client_tick\":17,\"receive_server_tick\":20,"
+          "\"application_server_tick\":23,\"queue_wait_ticks\":3}");
+    const auto wait = dots::server::input_queue_wait_statistics(runtime);
+    CHECK(wait.mean_ticks == Catch::Approx(1.5));
+    CHECK(wait.percentile_50_ticks == 0);
+    CHECK(wait.percentile_95_ticks == 3);
+    const auto summary = dots::server::input_provenance_summary_jsonl({
+        .runtime = runtime,
+        .records_written = 1,
+        .records_omitted_by_limit = 1,
+        .final_server_tick = 23,
+        .complete = true,
+    });
+    CHECK(summary.find("\"complete\":true") != std::string::npos);
+    CHECK(summary.find("\"records_omitted_by_limit\":1") != std::string::npos);
+    CHECK(summary.find("\"queue_wait_p95\":3") != std::string::npos);
 }
 
 TEST_CASE("Server receive window rejects only an out-of-window peer",

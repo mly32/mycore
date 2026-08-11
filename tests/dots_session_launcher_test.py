@@ -278,6 +278,70 @@ class DotsSessionLauncherTests(unittest.TestCase):
         self.assertEqual(arguments.duration_seconds, 30.0)
         self.assertEqual(Path(bot_command[0]).name, f"dots_bot{executable_suffix}")
 
+    def test_input_provenance_arguments_are_paired_and_forwarded(self) -> None:
+        build_directory = Path(self.directory.name) / "build"
+        binary_directory = build_directory / "bin"
+        binary_directory.mkdir(parents=True)
+        executable_suffix = ".exe" if os.name == "nt" else ""
+        (binary_directory / f"dots_server{executable_suffix}").touch()
+        (binary_directory / f"dots_bot{executable_suffix}").touch()
+        trace = Path(self.directory.name) / "input-provenance.jsonl"
+
+        arguments = dots_session._parse_arguments(
+            [
+                "--build-dir",
+                str(build_directory),
+                "--clients",
+                "0",
+                "--bots",
+                "1",
+                "--input-provenance-trace",
+                str(trace),
+                "--input-provenance-max-records",
+                "1234",
+            ]
+        )
+        server_command, _, _ = dots_session._session_commands(arguments)
+        self.assertEqual(
+            server_command[-4:],
+            [
+                "--input-provenance-trace",
+                str(trace.resolve()),
+                "--input-provenance-max-records",
+                "1234",
+            ],
+        )
+
+        with self.assertRaises(SystemExit):
+            dots_session._parse_arguments(
+                [
+                    "--build-dir",
+                    str(build_directory),
+                    "--clients",
+                    "0",
+                    "--bots",
+                    "1",
+                    "--input-provenance-trace",
+                    str(trace),
+                ]
+            )
+        trace.touch()
+        with self.assertRaises(SystemExit):
+            dots_session._parse_arguments(
+                [
+                    "--build-dir",
+                    str(build_directory),
+                    "--clients",
+                    "0",
+                    "--bots",
+                    "1",
+                    "--input-provenance-trace",
+                    str(trace),
+                    "--input-provenance-max-records",
+                    "1",
+                ]
+            )
+
     def test_empty_or_nonpositive_bounded_session_is_rejected(self) -> None:
         with self.assertRaises(SystemExit):
             dots_session._parse_arguments(

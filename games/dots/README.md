@@ -83,6 +83,27 @@ python3 games/dots/tools/dots_session.py \
     --duration-seconds 30
 ```
 
+To capture exact authoritative input scheduling, give the launcher a new JSONL path and an
+explicit maximum number of applied-input rows:
+
+```bash
+python3 games/dots/tools/dots_session.py \
+    --build-dir build/macos-clang-debug \
+    --clients 0 \
+    --bots 5 \
+    --duration-seconds 30 \
+    --input-provenance-trace /tmp/dots-input-provenance.jsonl \
+    --input-provenance-max-records 1000000
+```
+
+The two provenance options are required together, the parent directory must exist, and the
+server refuses to overwrite an existing file. The trace records each retained input's first
+receive tick, application tick, and queue wait; after the explicit row limit it continues exact
+aggregate statistics and records the omission count in the final summary. The same cumulative
+summary is logged every 300 server ticks and at shutdown without logging individual inputs.
+`client_tick` remains a client-local sampling ordinal, not a clock that can be subtracted from a
+server tick.
+
 Run an executable with `--help` for its complete CLI. The
 [Feature 14 workload results](../../docs/feature14_rollback_workload_results.md) record the
 current optimized replay matrix and native soak evidence.
