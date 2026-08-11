@@ -1,4 +1,8 @@
-add_library(dots_server_runtime STATIC src/server_runtime.cpp)
+add_library(
+    dots_server_runtime STATIC
+    src/input_provenance.cpp
+    src/server_runtime.cpp
+)
 add_library(Dots::Server ALIAS dots_server_runtime)
 
 target_include_directories(

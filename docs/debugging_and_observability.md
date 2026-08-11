@@ -317,10 +317,14 @@ schedules by per-session input sequence and arrival, not by that value. Until a 
 tick-synchronization feature defines a validated mapping, subtracting local input tick from
 server tick does not produce a meaningful latency or queue-delay value.
 
-The current overlay also does not claim an exact sequence-to-server-tick mapping. A snapshot ACK
-proves only that the named cumulative input frontier was processed no later than that snapshot's
-server tick. Per-input receive tick, authoritative application tick, and queue wait are planned
-as bounded server provenance diagnostics rather than inferred from unrelated clocks.
+The current overlay does not claim an exact sequence-to-server-tick mapping. A snapshot ACK proves
+only that the named cumulative input frontier was processed no later than that snapshot's server
+tick. For exact server-side evidence, start `dots_server` or `dots_session.py` with the paired
+`--input-provenance-trace` and `--input-provenance-max-records` options. The schema-versioned JSONL
+records input sequence, local `client_tick`, upcoming receive-side server tick, authoritative
+application tick, and queue wait. Immediate application has zero queue-wait ticks. The server also
+logs cumulative counts and p50/p95/p99/max wait every 300 ticks and at shutdown; it never logs one
+line per input. These diagnostics remain server-only and disabled by default.
 
 The **Rollback** tab rows are:
 

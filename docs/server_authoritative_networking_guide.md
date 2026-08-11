@@ -582,9 +582,23 @@ authority mechanic, not a hidden behavior of client rollback.
 A snapshot at server tick `S` with `last_processed_input = N` proves that authority processed
 every sequence through `N` no later than `S`. It does not expose the exact application tick of
 every sequence between snapshots. Authority event receipts do carry the actual server tick of
-their event. Exact receive-tick, application-tick, and queue-wait provenance for every input is
-not currently replicated or retained as a debug stream; that is planned as separate bounded
-observability work and must not change scheduling semantics.
+their event.
+
+Feature 24 adds opt-in server-only input provenance without adding snapshot or protocol fields.
+When a fresh sample enters the ordered session queue during the poll for tick `Z`, its
+`receive_server_tick` is `Z`. If authority selects it for the same atomic World advance, its
+`application_server_tick` is also `Z` and its queue wait is zero. Redundant and stale copies do
+not replace the first receive tick or create another application record. `client_tick` remains
+local provenance and is never compared with either server coordinate.
+
+The paired `--input-provenance-trace <new-path>` and
+`--input-provenance-max-records <positive-count>` server options enable a schema-version 1 JSONL
+artifact and rate-limited aggregate logs. The runtime retains at most 4,096 undrained records;
+the executable drains them every tick. The explicit file limit bounds raw rows, while cumulative
+accepted/applied/discarded/pending counts and the queue-wait histogram continue exactly. A final
+summary reports raw omissions or buffer drops so a partial trace cannot masquerade as complete
+evidence. None of these counters backdates commands, measures network transit, or implements
+server rewind.
 
 ## There is no single “game frame”
 
@@ -1146,6 +1160,7 @@ The recommended staging is:
 | 12: remote interpolation | Snapshot-buffer fill, interpolation delay, measured jitter, late snapshots, and extrapolation/hold events. |
 | 13: authoritative interactions | Session mode, owned pieces, confirmed killer, defeat/respawn ticks, and authoritative absorption/respawn results. |
 | 14: rollback programming model | Prediction profile/closure, complete replay range/cost, structural divergence, event/consequence lifecycle, receipt health, command-buffer control, and state-layer overlays. |
+| 24: authoritative input provenance | Opt-in receive/application ticks, exact queue-wait distribution, bounded JSONL records, and aggregate server logs. |
 
 Genuine **network transport stats come from GameNetworkingSockets**. They remain labeled
 separately from replication health. One-way latency should not be inferred by simply halving RTT
