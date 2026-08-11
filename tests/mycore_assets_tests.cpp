@@ -5,16 +5,60 @@
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <string>
+#include <utility>
+
+#if defined(_WIN32)
+#    include <process.h>
+#else
+#    include <unistd.h>
+#endif
 
 namespace {
 
+[[nodiscard]] auto current_process_id() noexcept {
+#if defined(_WIN32)
+    return _getpid();
+#else
+    return getpid();
+#endif
+}
+
 class TemporaryAssetDirectory {
 public:
-    TemporaryAssetDirectory()
-        : path_(std::filesystem::temp_directory_path() /
-                ("mycore-assets-tests-" + std::to_string(counter_++))) {
-        std::filesystem::create_directories(path_ / "nested");
+    TemporaryAssetDirectory() {
+        constexpr auto kMaximumAttempts = std::size_t{100};
+        const auto temporary_root = std::filesystem::temp_directory_path();
+        for (auto attempt = std::size_t{}; attempt < kMaximumAttempts; ++attempt) {
+            // Catch registers each case as an independent CTest process. Under --parallel, a
+            // process-local counter alone gives every case the same directory and lets one
+            // destructor remove another case's fixture. The process ID separates concurrent
+            // cases; atomic create-and-retry also handles stale directories after PID reuse.
+            auto candidate =
+                temporary_root / ("mycore-assets-tests-" + std::to_string(current_process_id()) +
+                                  "-" + std::to_string(counter_++));
+            std::error_code error;
+            if (!std::filesystem::create_directory(candidate, error)) {
+                if (error) {
+                    throw std::filesystem::filesystem_error{
+                        "Could not create temporary asset test directory", candidate, error};
+                }
+                continue;
+            }
+
+            path_ = std::move(candidate);
+            if (!std::filesystem::create_directory(path_ / "nested", error)) {
+                std::error_code ignored;
+                std::filesystem::remove_all(path_, ignored);
+                throw std::filesystem::filesystem_error{
+                    "Could not create nested temporary asset test directory",
+                    path_ / "nested",
+                    error};
+            }
+            return;
+        }
+        throw std::runtime_error{"Could not allocate a unique temporary asset test directory"};
     }
 
     ~TemporaryAssetDirectory() {
