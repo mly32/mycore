@@ -619,6 +619,13 @@ authoritative game world
         -> SDL_GPU -> Metal / Vulkan / D3D12
 ```
 
+Normal rendering and camera code consume presentation-space transforms from the same immutable
+snapshot. They do not reach around that snapshot for a newer simulation, replication, or
+prediction pose. Merely running the render loop faster does not smooth a discrete source; the
+game-owned presentation sampler must interpolate, extrapolate, hold, or correct that source
+according to its explicit contract. A fixed-state comparison may bypass sampling only as an
+explicitly labeled debug layer.
+
 Do not turn the authoritative world into an engine scene. Add a persistent client-only
 `RenderWorld` only when culling, LOD, interpolation, render-thread ownership, or stable
 mesh/material handles make it simpler than a transient snapshot.
@@ -1084,6 +1091,12 @@ Aim to consume only a fraction of that budget so the server has headroom for spi
 
 Prediction hides much of the local perceptual cost of a lower server tick rate.
 
+Dots currently has no separate physics cadence. A planned measured pass compares integer 60,
+120, and 240 Hz physics substeps inside the 30 Hz gameplay tick while retaining 30 Hz inputs,
+15 Hz snapshots, and variable-rate rendering. A higher physics cadence is for demonstrated
+integration or collision correctness; it is not a rendering-smoothness mechanism. See the
+[multi-rate simulation and presentation boundary audit](plans/multi-rate-simulation-presentation.md).
+
 ### Parallelism policy
 
 Do not add a generic job system at the beginning.
@@ -1181,6 +1194,14 @@ Implement:
 4. Simple mass and radius rules.
 
 This keeps the authority logic inspectable and makes scaling behavior easier to understand.
+
+If measured Dots mechanics later require finer contact sampling, prefer an integer number of
+fixed substeps inside the existing owner-thread gameplay tick. Commands and edge actions are
+consumed once at the outer boundary, every substep completes before publication, and rollback
+replays the identical substep sequence. Do not run authoritative physics on an independent clock
+or thread. Compare 30, 60, 120, and 240 Hz rather than assuming the highest rate is best; retain
+30 Hz when correct presentation interpolation solves the visible problem and collision evidence
+does not justify the additional server and replay work.
 
 The later aim trainer owns its target storage, hit rules, and ray queries. Shared math or
 spatial utilities should move into an engine library only after both games establish a
@@ -1613,14 +1634,14 @@ These systems align directly with the learning goals:
 | 4. Prediction | Local movement remains responsive under simulated 100–200 ms latency |
 | 5. Reconciliation | Corrections replay unacknowledged input without corrupting state |
 | 6. Remote interpolation | Other players remain visually smooth under jitter and loss |
-| 7. Interest management | Clients receive only entities in their AOI |
-| 8. Delta snapshots | Baselines, quantization, byte budgets, and recovery work under loss |
-| 9. Load harness | Automated bots reach 1,000 connections with recorded CPU and bandwidth metrics |
+| 7. Validation and scale baseline | ASan/UBSan and protocol fuzzing gate scale work; bounded input provenance and the load harness record the full-snapshot baseline |
+| 8. Interest management | Clients receive only entities in their AOI and the scale matrix records the effect |
+| 9. Delta snapshots | Baselines, quantization, byte budgets, and recovery work under loss and the scale matrix records the effect |
 | 10. Lua rules | Match and spawn rules can be reloaded safely at tick boundaries |
-| 11. Aim-trainer reuse | An offline 3D aim trainer reuses engine libraries without depending on Dots |
-| 12. Engine package | A separate consumer installs MyCore and links selected `MyCore::` components with `find_package` |
-| 13. Conditional task scheduling | A measured workload improves without weakening deterministic ownership or tick-tail latency |
-| 14. Platform user settings | Packaged games discover per-user configuration through native OS locations without moving game schemas into the engine |
+| 11. Desktop-platform polish | Packaged games discover native per-user configuration and Dots can display its resolved live input context |
+| 12. Aim-trainer reuse | An offline 3D aim trainer reuses engine libraries without depending on Dots |
+| 13. Engine and server packages | A separate consumer installs selected `MyCore::` components and CI verifies a relocatable Linux Dots server |
+| 14. Conditional task scheduling | A measured workload improves without weakening deterministic ownership or tick-tail latency |
 | 15. Research branches | Direct Vulkan, EnTT, Conan, or fixed-point implementations are compared against recorded workloads |
 
 ## 18.1 Metrics at the 1,000-client milestone
@@ -1791,18 +1812,15 @@ Codex should implement the project in the following order.
 
 ### Phase E: Scale
 
-1. Add per-client AOI.
-2. Add uniform-grid interest queries.
-3. Add snapshot byte budgets.
-4. Add priorities.
-5. Add quantized fields.
-6. Add delta snapshots.
-7. Add baseline acknowledgments.
-8. Add snapshot recovery.
-9. Build the `dots_bot` executable.
-10. Extend `dots_session.py` with bot counts, connection ramps, input patterns, metrics
-    capture, prefixed logs, and reliable child cleanup.
-11. Run 10, 100, 500, and 1,000-client tests.
+1. Add required Linux Clang ASan/UBSan and protocol-decoder fuzz smoke coverage.
+2. Add bounded authoritative input receive/application provenance without changing scheduling.
+3. Complete the existing `dots_bot` and `dots_session.py` foundation with multiplexed logical
+   sessions, connection ramps, input patterns, metrics artifacts, and benchmarks.
+4. Record the full-snapshot baseline at 10, 100, 500, and 1,000 clients, including the first
+   capacity or packet-limit failure when a stage cannot complete.
+5. Add per-client AOI and uniform-grid interest queries, then repeat the same scale matrix.
+6. Add snapshot byte budgets, priorities, quantized fields, deltas, baseline acknowledgments,
+   and recovery, then repeat the matrix again.
 
 ### Phase F: Dots scripting
 
@@ -1811,7 +1829,13 @@ Codex should implement the project in the following order.
 3. Add tick-boundary reload.
 4. Add script state migration.
 
-### Phase G: Second-game and package validation
+### Phase G: Desktop-platform polish
+
+1. Add game-neutral native config/data/cache/log path discovery.
+2. Add Dots per-user configuration fallback without changing schema ownership.
+3. Add a Dots-owned live input-context view after configuration precedence is final.
+
+### Phase H: Second-game and package validation
 
 1. Add an offline desktop game under `games/aim_trainer`.
 2. Reuse `MyCore::Core`, Math, Time, PlatformSDL, Render, Assets, and Debug facilities.
@@ -1823,24 +1847,18 @@ Codex should implement the project in the following order.
 6. Verify that the aim trainer has no dependency on Dots targets or headers.
 7. Export stabilized engine targets through an installed CMake package.
 8. Validate `find_package(MyCore CONFIG REQUIRED)` from a separate minimal consumer.
+9. Package and verify the headless Linux Dots server separately from the client and engine SDK.
 
-### Phase H: Conditional task-scheduler validation
+### Phase I: Conditional task-scheduler validation
 
-Begin this phase only when load-harness or second-game profiles expose independent CPU work and
-a missed budget.
+Evaluate this phase after scalable replication and again after the second-game slice. Begin it
+only when profiles expose independent CPU work and a missed budget.
 
 1. Record the single-threaded baseline and tail latency.
 2. Compare a proven task library with a minimal fixed worker pool.
 3. Introduce `MyCore::Tasks` around one immutable workload, preferably snapshot construction.
 4. Preserve deterministic single-thread mode and explicit subsystem owner threads.
 5. Keep the scheduler only if the measured result justifies its complexity.
-
-### Phase I: Platform user settings
-
-1. Add game-neutral config/data/cache/log directory discovery behind `MyCore::PlatformPaths`.
-2. Preserve game-owned filenames, TOML parsing, defaults, and validation.
-3. Add Dots per-user config fallback while retaining explicit CLI and developer overrides.
-4. Test all platform conventions with injected profile locations and no real-home writes.
 
 ### Phase J: Research branches
 

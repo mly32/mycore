@@ -15,6 +15,16 @@ add_library(
 )
 add_library(MyCore::NetTransport ALIAS mycore_net_transport)
 
+if(MYCORE_ENABLE_SANITIZERS)
+    # The packaged GameNetworkingSockets library does not expose the RTTI metadata that
+    # Clang's vptr sanitizer needs for its polymorphic C++ interfaces. Keep ASan and every
+    # other UBSan check enabled at this third-party boundary.
+    set_source_files_properties(
+        src/gamenetworkingsockets_network.cpp
+        PROPERTIES COMPILE_OPTIONS -fno-sanitize=vptr
+    )
+endif()
+
 target_include_directories(
     mycore_net_transport
     PUBLIC

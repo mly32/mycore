@@ -94,9 +94,9 @@ Treat one timeline call as an indivisible transaction:
 - Consequence handlers run synchronously inside `StaticConsequenceRouter::consume`. Do not
   recursively consume another batch through the same router or mutate the timeline from a
   handler.
-- `timeline.state()` and `timeline.scope()` return borrowed pointers. Do not retain them across a
-  non-const timeline operation, move of the timeline, or transfer to another thread. Copy the
-  game-defined value needed by an asynchronous consumer.
+- Borrowed timeline pointers/references and router references/spans are available only from
+  lvalues. Do not retain them across a non-const owner operation, owner move, or transfer to
+  another thread. Copy the game-defined value needed by an asynchronous consumer.
 - `Commit` and `EventBatch` are owning value outputs. Move those values across composition
   boundaries instead of sharing references into the timeline.
 
@@ -114,7 +114,7 @@ A model is a copyable policy value with the following associated types:
 | `State` | Mutable deterministic simulation state. Must be movable. |
 | `Checkpoint` | Complete owning replay state with exact equality. Must be copyable. |
 | `Stimulus` | Causes for one predicted tick. Sampled command fields are immutable; explicitly identified authority-derived assumption fields may be transactionally refreshed. Must be copyable. |
-| `Scope` | Game-defined prediction membership/policy for one scope epoch. Must be copyable. |
+| `Scope` | Game-defined prediction membership/policy for one scope epoch. Must be copyable and equality-comparable. |
 | `Event` | Deterministic simulation output. Use a `std::variant` when using the consequence router. |
 | `EventKey` | Stable semantic occurrence identity with equality. Must be copyable. |
 | `EventKeyHash` | Default-constructible hash callable for `EventKey`. |
@@ -177,6 +177,8 @@ The operations have stronger semantic requirements than the C++ concept can expr
   input-device references, wall-clock queries, or regenerated events.
 - `Scope` is causally closed for every enabled predicted mechanic. Missing state must disable the
   mechanic, select a safe fallback scope, or reject the frame.
+- Scope equality means exact membership and prediction policy equality. Reusing an epoch with an
+  unequal scope is invalid even when an operation would otherwise discard history.
 - If prediction can create entities, the game defines how those entities remain inside the
   scope before an authoritative entity ID exists. Use a unique causal spawn key, include the
   new entity's conservative interaction reach when building the scope, and reject unkeyed,
@@ -375,13 +377,14 @@ correct for sampled local commands but not for a superseded authority-derived as
 | `refresh_authority_with_stimulus_refresh(frame, refresh)` | Same as `refresh_authority` | Refreshes and replays retained stimuli from the replacement base | Same-tick authority also refines derived assumptions. |
 | `rebase_scope(frame, scope)` | Scope epoch strictly increases; authority tick is the same or newer | Replays retained stimuli under the new scope | Membership, horizon, or mechanic-policy change. |
 | `rebase_scope_with_stimulus_refresh(frame, scope, refresh)` | Same as `rebase_scope` | Refreshes and replays retained stimuli under the new scope | A new scope changes derived per-frame assumptions. |
-| `hard_resync(frame, scope)` | Authority tick is the same or newer; scope epoch cannot regress | Clears retained history | Recover when replay cannot safely continue. |
+| `hard_resync(frame, scope)` | Authority tick is the same or newer; scope epoch is newer or the scope equals the current scope at the same epoch | Clears retained history | Recover when replay cannot safely continue. |
 
 A same-tick authority refresh or scope rebase may replace the base checkpoint because a
 caller-validated later snapshot can refine the state projected into that scope. The caller must
 first prove that the frame is newer in its own transport/snapshot ordering; the generic timeline
-does not know that ordering. `hard_resync` may also replace the checkpoint. Scope epochs describe
-incompatible prediction membership; they are not simulation ticks.
+does not know that ordering. `hard_resync` may also replace the checkpoint, but an unequal scope
+requires a strictly newer epoch. Scope epochs describe incompatible prediction membership; they
+are not simulation ticks.
 
 Normal reconcile/refresh/rebase calls reject an acknowledgement beyond the timeline's last
 submitted command. `hard_resync` is the deliberate exception: after the caller independently
@@ -586,6 +589,14 @@ proofs arrive, in either order, and after any cancelable token is inactive. A ca
 `PredictCancelable` entry is erased during cancellation. Stable keys must not be reused after
 external retirement because a later occurrence with that key violates the proof contract.
 
+The router validates the complete owning batch before any handler, ledger, or statistic changes.
+`FirstPredicted` and `AuthorityOnly` carry only `current`; `Revised` and `Confirmed` carry both
+values with the same event variant alternative; `Retracted` carries only `previous`.
+`ConsequenceDispatchReport::contract_failures` reports the change index and typed shape,
+alternative, or valueless-event error. A contract failure is distinct from an ordinary handler
+failure: no handler is called, and a production consumer should preserve committed gameplay for
+diagnostics and terminate only the integration/session whose trusted batch was malformed.
+
 `ConsequenceDispatchReport::handlers` gives the per-batch delta for every statically registered
 handler, including its tuple index and declared policy. `router.handler_statistics()` exposes
 the corresponding session-cumulative totals. Use these values to identify a specific handler;
@@ -649,6 +660,9 @@ Before a new game enables prediction:
     acknowledgement trimming, scope rebase, capacity exhaustion, and hard resync.
 13. Canonical checkpoint and event fixtures cover ordering, RNG/allocator state, schema/rule
     compatibility, and the intended cross-platform floating-point contract.
+14. Deterministic state-machine tests check commit/frontier/history invariants and failure
+    atomicity; a structured sanitizer-backed fuzzer repeats the same assertions over generated
+    operation traces.
 
 The complete minimal model and consequence examples are in
 [`tests/mycore_rollback_tests.cpp`](../tests/mycore_rollback_tests.cpp). The first production

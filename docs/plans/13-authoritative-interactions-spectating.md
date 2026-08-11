@@ -236,7 +236,8 @@ Do not start a checkpoint until the preceding checkpoint is reviewed and approve
 - [x] Run focused simulation/protocol/session/presentation tests.
 - [x] Run two-client native and in-memory impairment scenarios.
 - [x] Synchronize canonical documentation and README.
-- [ ] Feature 13 completion approved before Feature 14 implementation.
+- [x] Feature 13 was accepted into `main` before Feature 14 implementation began; no separate
+  approval artifact was recorded.
 
 ## Test Plan
 

@@ -261,7 +261,68 @@ void expand_interaction_closure(const simulation::WorldCheckpoint& authority,
     }
 }
 
+[[nodiscard]] bool is_known_fallback(PredictionFallbackReason reason) noexcept {
+    switch (reason) {
+    case PredictionFallbackReason::None:
+    case PredictionFallbackReason::IncompleteClosure:
+        return true;
+    default:
+        return false;
+    }
+}
+
 } // namespace
+
+bool is_valid_prediction_scope(const PredictionScope& scope) noexcept {
+    if (!is_known_profile(scope.requested_profile) || !is_known_profile(scope.active_profile) ||
+        !is_known_fallback(scope.fallback_reason) || !scope.scope_epoch.is_valid() ||
+        scope.replay_horizon.value() == 0 ||
+        scope.replay_horizon.value() > kMaximumReplayHorizonTicks ||
+        scope.owned_owner_ids.empty() || scope.requested_mechanics == 0 ||
+        (scope.requested_mechanics & ~kKnownMechanics) != 0U || scope.mechanics == 0 ||
+        (scope.mechanics & ~kKnownMechanics) != 0U ||
+        !includes_mechanic(scope.mechanics, PredictionMechanic::Movement) ||
+        scope.required_domains != required_domains(scope.mechanics) ||
+        !is_strictly_sorted(scope.owned_owner_ids) ||
+        !is_strictly_sorted(scope.subscribed_event_owner_ids) ||
+        !is_strictly_sorted(scope.owner_ids) || !is_strictly_sorted(scope.player_ids) ||
+        !is_strictly_sorted(scope.food_ids)) {
+        return false;
+    }
+
+    const auto all_valid = [](const auto& ids) {
+        return std::ranges::all_of(ids, [](auto id) {
+            return id.is_valid();
+        });
+    };
+    if (!all_valid(scope.owned_owner_ids) || !all_valid(scope.subscribed_event_owner_ids) ||
+        !all_valid(scope.owner_ids) || !all_valid(scope.player_ids) || !all_valid(scope.food_ids) ||
+        !std::ranges::includes(scope.owner_ids, scope.owned_owner_ids) ||
+        !std::ranges::includes(scope.owned_owner_ids, scope.subscribed_event_owner_ids)) {
+        return false;
+    }
+
+    const auto expected_channels = has_remote_owner(scope.owner_ids, scope.owned_owner_ids)
+                                       ? causal_channel_bit(CausalChannel::RemoteMovement)
+                                       : CausalChannelMask{};
+    if (scope.required_causal_channels != expected_channels) {
+        return false;
+    }
+
+    if (scope.active_profile == PredictionProfile::OwnedGameplay) {
+        const auto expected_fallback = scope.requested_profile == PredictionProfile::OwnedGameplay
+                                           ? PredictionFallbackReason::None
+                                           : PredictionFallbackReason::IncompleteClosure;
+        const auto owned_mechanics = mechanic_bit(PredictionMechanic::Movement) |
+                                     mechanic_bit(PredictionMechanic::SplitMerge);
+        return scope.fallback_reason == expected_fallback && scope.mechanics == owned_mechanics &&
+               scope.owner_ids == scope.owned_owner_ids && scope.food_ids.empty();
+    }
+
+    return scope.active_profile == scope.requested_profile &&
+           scope.fallback_reason == PredictionFallbackReason::None &&
+           scope.mechanics == resolved_mechanics(scope.requested_mechanics);
+}
 
 ScopeBuildResult build_prediction_scope(const simulation::WorldCheckpoint& authority,
                                         const PredictionRequest& request) {
@@ -386,6 +447,9 @@ ScopeBuildResult build_prediction_scope(const simulation::WorldCheckpoint& autho
 
 CheckpointProjectionResult project_checkpoint(const simulation::WorldCheckpoint& authority,
                                               const PredictionScope& scope) {
+    if (!is_valid_prediction_scope(scope)) {
+        return error(PredictionErrorCode::InvalidScope);
+    }
     if (authority.rules != scope.rules) {
         return error(PredictionErrorCode::IncompatibleRules);
     }
@@ -397,12 +461,6 @@ CheckpointProjectionResult project_checkpoint(const simulation::WorldCheckpoint&
             .tick_error = {},
         };
     }
-    if (!scope.scope_epoch.is_valid() || !is_strictly_sorted(scope.owned_owner_ids) ||
-        !is_strictly_sorted(scope.owner_ids) || !is_strictly_sorted(scope.player_ids) ||
-        !is_strictly_sorted(scope.food_ids)) {
-        return error(PredictionErrorCode::InvalidScope);
-    }
-
     simulation::WorldCheckpoint projected{
         .rules = authority.rules,
         .tick = authority.tick,

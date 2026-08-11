@@ -1,0 +1,3 @@
+add_executable(dots_protocol_decode_fuzzer decode_fuzzer.cpp)
+target_link_libraries(dots_protocol_decode_fuzzer PRIVATE Dots::Protocol)
+mycore_configure_fuzzer(dots_protocol_decode_fuzzer)

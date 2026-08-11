@@ -15,87 +15,8 @@
 namespace dots::prediction {
 namespace {
 
-constexpr MechanicMask kSupportedMechanics = mechanic_bit(PredictionMechanic::Movement) |
-                                             mechanic_bit(PredictionMechanic::FoodConsumption) |
-                                             mechanic_bit(PredictionMechanic::PlayerAbsorption) |
-                                             mechanic_bit(PredictionMechanic::SplitMerge);
-
-template <class Id> [[nodiscard]] bool is_strictly_sorted(const std::vector<Id>& values) {
-    return std::adjacent_find(values.begin(), values.end(), [](Id lhs, Id rhs) {
-               return lhs >= rhs;
-           }) == values.end();
-}
-
 template <class Id> [[nodiscard]] bool contains(const std::vector<Id>& values, Id value) {
     return std::binary_search(values.begin(), values.end(), value);
-}
-
-[[nodiscard]] bool valid_profile(PredictionProfile profile) noexcept {
-    switch (profile) {
-    case PredictionProfile::InteractionClosure:
-    case PredictionProfile::FullReplicated:
-    case PredictionProfile::OwnedGameplay:
-        return true;
-    default:
-        return false;
-    }
-}
-
-[[nodiscard]] bool valid_scope(const PredictionScope& scope) {
-    if (!valid_profile(scope.requested_profile) || !valid_profile(scope.active_profile) ||
-        !scope.scope_epoch.is_valid() || scope.replay_horizon.value() == 0 ||
-        scope.owned_owner_ids.empty() || scope.requested_mechanics == 0 ||
-        (scope.requested_mechanics & ~kSupportedMechanics) != 0U || scope.mechanics == 0 ||
-        (scope.mechanics & ~kSupportedMechanics) != 0U ||
-        !includes_mechanic(scope.mechanics, PredictionMechanic::Movement) ||
-        !is_strictly_sorted(scope.owned_owner_ids) ||
-        !is_strictly_sorted(scope.subscribed_event_owner_ids) ||
-        !is_strictly_sorted(scope.owner_ids) || !is_strictly_sorted(scope.player_ids) ||
-        !is_strictly_sorted(scope.food_ids)) {
-        return false;
-    }
-    const auto valid_ids = std::all_of(scope.owner_ids.begin(),
-                                       scope.owner_ids.end(),
-                                       [](auto id) {
-                                           return id.is_valid();
-                                       }) &&
-                           std::all_of(scope.player_ids.begin(),
-                                       scope.player_ids.end(),
-                                       [](auto id) {
-                                           return id.is_valid();
-                                       }) &&
-                           std::all_of(scope.food_ids.begin(), scope.food_ids.end(), [](auto id) {
-                               return id.is_valid();
-                           });
-    const auto owned_are_in_scope =
-        std::all_of(scope.owned_owner_ids.begin(),
-                    scope.owned_owner_ids.end(),
-                    [&scope](simulation::PlayerOwnerId owner_id) {
-                        return owner_id.is_valid() && contains(scope.owner_ids, owner_id);
-                    });
-    const auto event_subscriptions_are_owned =
-        std::ranges::includes(scope.owned_owner_ids, scope.subscribed_event_owner_ids);
-    const auto has_remote_owner =
-        std::any_of(scope.owner_ids.begin(), scope.owner_ids.end(), [&scope](auto owner_id) {
-            return !contains(scope.owned_owner_ids, owner_id);
-        });
-    const auto expected_channels =
-        has_remote_owner ? causal_channel_bit(CausalChannel::RemoteMovement) : CausalChannelMask{};
-    if (!valid_ids || !owned_are_in_scope || !event_subscriptions_are_owned ||
-        scope.required_causal_channels != expected_channels) {
-        return false;
-    }
-    if (scope.active_profile == PredictionProfile::OwnedGameplay) {
-        const auto expected_fallback = scope.requested_profile == PredictionProfile::OwnedGameplay
-                                           ? PredictionFallbackReason::None
-                                           : PredictionFallbackReason::IncompleteClosure;
-        const auto owned_mechanics = mechanic_bit(PredictionMechanic::Movement) |
-                                     mechanic_bit(PredictionMechanic::SplitMerge);
-        return scope.fallback_reason == expected_fallback && scope.mechanics == owned_mechanics &&
-               scope.owner_ids == scope.owned_owner_ids && scope.food_ids.empty();
-    }
-    return scope.active_profile == scope.requested_profile &&
-           scope.fallback_reason == PredictionFallbackReason::None;
 }
 
 [[nodiscard]] PredictionError make_error(PredictionErrorCode code) {
@@ -259,7 +180,7 @@ StateDigest checkpoint_digest(const simulation::WorldCheckpoint& checkpoint) {
 
 std::variant<WorldModel::State, WorldModel::Error> WorldModel::restore(const Checkpoint& checkpoint,
                                                                        const Scope& scope) const {
-    if (!valid_scope(scope)) {
+    if (!is_valid_prediction_scope(scope)) {
         return make_error(PredictionErrorCode::InvalidScope);
     }
     if (checkpoint.rules != scope.rules) {
@@ -291,7 +212,7 @@ WorldModel::Checkpoint WorldModel::capture(const State& state, const Scope& scop
 
 std::variant<std::vector<WorldModel::Event>, WorldModel::Error>
 WorldModel::step(State& state, const Stimulus& stimulus, const Scope& scope) const {
-    if (!valid_scope(scope) || state.rules() != scope.rules) {
+    if (!is_valid_prediction_scope(scope) || state.rules() != scope.rules) {
         return make_error(PredictionErrorCode::InvalidScope);
     }
 

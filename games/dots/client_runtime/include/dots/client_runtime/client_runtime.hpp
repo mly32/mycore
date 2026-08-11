@@ -38,6 +38,7 @@ enum class RuntimeError : std::uint8_t {
     CheckpointHydrationFailed,
     PredictionScopeFailed,
     PredictionTimelineFailed,
+    PredictionConsequenceFailed,
     PredictionEventQueueFull,
     AmbiguousPredictionIdentity,
     TransportSendFailed,
@@ -288,13 +289,15 @@ public:
     [[nodiscard]] std::vector<PredictionEventBatch> take_prediction_event_batches();
 
     [[nodiscard]] State state() const noexcept;
-    [[nodiscard]] const replication::ReplicatedWorld& world() const noexcept;
+    [[nodiscard]] const replication::ReplicatedWorld& world() const& noexcept;
+    [[nodiscard]] const replication::ReplicatedWorld& world() const&& = delete;
     [[nodiscard]] protocol::ClientId client_id() const noexcept;
     [[nodiscard]] std::optional<protocol::JoinRole> accepted_role() const noexcept;
     [[nodiscard]] bool input_production_paused() const noexcept;
     [[nodiscard]] protocol::EntityId controlled_entity_id() const noexcept;
     [[nodiscard]] protocol::SessionMode session_mode() const noexcept;
-    [[nodiscard]] std::span<const protocol::EntityId> owned_entity_ids() const noexcept;
+    [[nodiscard]] std::span<const protocol::EntityId> owned_entity_ids() const& noexcept;
+    [[nodiscard]] std::span<const protocol::EntityId> owned_entity_ids() const&& = delete;
     [[nodiscard]] protocol::EntityId primary_entity_id() const noexcept;
     [[nodiscard]] protocol::EntityId follow_entity_id() const noexcept;
     [[nodiscard]] std::optional<protocol::WorldRules> world_rules() const noexcept;
@@ -305,22 +308,33 @@ public:
     [[nodiscard]] protocol::InputSequenceId latest_respawn_request_id() const noexcept;
     [[nodiscard]] protocol::RespawnResult latest_respawn_result() const noexcept;
     [[nodiscard]] mycore::net_transport::ConnectionHandle connection_handle() const noexcept;
-    [[nodiscard]] const simulation::World* predicted_world() const noexcept;
+    [[nodiscard]] const simulation::World* predicted_world() const& noexcept;
+    [[nodiscard]] const simulation::World* predicted_world() const&& = delete;
     [[nodiscard]] protocol::EntityId predicted_primary_entity_id() const noexcept;
-    [[nodiscard]] std::span<const protocol::EntityId> predicted_owned_entity_ids() const noexcept;
-    [[nodiscard]] std::span<const protocol::EntityId> predicted_scope_entity_ids() const noexcept;
+    [[nodiscard]] std::span<const protocol::EntityId> predicted_owned_entity_ids() const& noexcept;
+    [[nodiscard]] std::span<const protocol::EntityId> predicted_owned_entity_ids() const&& = delete;
+    [[nodiscard]] std::span<const protocol::EntityId> predicted_scope_entity_ids() const& noexcept;
+    [[nodiscard]] std::span<const protocol::EntityId> predicted_scope_entity_ids() const&& = delete;
     [[nodiscard]] std::span<const PredictionIdentityRemap>
-    latest_prediction_identity_remaps() const noexcept;
+    latest_prediction_identity_remaps() const& noexcept;
+    [[nodiscard]] std::span<const PredictionIdentityRemap>
+    latest_prediction_identity_remaps() const&& = delete;
     [[nodiscard]] std::span<const PredictionCorrection>
-    recent_prediction_corrections() const noexcept;
+    recent_prediction_corrections() const& noexcept;
+    [[nodiscard]] std::span<const PredictionCorrection>
+    recent_prediction_corrections() const&& = delete;
     [[nodiscard]] std::optional<mycore::math::Vector2> predicted_position() const noexcept;
     [[nodiscard]] std::optional<mycore::math::Vector2> pre_correction_position() const noexcept;
-    [[nodiscard]] std::span<const mycore::math::Vector2> latest_replay_path() const noexcept;
+    [[nodiscard]] std::span<const mycore::math::Vector2> latest_replay_path() const& noexcept;
+    [[nodiscard]] std::span<const mycore::math::Vector2> latest_replay_path() const&& = delete;
     [[nodiscard]] std::span<const mycore::math::Vector2>
-    latest_correction_replay_path() const noexcept;
+    latest_correction_replay_path() const& noexcept;
+    [[nodiscard]] std::span<const mycore::math::Vector2>
+    latest_correction_replay_path() const&& = delete;
     [[nodiscard]] bool debug_inject_prediction_error(mycore::math::Vector2 displacement);
     [[nodiscard]] bool debug_drop_next_input_packets(std::size_t count);
-    [[nodiscard]] std::span<const DebugFaultReceipt> debug_fault_receipts() const noexcept;
+    [[nodiscard]] std::span<const DebugFaultReceipt> debug_fault_receipts() const& noexcept;
+    [[nodiscard]] std::span<const DebugFaultReceipt> debug_fault_receipts() const&& = delete;
     [[nodiscard]] PredictionStatistics
     prediction_statistics(std::chrono::steady_clock::time_point now =
                               std::chrono::steady_clock::now()) const noexcept;

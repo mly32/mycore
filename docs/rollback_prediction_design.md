@@ -301,6 +301,12 @@ Prediction profiles are:
 | `FullReplicated` | Every entity in the reconstructed replicated view. | Correctness oracle and workload benchmark |
 | `OwnedGameplay` | Owned movement plus owner-local split/launch/cooldown/cohesion/merge; contested food and enemy absorption remain authoritative. | Safe incomplete-state fallback |
 
+`is_valid_prediction_scope` is the single complete scope contract used by projection, model
+restore, and stepping. It validates known profiles/fallbacks, resolved mechanics and exact state
+domains, causal channels, replay horizon, ordered valid IDs and subset relationships, plus the
+fixed `OwnedGameplay` fallback policy. A malformed scope therefore fails as `InvalidScope` at the
+first public boundary instead of surfacing later as an unrelated projection or restore failure.
+
 Closure starts from owned pieces and their owner/global dependencies, then expands through
 conservative swept bounds. Growth from food, split launch reach, and recursively reachable player
 interactions enlarge the set. The production client derives the required replay horizon from the
@@ -485,10 +491,23 @@ replication model. The inbox validates a gap-free sequence and rejects live sema
 but acceptance alone does not advance the ACK. The network client converts pending receipts into
 confirmed events on the same transactional authority frame (or an authority-only batch without a
 timeline), queues the resulting batch, and only then advances its published/ACK frontier.
-Pre-welcome receipts remain pending; the presentation router begins consuming them only after
-the local owner is known. A terminal receipt publishes before prediction is cleared on entry to
-Spectating. Payloads and live key records are pruned only after the server echoes retirement.
-Handler failures are counted and logged without retrying or failing the authoritative session.
+Pre-welcome receipts remain pending; a pre-welcome terminal snapshot does not create a timeline,
+and its authority-only receipts publish exactly once after welcome establishes the session. A
+terminal receipt publishes before prediction is cleared on entry to Spectating. If that terminal
+checkpoint no longer projects through the retained scope because an
+already-admitted remote owner gained a piece, the client expands a projection-only terminal scope
+to that owner's complete current topology under a new epoch, hard-resyncs the event lifecycle,
+and then discards the timeline. It never steps a command under that scope or creates a spectator
+rollback timeline. Payloads and live key records are pruned only after the server echoes
+retirement. Handler failures are counted and logged without retrying or failing the authoritative
+session. Structurally malformed consequence batches are different: the router detects them before
+handler state changes, the client logs the typed contract failure, and only that client session
+terminates.
+
+Two accepted snapshots in one transport poll remain ordered. A defeat snapshot completes its
+terminal event transaction and clears prediction before a later authoritative respawn snapshot
+constructs a fresh scope and timeline; no history, epoch membership, receipt, or deferred command
+from the defeated timeline carries into the respawned player.
 
 Repeated Feature 13 session fields remain authoritative state. Receipts control one-time
 consequence delivery and do not replace those state fields.

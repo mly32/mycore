@@ -62,6 +62,9 @@
 - [Authoritative spawn search](plans/authoritative-spawn-search.md)
 - [Engine rollback programming model and predicted Dots World](plans/14-selectable-world-rollback.md)
 - [Feature 14 input flow control and spectator stress](plans/14-input-flow-control-spectator-stress.md)
+- [Validation baseline before scale work](plans/validation-baseline.md)
+- [Rollback prediction correctness audit](plans/rollback-correctness-audit.md)
+- [Multi-rate simulation and presentation boundary audit](plans/multi-rate-simulation-presentation.md)
 
 Plans record intended scope and acceptance criteria. Inspect the current code, tests, branch,
 and worktree before treating a plan as implemented behavior.

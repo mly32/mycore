@@ -250,7 +250,30 @@ void check_position(std::optional<mycore::math::Vector2> position, float x, floa
     CHECK(position->y == Catch::Approx(y));
 }
 
+template <class Type>
+concept ExposesRuntimeWorldFromRvalue = requires(Type&& value) { std::move(value).world(); };
+
+template <class Type>
+concept ExposesRuntimeOwnedIdsFromRvalue =
+    requires(Type&& value) { std::move(value).owned_entity_ids(); };
+
+template <class Type>
+concept ExposesRuntimePredictionViewsFromRvalue = requires(Type&& value) {
+    std::move(value).predicted_world();
+    std::move(value).latest_replay_path();
+    std::move(value).debug_fault_receipts();
+};
+
+static_assert(!ExposesRuntimeWorldFromRvalue<dots::client_runtime::Runtime>);
+static_assert(!ExposesRuntimeOwnedIdsFromRvalue<dots::client_runtime::Runtime>);
+static_assert(!ExposesRuntimePredictionViewsFromRvalue<dots::client_runtime::Runtime>);
+
 } // namespace
+
+TEST_CASE("Client runtime borrowed views require a live lvalue owner",
+          "[dots][prediction][lifetime]") {
+    SUCCEED("Compile-time concepts reject borrowed views from temporary runtimes");
+}
 
 TEST_CASE("Adaptive command timing filters queue depth and bounds cadence",
           "[dots][prediction][timing]") {
@@ -656,6 +679,148 @@ TEST_CASE("Authority can acknowledge input deferred after predicted local elimin
     CHECK(recovered.hard_resync_count == 1);
     CHECK(recovered.acknowledgement_catch_up_count == 1);
     check_position(client.predicted_position(), 0.2F, 0.0F);
+}
+
+TEST_CASE("Terminal authority acknowledges deferred input and publishes its receipt once",
+          "[dots][prediction][session][rollback][receipts]") {
+    ManualEndpoint endpoint;
+    dots::client_runtime::Runtime client{endpoint};
+    const mycore::net_transport::ConnectionHandle connection{37};
+    complete_handshake(endpoint, client, connection);
+
+    auto dangerous = snapshot(1, 0, dots::protocol::InputSequenceId::invalid(), {});
+    dangerous.entities.push_back({
+        .entity_id = dots::protocol::EntityId{9},
+        .kind = dots::protocol::EntityKind::Player,
+        .owner_id = dots::protocol::PlayerOwnerId{4},
+        .mass = 32.0F,
+    });
+    push_snapshot(endpoint, connection, dangerous);
+    REQUIRE_FALSE(client.process_events(clock_time(10s)).has_value());
+    REQUIRE(client.send_input(0, {}) == dots::client_runtime::InputSendResult::Sent);
+    REQUIRE(client.send_input(1, {1.0F, 0.0F}) == dots::client_runtime::InputSendResult::Sent);
+    REQUIRE(client.send_input(2, {1.0F, 0.0F}) == dots::client_runtime::InputSendResult::Sent);
+    REQUIRE(client.predicted_world() != nullptr);
+    CHECK_FALSE(
+        client.predicted_world()->contains(dots::simulation::EntityId{kControlledEntity.value()}));
+    CHECK(client.prediction_statistics(clock_time(10s)).deferred_prediction_input_count == 2);
+    const auto predicted_batches = client.take_prediction_event_batches();
+    REQUIRE(predicted_batches.size() == 1);
+    REQUIRE(predicted_batches.front().changes.size() == 1);
+    CHECK(predicted_batches.front().changes.front().transition ==
+          mycore::rollback::EventTransition::FirstPredicted);
+
+    const auto absorption = dots::protocol::PlayerAbsorbed{
+        .server_tick = 1,
+        .absorber_entity_id = dots::protocol::EntityId{9},
+        .victim_entity_id = kControlledEntity,
+        .absorber_owner_id = dots::protocol::PlayerOwnerId{4},
+        .victim_owner_id = kControlledOwner,
+        .transferred_mass = 16.0F,
+    };
+    auto terminal = snapshot(2, 1, dots::protocol::InputSequenceId{1}, {});
+    terminal.entities = {{
+        .entity_id = dots::protocol::EntityId{9},
+        .kind = dots::protocol::EntityKind::Player,
+        .owner_id = dots::protocol::PlayerOwnerId{4},
+        .mass = 48.0F,
+    }};
+    terminal.recipient = {
+        .mode = dots::protocol::SessionMode::Spectating,
+        .defeat_tick = 1,
+        .respawn_available_tick = 91,
+        .latest_absorption = absorption,
+    };
+    terminal.authority_receipts = {{
+        .sequence_id = dots::protocol::AuthorityReceiptSequenceId{0},
+        .event = absorption,
+    }};
+    push_snapshot(endpoint, connection, terminal);
+
+    const auto result = client.process_events(clock_time(11s));
+    REQUIRE_FALSE(result.error.has_value());
+    REQUIRE(result.accepted_snapshots.size() == 1);
+    CHECK(client.session_mode() == dots::protocol::SessionMode::Spectating);
+    CHECK(client.predicted_world() == nullptr);
+    const auto statistics = client.prediction_statistics(clock_time(11s));
+    CHECK(statistics.history_count == 0);
+    CHECK(statistics.deferred_prediction_input_count == 0);
+    const auto batches = client.take_prediction_event_batches();
+    REQUIRE(batches.size() == 1);
+    REQUIRE(batches.front().changes.size() == 1);
+    CHECK(batches.front().changes.front().transition ==
+          mycore::rollback::EventTransition::Confirmed);
+    CHECK(client.take_prediction_event_batches().empty());
+}
+
+TEST_CASE("Defeat and respawn snapshots in one poll install a fresh prediction timeline",
+          "[dots][prediction][session][rollback][respawn]") {
+    ManualEndpoint endpoint;
+    dots::client_runtime::Runtime client{endpoint};
+    const mycore::net_transport::ConnectionHandle connection{38};
+    complete_handshake(endpoint, client, connection);
+
+    const auto absorption = dots::protocol::PlayerAbsorbed{
+        .server_tick = 1,
+        .absorber_entity_id = dots::protocol::EntityId{9},
+        .victim_entity_id = kControlledEntity,
+        .absorber_owner_id = dots::protocol::PlayerOwnerId{4},
+        .victim_owner_id = kControlledOwner,
+        .transferred_mass = 16.0F,
+    };
+    auto terminal = snapshot(1, 1, dots::protocol::InputSequenceId::invalid(), {});
+    terminal.entities = {{
+        .entity_id = dots::protocol::EntityId{9},
+        .kind = dots::protocol::EntityKind::Player,
+        .owner_id = dots::protocol::PlayerOwnerId{4},
+        .mass = 48.0F,
+    }};
+    terminal.recipient = {
+        .mode = dots::protocol::SessionMode::Spectating,
+        .defeat_tick = 1,
+        .respawn_available_tick = 91,
+        .latest_absorption = absorption,
+    };
+    terminal.authority_receipts = {{
+        .sequence_id = dots::protocol::AuthorityReceiptSequenceId{0},
+        .event = absorption,
+    }};
+    auto respawned = snapshot(2, 2, dots::protocol::InputSequenceId::invalid(), {});
+    respawned.recipient = {
+        .mode = dots::protocol::SessionMode::Playing,
+        .owned_entity_ids = {dots::protocol::EntityId{10}},
+        .primary_entity_id = dots::protocol::EntityId{10},
+    };
+    respawned.entities = {{
+        .entity_id = dots::protocol::EntityId{10},
+        .kind = dots::protocol::EntityKind::Player,
+        .owner_id = kControlledOwner,
+        .position_x = 4.0F,
+        .mass = 16.0F,
+    }};
+    respawned.authority_receipts = terminal.authority_receipts;
+    push_snapshot(endpoint, connection, terminal);
+    push_snapshot(endpoint, connection, respawned);
+
+    const auto result = client.process_events(clock_time(11s));
+    REQUIRE_FALSE(result.error.has_value());
+    REQUIRE(result.accepted_snapshots.size() == 2);
+    CHECK(result.accepted_snapshots[0].snapshot.snapshot_id == dots::protocol::SnapshotId{1});
+    CHECK(result.accepted_snapshots[1].snapshot.snapshot_id == dots::protocol::SnapshotId{2});
+    CHECK(client.session_mode() == dots::protocol::SessionMode::Playing);
+    CHECK(client.primary_entity_id() == dots::protocol::EntityId{10});
+    REQUIRE(client.predicted_world() != nullptr);
+    CHECK(client.predicted_world()->contains(dots::simulation::EntityId{10}));
+    const auto statistics = client.prediction_statistics(clock_time(11s));
+    CHECK(statistics.history_count == 0);
+    CHECK(statistics.authoritative_tick == 2);
+    CHECK(statistics.predicted_tick == 2);
+    const auto batches = client.take_prediction_event_batches();
+    REQUIRE(batches.size() == 1);
+    REQUIRE(batches.front().changes.size() == 1);
+    CHECK(batches.front().changes.front().transition ==
+          mycore::rollback::EventTransition::AuthorityOnly);
+    CHECK(client.take_prediction_event_batches().empty());
 }
 
 TEST_CASE("Client prediction closure follows retained replay depth instead of ring capacity",
@@ -1067,6 +1232,78 @@ TEST_CASE("Confirmed spectating accepts a missing primary and clears prediction"
     CHECK(client.prediction_statistics(clock_time(11s)).history_count == 0);
     CHECK(client.send_input(1, {}, dots::protocol::kRespawnActionBit) ==
           dots::client_runtime::InputSendResult::Sent);
+}
+
+TEST_CASE("Confirmed defeat tolerates topology growth in a retained remote scope",
+          "[dots][prediction][scope][session]") {
+    ManualEndpoint endpoint;
+    dots::client_runtime::Runtime client{endpoint};
+    const mycore::net_transport::ConnectionHandle connection{36};
+    complete_handshake(endpoint, client, connection);
+
+    auto remote_parent = dots::protocol::EntityState{
+        .entity_id = dots::protocol::EntityId{9},
+        .kind = dots::protocol::EntityKind::Player,
+        .owner_id = dots::protocol::PlayerOwnerId{4},
+        .position_x = 10.0F,
+        .mass = 32.0F,
+    };
+    auto nearby = snapshot(1, 2, dots::protocol::InputSequenceId::invalid(), {});
+    nearby.entities.push_back(remote_parent);
+    push_snapshot(endpoint, connection, nearby);
+    REQUIRE_FALSE(client.process_events(clock_time(11s)).error.has_value());
+    REQUIRE(std::ranges::find(client.predicted_scope_entity_ids(), remote_parent.entity_id) !=
+            client.predicted_scope_entity_ids().end());
+
+    remote_parent.mass = 16.0F;
+    auto defeated = snapshot(2, 4, dots::protocol::InputSequenceId::invalid(), {});
+    defeated.entities.clear();
+    defeated.entities.push_back(remote_parent);
+    defeated.entities.push_back({
+        .entity_id = dots::protocol::EntityId{10},
+        .kind = dots::protocol::EntityKind::Player,
+        .owner_id = remote_parent.owner_id,
+        .position_x = 10.0F,
+        .mass = 32.0F,
+        .prediction_key =
+            dots::protocol::PredictionKey{
+                .owner_id = remote_parent.owner_id,
+                .input_id = dots::protocol::InputSequenceId{42},
+                .child_ordinal = 0,
+            },
+    });
+    defeated.owners.push_back({
+        .owner_id = remote_parent.owner_id,
+        .last_input_id = dots::protocol::InputSequenceId{42},
+    });
+    defeated.recipient = {
+        .mode = dots::protocol::SessionMode::Spectating,
+        .defeat_tick = 4,
+        .respawn_available_tick = 94,
+    };
+    defeated.authority_receipts = {{
+        .sequence_id = dots::protocol::AuthorityReceiptSequenceId{0},
+        .event =
+            dots::protocol::PlayerAbsorbed{
+                .server_tick = 4,
+                .absorber_entity_id = dots::protocol::EntityId{10},
+                .victim_entity_id = kControlledEntity,
+                .absorber_owner_id = remote_parent.owner_id,
+                .victim_owner_id = kControlledOwner,
+                .transferred_mass = 16.0F,
+            },
+    }};
+    push_snapshot(endpoint, connection, defeated);
+
+    REQUIRE_FALSE(client.process_events(clock_time(12s)).error.has_value());
+    const auto terminal_batches = client.take_prediction_event_batches();
+    REQUIRE(terminal_batches.size() == 1);
+    REQUIRE(terminal_batches.front().changes.size() == 1);
+    CHECK(terminal_batches.front().changes.front().transition ==
+          mycore::rollback::EventTransition::AuthorityOnly);
+    CHECK(client.session_mode() == dots::protocol::SessionMode::Spectating);
+    CHECK_FALSE(client.predicted_position().has_value());
+    CHECK(client.prediction_statistics(clock_time(12s)).history_count == 0);
 }
 
 TEST_CASE("Client rejects a respawn deadline that conflicts with welcome configuration",

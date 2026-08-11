@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <tuple>
 #include <type_traits>
 #include <unordered_map>
@@ -24,10 +25,37 @@ struct ConsequenceDispatchFailure {
     auto operator<=>(const ConsequenceDispatchFailure&) const = default;
 };
 
+enum class ConsequenceBatchContractError : std::uint8_t {
+    InvalidTransitionShape,
+    ChangedEventAlternative,
+    ValuelessEvent,
+};
+
+[[nodiscard]] constexpr std::string_view
+consequence_batch_contract_error_name(ConsequenceBatchContractError error) noexcept {
+    switch (error) {
+    case ConsequenceBatchContractError::InvalidTransitionShape:
+        return "INVALID TRANSITION SHAPE";
+    case ConsequenceBatchContractError::ChangedEventAlternative:
+        return "CHANGED EVENT ALTERNATIVE";
+    case ConsequenceBatchContractError::ValuelessEvent:
+        return "VALUELESS EVENT";
+    }
+    return "UNKNOWN CONSEQUENCE BATCH CONTRACT ERROR";
+}
+
+struct ConsequenceBatchContractFailure {
+    std::size_t change_index{};
+    ConsequenceBatchContractError error{ConsequenceBatchContractError::InvalidTransitionShape};
+
+    auto operator<=>(const ConsequenceBatchContractFailure&) const = default;
+};
+
 struct ConsequenceDispatchReport {
     ConsequenceDispatchStatistics statistics;
     std::vector<ConsequenceHandlerDispatchStatistics> handlers;
     std::vector<ConsequenceDispatchFailure> failures;
+    std::vector<ConsequenceBatchContractFailure> contract_failures;
 };
 
 namespace detail {
@@ -100,6 +128,20 @@ public:
         ConsequenceDispatchReport report;
         initialize_handler_statistics(report, std::index_sequence_for<Handlers...>{});
         report.failures.reserve(batch.changes.size());
+        report.contract_failures.reserve(batch.changes.size());
+
+        for (auto index = std::size_t{}; index < batch.changes.size(); ++index) {
+            if (const auto error = validate_change(batch.changes[index])) {
+                report.contract_failures.push_back(
+                    ConsequenceBatchContractFailure{.change_index = index, .error = *error});
+            }
+        }
+        // EventBatch is an owning public boundary, so validate the complete trusted value before
+        // touching non-rewindable handler or retirement state. Callers can fail their own session
+        // while retaining the last committed simulation state for diagnostics.
+        if (!report.contract_failures.empty()) {
+            return report;
+        }
 
         for (const auto& change : batch.changes) {
             process_change(change, report, std::index_sequence_for<Handlers...>{});
@@ -122,22 +164,27 @@ public:
         return report;
     }
 
-    template <class Handler> [[nodiscard]] Handler& handler() noexcept {
+    template <class Handler> [[nodiscard]] Handler& handler() & noexcept {
         return std::get<Handler>(handlers_);
     }
+    template <class Handler> [[nodiscard]] Handler& handler() && = delete;
 
-    template <class Handler> [[nodiscard]] const Handler& handler() const noexcept {
+    template <class Handler> [[nodiscard]] const Handler& handler() const& noexcept {
         return std::get<Handler>(handlers_);
     }
+    template <class Handler> [[nodiscard]] const Handler& handler() const&& = delete;
 
-    [[nodiscard]] const ConsequenceDispatchStatistics& statistics() const noexcept {
+    [[nodiscard]] const ConsequenceDispatchStatistics& statistics() const& noexcept {
         return statistics_;
     }
+    [[nodiscard]] const ConsequenceDispatchStatistics& statistics() const&& = delete;
 
     [[nodiscard]] std::span<const ConsequenceHandlerDispatchStatistics>
-    handler_statistics() const noexcept {
+    handler_statistics() const& noexcept {
         return handler_statistics_;
     }
+    [[nodiscard]] std::span<const ConsequenceHandlerDispatchStatistics>
+    handler_statistics() const&& = delete;
 
     [[nodiscard]] ConsequenceLedgerStatistics ledger_statistics() const noexcept {
         ConsequenceLedgerStatistics result{
@@ -154,6 +201,38 @@ public:
     }
 
 private:
+    [[nodiscard]] static std::optional<ConsequenceBatchContractError>
+    validate_change(const EventChange<Model>& change) noexcept {
+        const auto has_previous = change.previous.has_value();
+        const auto has_current = change.current.has_value();
+        if ((has_previous && change.previous->valueless_by_exception()) ||
+            (has_current && change.current->valueless_by_exception())) {
+            return ConsequenceBatchContractError::ValuelessEvent;
+        }
+
+        auto valid_shape = false;
+        switch (change.transition) {
+        case EventTransition::FirstPredicted:
+        case EventTransition::AuthorityOnly:
+            valid_shape = !has_previous && has_current;
+            break;
+        case EventTransition::Revised:
+        case EventTransition::Confirmed:
+            valid_shape = has_previous && has_current;
+            break;
+        case EventTransition::Retracted:
+            valid_shape = has_previous && !has_current;
+            break;
+        }
+        if (!valid_shape) {
+            return ConsequenceBatchContractError::InvalidTransitionShape;
+        }
+        if (has_previous && has_current && change.previous->index() != change.current->index()) {
+            return ConsequenceBatchContractError::ChangedEventAlternative;
+        }
+        return std::nullopt;
+    }
+
     template <std::size_t... Indices>
     [[nodiscard]] static constexpr auto
     make_handler_statistics(std::index_sequence<Indices...>) noexcept {
